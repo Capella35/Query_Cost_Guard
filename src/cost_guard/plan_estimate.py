@@ -31,6 +31,10 @@ Rules:
    blow-up is never "corrected" away.
 4. Every other operator scales with its corrected input.
 
+Plan red flags are read from the same walk: every full sort (ORDER_BY — a
+sort with a LIMIT is planned as TOP_N and keeps only the top rows) records
+how many rows it sorts, i.e. its corrected input.
+
 Columns are traced through the plan: scans name their table and columns,
 projections pass `#i` positions through (including DuckDB's internal
 compression wrappers), GROUP BY outputs its keys first, joins output left
@@ -73,6 +77,7 @@ class PlanCardinality:
     peak_uncorrected: int  # DuckDB's own peak
     scanned: int  # rows from scan operators
     corrections: list[str] = field(default_factory=list)
+    sorts: list[int] = field(default_factory=list)  # rows into each full ORDER_BY
 
 
 def _as_list(v) -> list[str]:
@@ -107,6 +112,7 @@ class _Corrector:
         self.scan_hook = scan_hook
         self.corrections: list[str] = []
         self.nodes: list[_Node] = []  # every node walked, for the peak
+        self.sorts: list[int] = []  # rows into each full sort (ORDER_BY, not TOP_N)
 
     def ndv_bound(self, lin: Lineage) -> Optional[int]:
         if lin is None or self.registry is None:
@@ -137,6 +143,8 @@ class _Corrector:
         else:
             orig = max((k.orig for k in kids), default=0)
         node = _Node(name, orig, orig, scanned=sum(k.scanned for k in kids))
+        if name == "ORDER_BY" and kids:
+            self.sorts.append(kids[0].est)
 
         if "SCAN" in name and "Table" in info:
             parts = str(info["Table"]).split(".")
@@ -234,4 +242,5 @@ def plan_cardinality(plans: list[dict], registry=None, max_age_days: float = 35,
         peak_uncorrected=max((n.orig for n in c.nodes), default=0),
         scanned=sum(n.scanned for n in roots),
         corrections=list(dict.fromkeys(c.corrections)),  # a table scanned twice: one note
+        sorts=c.sorts,
     )

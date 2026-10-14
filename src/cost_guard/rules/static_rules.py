@@ -17,6 +17,7 @@ from .. import sql_ast
 from ..column_registry import HIGH_CARDINALITY_RATIO  # noqa: F401 — distinct/rows above = near-unique
 
 WIDE_COLUMN_THRESHOLD = 8
+MAX_IN_LIST_ITEMS = 100  # judgment call: above this, a join is the better shape
 LARGE_TABLE_ROWS = 100_000
 
 
@@ -180,6 +181,21 @@ def no_redundant_distinct(sql: str, metadata: dict) -> list[str]:
     return sql_ast.redundant_distincts(sql_ast.parse_one(sql))
 
 
+def no_long_in_list(sql: str, metadata: dict) -> list[str]:
+    """No long explicit IN (...) lists.
+
+    Every value is parsed, planned and compared, and the query text grows
+    with the list (BigQuery bills nothing extra but caps query length). A
+    list this long is data: load it into a table (or a CTE / UNNEST) and
+    join or semi-join against it.
+    """
+    return [
+        f"IN list on {col} has {n:,} explicit values (> {MAX_IN_LIST_ITEMS}) — "
+        "put the values in a table or CTE and join against it"
+        for col, n in sql_ast.long_in_lists(sql_ast.parse_one(sql), MAX_IN_LIST_ITEMS)
+    ]
+
+
 ALL_RULES = [
     no_select_star_on_wide_tables,
     require_partition_filter,
@@ -190,6 +206,7 @@ ALL_RULES = [
     no_high_cardinality_groupby,
     no_sum_on_identifier,
     no_redundant_distinct,
+    no_long_in_list,
 ]
 
 # Rules about query structure only: run once per query, not once per table,
@@ -199,4 +216,5 @@ QUERY_RULES = {
     filter_before_join,
     repeated_subquery_to_cte,
     no_redundant_distinct,
+    no_long_in_list,
 }

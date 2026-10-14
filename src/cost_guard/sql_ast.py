@@ -278,6 +278,17 @@ def redundant_distincts(tree: exp.Expression) -> list[str]:
     return list(dict.fromkeys(out))
 
 
+def long_in_lists(tree: exp.Expression, max_items: int) -> list[tuple[str, int]]:
+    """(column SQL, item count) for every IN (...) / NOT IN (...) with more
+    than max_items explicit values. IN (subquery) is not a list."""
+    out = []
+    for node in tree.find_all(exp.In):
+        n = len(node.expressions)
+        if n > max_items:
+            out.append((node.this.sql(dialect=DIALECT), n))
+    return out
+
+
 def has_order_by(tree: exp.Expression) -> bool:
     """Top-level ORDER BY — decides whether result order is part of the answer."""
     return tree.args.get("order") is not None

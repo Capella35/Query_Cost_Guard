@@ -211,6 +211,19 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm) -> GuardVe
             run(rule, {**md, "table_rows": table_rows}, f"{rule.__name__} on '{t}'")
         for t, why in no_md.items():
             skipped.append(f"{rule.__name__} on '{t}': {why}")
+    # Plan red flag: a full in-memory sort of a large input (ORDER BY with no
+    # LIMIT). Read from the EXPLAIN plan, not the SQL text — a LIMIT turns
+    # the sort into a TOP_N, and a sort after GROUP BY sorts only the groups.
+    sorted_rows = estimate.estimated_sorted_rows if estimate is not None else None
+    if sorted_rows is None:
+        why = estimate.source if estimate is not None else "no backend"
+        skipped.append(f"plan_unbounded_sort: plan shape not visible ({why})")
+    elif sorted_rows >= LARGE_TABLE_ROWS:
+        with tracer.span(tid, "plan.unbounded_sort", rows=sorted_rows):
+            findings.append(
+                f"full in-memory sort of ~{sorted_rows:,} rows (ORDER BY with no LIMIT) — "
+                "add a LIMIT, or drop the ORDER BY if the consumer re-sorts"
+            )
     findings = list(dict.fromkeys(findings))  # same finding can fire per table
     skipped.extend(no_profile)
     if skipped:

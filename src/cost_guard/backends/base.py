@@ -22,6 +22,9 @@ class PlanEstimate:
     # "table_sum_fallback" (sum of referenced table sizes — blind to fan-out).
     source: str = "explain"
     corrections: list = field(default_factory=list)  # what the registry corrected, and why
+    # Rows into the largest full sort (ORDER BY with no LIMIT) in the plan;
+    # 0 = no full sort, None = the backend can't see the plan shape.
+    estimated_sorted_rows: Optional[int] = None
 
     @property
     def rows_processed(self) -> int:

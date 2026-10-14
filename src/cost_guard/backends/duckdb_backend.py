@@ -134,6 +134,7 @@ class DuckDBWarehouse:
             source="explain+corrected" if card.corrections else "explain",
             detail=detail,
             corrections=card.corrections,
+            estimated_sorted_rows=max(card.sorts, default=0),
         )
 
     def _scan_hook(self, registry):
