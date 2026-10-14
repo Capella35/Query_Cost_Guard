@@ -11,7 +11,7 @@ the stretch path.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Optional
 
@@ -442,6 +442,33 @@ _COMPARISONS = (exp.EQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.Between, exp.In, e
 class PartitionFilterUse:
     bare: list[str]  # predicates comparing the bare partition column
     wrapped: list[str]  # predicates where the column sits inside a function/cast/arithmetic
+    # Per wrapped predicate: what wraps the column, innermost first, e.g.
+    # ("date", "timestamp_trunc") — see wrapper_chain.
+    wrapped_chains: list[tuple[str, ...]] = field(default_factory=list)
+
+
+def wrapper_chain(col: exp.Column, stop: exp.Expression) -> tuple[str, ...]:
+    """What wraps `col` up to `stop`, innermost first: "cast:<type>" for casts,
+    the function name for functions ("format_timestamp:<fmt>" with its format
+    literal), "+interval"/"-interval" or the operator name for arithmetic.
+    Parentheses are skipped."""
+    out, node = [], col.parent
+    while node is not None and node is not stop:
+        if isinstance(node, exp.Cast):
+            out.append("cast:" + node.to.sql(dialect=DIALECT).lower())
+        elif isinstance(node, exp.Func):
+            name = _func_name(node)
+            if name in ("format_timestamp", "format_date"):
+                fmt = node.expressions[0] if isinstance(node, exp.Anonymous) and node.expressions else None
+                name += ":" + (fmt.this if isinstance(fmt, exp.Literal) else "?")
+            out.append(name)
+        elif isinstance(node, (exp.Add, exp.Sub)):
+            sign = "+" if isinstance(node, exp.Add) else "-"
+            out.append(sign + ("interval" if node.find(exp.Interval) else "arith"))
+        elif not isinstance(node, exp.Paren):
+            out.append(type(node).__name__.lower())
+        node = node.parent
+    return tuple(out)
 
 
 def partition_filter_use(tree: exp.Expression, table: str, column: str) -> PartitionFilterUse:
@@ -460,11 +487,11 @@ def partition_filter_use(tree: exp.Expression, table: str, column: str) -> Parti
         (own if t.name.lower() == table else other).add(t.alias_or_name.lower())
     other -= own
     if not own:
-        return PartitionFilterUse([], [])
+        return PartitionFilterUse([], [], [])
 
     clauses: list[exp.Expression] = list(tree.find_all(exp.Where))
     clauses += [j.args["on"] for j in tree.find_all(exp.Join) if j.args.get("on")]
-    bare, wrapped = [], []
+    bare, wrapped, chains = [], [], {}
     for clause in clauses:
         for cmp in clause.find_all(*_COMPARISONS):
             for col in cmp.find_all(exp.Column):
@@ -478,8 +505,14 @@ def partition_filter_use(tree: exp.Expression, table: str, column: str) -> Parti
                         is_bare = False
                         break
                     node = node.parent
-                (bare if is_bare else wrapped).append(cmp.sql(dialect=DIALECT))
-    return PartitionFilterUse(list(dict.fromkeys(bare)), list(dict.fromkeys(wrapped)))
+                text = cmp.sql(dialect=DIALECT)
+                if is_bare:
+                    bare.append(text)
+                else:
+                    wrapped.append(text)
+                    chains.setdefault(text, wrapper_chain(col, cmp))
+    wrapped = list(dict.fromkeys(wrapped))
+    return PartitionFilterUse(list(dict.fromkeys(bare)), wrapped, [chains[w] for w in wrapped])
 
 
 def filters_after_join(tree: exp.Expression) -> list[str]:

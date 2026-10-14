@@ -163,6 +163,7 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm) -> GuardVe
             no_md[t] = f"metadata unavailable ({str(e).splitlines()[0][:60]})"
             continue
         md["table"] = t
+        md["engine"] = getattr(backend, "name", None)  # warehouse-aware rules
         md["large"] = (md.get("num_rows") or 0) >= LARGE_TABLE_ROWS
         # The warehouse's own partitioning wins; customer.yaml is the fallback
         # for engines without real partitions (DuckDB: the zone-mapped date column).

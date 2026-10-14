@@ -100,3 +100,50 @@ def test_ingestion_time_partition_filter():
     v = decide("SELECT order_id FROM sessions WHERE _PARTITIONTIME >= TIMESTAMP '2024-01-01'",
                backend=wh, tracer=Tracer())
     assert not _partition_findings(v)
+
+
+# Warehouse-aware no_function_on_partition_column: forms measured by dry run
+# (eval/RESULTS_bq_dryrun.md) to prune on BigQuery don't warn there; they
+# still warn on DuckDB, which only skips row groups for the bare column.
+PRUNED_ON_BQ = [
+    "CAST(created_at AS DATE) = DATE '2024-03-01'",
+    "CAST(created_at AS DATE) BETWEEN DATE '2024-03-01' AND DATE '2024-03-07'",
+    "DATE(created_at) >= DATE '2024-03-01'",
+    "TIMESTAMP_TRUNC(created_at, MONTH) = TIMESTAMP '2024-03-01'",
+    "DATE_TRUNC(DATE(created_at), MONTH) = DATE '2024-03-01'",
+    "FORMAT_TIMESTAMP('%Y-%m-%d', created_at) = '2024-03-01'",
+    "TIMESTAMP_SUB(created_at, INTERVAL 1 DAY) >= TIMESTAMP '2024-03-01'",
+    "DATE_ADD(DATE(created_at), INTERVAL 1 DAY) = DATE '2024-03-02'",
+]
+NOT_PRUNED_ON_BQ = [
+    "EXTRACT(DAY FROM created_at) = 24",
+    "UNIX_SECONDS(created_at) >= 1700000000",
+    "created_at + INTERVAL 1 DAY >= TIMESTAMP '2024-03-02'",
+    "FORMAT_TIMESTAMP('%Y-%m', created_at) = '2024-03'",
+    "FORMAT_DATE('%Y-%m-%d', DATE(created_at)) = '2024-03-01'",
+]
+
+
+def _wrap_findings(v):
+    return [f for f in v.findings if "is wrapped in an expression" in f]
+
+
+@pytest.mark.parametrize("where", PRUNED_ON_BQ)
+def test_bigquery_prunable_wrapper_does_not_warn(where):
+    wh = BigQueryWarehouse("proj", client=FakeClient(0))
+    v = decide(f"SELECT order_id FROM orders WHERE {where}", backend=wh, tracer=Tracer())
+    assert not _wrap_findings(v)
+    assert not _partition_findings(v)  # still counts as a partition filter
+
+
+@pytest.mark.parametrize("where", NOT_PRUNED_ON_BQ)
+def test_bigquery_unprunable_wrapper_warns(where):
+    wh = BigQueryWarehouse("proj", client=FakeClient(0))
+    v = decide(f"SELECT order_id FROM orders WHERE {where}", backend=wh, tracer=Tracer())
+    assert _wrap_findings(v) and v.decision == "warn"
+
+
+def test_duckdb_still_warns_on_cast(synthetic_wh):
+    v = decide("SELECT order_id FROM orders WHERE CAST(created_at AS DATE) = DATE '2024-03-01'",
+               backend=synthetic_wh, tracer=Tracer())
+    assert _wrap_findings(v)

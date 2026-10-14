@@ -4,7 +4,7 @@ Each rule takes (sql, metadata) and returns a list of findings (empty = clean).
 Deterministic: findings, never judgments — the Guard decides. Structure comes
 from the sqlglot AST (sql_ast.py), never from regexes over the text.
 
-metadata is a per-table dict: {"table", "num_rows", "column_count", "columns",
+metadata is a per-table dict: {"table", "engine" ("duckdb" | "bigquery" | None), "num_rows", "column_count", "columns",
 "large" (bool), "partition_column", "column_profiles", "table_rows" (row
 counts of every referenced table, for the tiny-relation exemption),
 "registry" (the column registry or None), "registry_max_age_days"}.
@@ -70,16 +70,40 @@ def no_cross_join_without_condition(sql: str, metadata: dict) -> list[str]:
     )
 
 
+# Wrappers BigQuery still prunes through, on a table partitioned by
+# DATE(col): each was dry-run against its bare-column equivalent and billed
+# the same bytes (2026-10-14, TheLook events; eval/RESULTS_bq_dryrun.md).
+# Measured NOT to prune: EXTRACT, UNIX_SECONDS, col + INTERVAL,
+# FORMAT_TIMESTAMP('%Y-%m', ...), FORMAT_DATE(...), CAST(col AS STRING).
+# Anything not listed still warns.
+BIGQUERY_PRUNES_THROUGH = frozenset({
+    "cast:date", "cast:timestamp",  # CAST(col AS DATE) / AS DATETIME (parsed as TIMESTAMP)
+    "date", "timestamp_trunc",      # DATE(col), DATE_TRUNC / TIMESTAMP_TRUNC
+    "timestamp_add", "timestamp_sub", "date_add", "date_sub",
+    "format_timestamp:%Y-%m-%d",
+})
+
+
 def no_function_on_partition_column(sql: str, metadata: dict) -> list[str]:
-    """No function wrapped around a partition column in a filter (kills pruning)."""
+    """No function wrapped around a partition column in a filter (kills pruning).
+
+    Warehouse-aware: DuckDB skips row groups only for comparisons on the bare
+    column, so every wrapper warns there. BigQuery derives partition filters
+    through some wrappers (BIGQUERY_PRUNES_THROUGH); on BigQuery those don't
+    warn.
+    """
     pcol = metadata.get("partition_column")
     if not pcol:
         return []
     use = sql_ast.partition_filter_use(sql_ast.parse_one(sql), metadata["table"], pcol)
+    wrapped = use.wrapped
+    if metadata.get("engine") == "bigquery":
+        wrapped = [w for w, chain in zip(use.wrapped, use.wrapped_chains)
+                   if not set(chain) <= BIGQUERY_PRUNES_THROUGH]
     return [
         f"partition column {pcol} of '{metadata.get('table')}' is wrapped in an "
         f"expression in {w!r} — prevents pruning; compare the bare column to a range"
-        for w in use.wrapped
+        for w in wrapped
     ]
 
 

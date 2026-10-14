@@ -269,30 +269,52 @@ def check_copies(client, project: str, dataset: str) -> list[dict]:
 
 
 def pruning_controls(client, dataset: str, max_bytes: int, day: date) -> list[dict]:
-    """Which filter forms let BigQuery prune DATE(created_at) partitions: bytes per
-    form for one day / one month, against no filter and a form that can't prune."""
-    d0, d1 = day.isoformat(), (day + relativedelta(days=1)).isoformat()
+    """For each filter form on created_at: dry-run bytes of the form and of its
+    bare-column equivalent. Same bytes = BigQuery prunes through the form.
+    This is the evidence behind static_rules.BIGQUERY_PRUNES_THROUGH."""
+    T = lambda d: f"TIMESTAMP '{d.isoformat()}'"  # noqa: E731
+    D = lambda d: f"DATE '{d.isoformat()}'"  # noqa: E731
+    d0, d1, d2 = day, day + relativedelta(days=1), day + relativedelta(days=2)
     m0 = day.replace(day=1)
-    m0s, m1s = m0.isoformat(), (m0 + relativedelta(months=1)).isoformat()
+    m1 = m0 + relativedelta(months=1)
+    day_rng = f"created_at >= {T(d0)} AND created_at < {T(d1)}"
+    month_rng = f"created_at >= {T(m0)} AND created_at < {T(m1)}"
     forms = [
-        ("no filter", ""),
-        ("CAST(created_at AS DATE) = day", f"WHERE CAST(created_at AS DATE) = DATE '{d0}'"),
-        ("DATE(created_at) = day", f"WHERE DATE(created_at) = DATE '{d0}'"),
-        ("FORMAT_TIMESTAMP('%Y-%m-%d', created_at) = day",
-         f"WHERE FORMAT_TIMESTAMP('%Y-%m-%d', created_at) = '{d0}'"),
-        ("range on the bare column (day)",
-         f"WHERE created_at >= TIMESTAMP '{d0}' AND created_at < TIMESTAMP '{d1}'"),
-        ("TIMESTAMP_TRUNC(created_at, MONTH) = month",
-         f"WHERE TIMESTAMP_TRUNC(created_at, MONTH) = TIMESTAMP '{m0s}'"),
-        ("range on the bare column (month)",
-         f"WHERE created_at >= TIMESTAMP '{m0s}' AND created_at < TIMESTAMP '{m1s}'"),
-        ("EXTRACT(DAY FROM created_at) = n", f"WHERE EXTRACT(DAY FROM created_at) = {day.day}"),
+        ("CAST(col AS DATE) = d", f"CAST(created_at AS DATE) = {D(d0)}", day_rng),
+        ("CAST(col AS DATE) >= d", f"CAST(created_at AS DATE) >= {D(d0)}", f"created_at >= {T(d0)}"),
+        ("CAST(col AS DATE) BETWEEN", f"CAST(created_at AS DATE) BETWEEN {D(d0)} AND {D(d1)}",
+         f"created_at >= {T(d0)} AND created_at < {T(d2)}"),
+        ("CAST(col AS DATETIME) >= d", f"CAST(created_at AS DATETIME) >= DATETIME '{d0.isoformat()}'",
+         f"created_at >= {T(d0)}"),
+        ("DATE(col) = d", f"DATE(created_at) = {D(d0)}", day_rng),
+        ("TIMESTAMP_TRUNC(col, DAY) = d", f"TIMESTAMP_TRUNC(created_at, DAY) = {T(d0)}", day_rng),
+        ("TIMESTAMP_TRUNC(col, MONTH) = m", f"TIMESTAMP_TRUNC(created_at, MONTH) = {T(m0)}", month_rng),
+        ("DATE_TRUNC(DATE(col), MONTH) = m", f"DATE_TRUNC(DATE(created_at), MONTH) = {D(m0)}", month_rng),
+        ("FORMAT_TIMESTAMP('%Y-%m-%d', col) = d",
+         f"FORMAT_TIMESTAMP('%Y-%m-%d', created_at) = '{d0.isoformat()}'", day_rng),
+        ("TIMESTAMP_ADD(col, 1 DAY) >= d", f"TIMESTAMP_ADD(created_at, INTERVAL 1 DAY) >= {T(d1)}",
+         f"created_at >= {T(d0)}"),
+        ("TIMESTAMP_SUB(col, 1 DAY) >= d", f"TIMESTAMP_SUB(created_at, INTERVAL 1 DAY) >= {T(d0 - relativedelta(days=1))}",
+         f"created_at >= {T(d0)}"),
+        ("DATE_ADD(DATE(col), 1 DAY) = d", f"DATE_ADD(DATE(created_at), INTERVAL 1 DAY) = {D(d1)}", day_rng),
+        ("DATE_SUB(DATE(col), 1 DAY) = d", f"DATE_SUB(DATE(created_at), INTERVAL 1 DAY) = {D(d0 - relativedelta(days=1))}",
+         day_rng),
+        ("col + INTERVAL 1 DAY >= d", f"created_at + INTERVAL 1 DAY >= {T(d1)}", f"created_at >= {T(d0)}"),
+        ("FORMAT_TIMESTAMP('%Y-%m', col) = m", f"FORMAT_TIMESTAMP('%Y-%m', created_at) = '{m0:%Y-%m}'", month_rng),
+        ("FORMAT_DATE('%Y-%m-%d', DATE(col)) = d",
+         f"FORMAT_DATE('%Y-%m-%d', DATE(created_at)) = '{d0.isoformat()}'", day_rng),
+        ("EXTRACT(DAY FROM col) = n", f"EXTRACT(DAY FROM created_at) = {d0.day}", None),
+        ("UNIX_SECONDS(col) >= n", "UNIX_SECONDS(created_at) >= 0", None),
     ]
     out = []
     for t, cols in (("orders", "order_id, status"), ("events", "id, uri")):
-        for label, where in forms:
-            b, err = dry_run_bytes(client, f"SELECT {cols} FROM {t} {where}", dataset, max_bytes)
-            out.append({"table": t, "filter": label, "bytes": b, "error": err})
+        for label, where, bare in forms:
+            b, err = dry_run_bytes(client, f"SELECT {cols} FROM {t} WHERE {where}", dataset, max_bytes)
+            eb, err2 = (dry_run_bytes(client, f"SELECT {cols} FROM {t} WHERE {bare}", dataset, max_bytes)
+                        if bare else (None, None))
+            out.append({"table": t, "filter": label, "bytes": b, "bare_equivalent_bytes": eb,
+                        "prunes": (b == eb) if (b is not None and eb is not None) else None,
+                        "error": err or err2})
     return out
 
 
@@ -375,9 +397,12 @@ def write_summary(rows: list[dict], project_dataset: str, price_per_tb: float, t
                     lines.append(f"- **{r['id']}** {k}: {r[f'{k}_error']}")
     if controls:
         lines += ["", "## Which filter forms prune partitions (controls)", "",
-                  "Same query, different filter on `created_at`; dry-run bytes.", "",
-                  "| table | filter | bytes |", "|---|---|---|"]
-        lines += [f"| {c['table']} | `{c['filter']}` | {fmt(c['bytes'])} |" for c in controls]
+                  "Each form vs its bare-column equivalent (dry-run bytes). Same bytes = BigQuery "
+                  "prunes through the form; this backs `static_rules.BIGQUERY_PRUNES_THROUGH`.", "",
+                  "| table | filter | bytes | bare equivalent | prunes |", "|---|---|---|---|---|"]
+        lines += [f"| {c['table']} | `{c['filter']}` | {fmt(c['bytes'])} | "
+                  f"{fmt(c['bare_equivalent_bytes']) if c['bare_equivalent_bytes'] is not None else '—'} | "
+                  f"{ {True: 'yes', False: '**no**', None: '—'}[c['prunes']] } |" for c in controls]
     if checks:
         lines += ["", "## Copies (row counts vs the public tables)", "",
                   "| table | copy rows | public rows | ratio |", "|---|---|---|---|"]

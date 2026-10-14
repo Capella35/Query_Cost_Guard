@@ -129,6 +129,15 @@ estimate and possibly verdicts, so it is a separate decision.
   fallback, e.g. for DuckDB, which has no real partitions (the "partition" is
   a date column whose zone maps let DuckDB skip blocks). A disagreement is
   traced as `partition_column.mismatch`.
+- **Function on the partition column is warehouse-aware.** DuckDB skips row
+  groups only for comparisons on the bare column, so every wrapper warns.
+  BigQuery derives partition filters through some wrappers; the parser
+  records what wraps the column (innermost first), and on BigQuery the rule
+  stays silent only when every wrapper is in `BIGQUERY_PRUNES_THROUGH`. Each
+  entry was dry-run against its bare-column equivalent and billed the same
+  bytes; measured non-pruning forms (`EXTRACT`, `UNIX_SECONDS`,
+  `col + INTERVAL`, `FORMAT_TIMESTAMP('%Y-%m', …)`, `FORMAT_DATE`) and
+  unmeasured ones still warn.
 - **Indexes are not modeled.** Both engines are columnar and scan; their
   layout tools are partitioning and clustering. Clustering columns are read
   from BigQuery but no rule uses them yet.
@@ -250,13 +259,10 @@ Never stored: SQL text, literal values, result rows.
 | 2026-10-14 | Report measures behavior, workload and modeled spend; cache deferred | Measure the opportunity before building the cache |
 | 2026-10-14 | Date-range rewrite exempt from the estimate check | It restates the filter; estimates differ only through the estimator; measured ×39–×48 on TheLook |
 | 2026-10-14 | BigQuery measured by dry run on sandbox copies (60-day window, dates moved) | Free; it turned "rewrite savings unproven" into a number: 0 bytes saved on BigQuery |
+| 2026-10-14 | Function-on-partition rule made warehouse-aware, from a measured allowlist | Dry-run pairs showed BigQuery prunes through 9 wrapper forms; unknown forms keep warning |
 
 ## 13. Open questions
 
-- Make the function-on-partition-column rule engine-aware. On BigQuery it
-  wrongly warns for forms BigQuery prunes (`CAST`/`DATE`/`TIMESTAMP_TRUNC`/
-  `FORMAT_TIMESTAMP`); it should warn there only for forms that defeat
-  pruning (e.g. `EXTRACT`). On DuckDB it is right.
 - Before offering rewrites on BigQuery, the catalog must emit BigQuery SQL:
   TIMESTAMP literals for TIMESTAMP columns, no `DATE`-vs-`TIMESTAMP`
   comparisons.
