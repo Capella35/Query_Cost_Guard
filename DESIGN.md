@@ -195,9 +195,17 @@ A refusal or error means no output: no rewrite, no explanation, judge holds.
   ≥ 20 runs, not below baseline p95 → optional judge → shadow trial →
   enforce → probation. More than 5% of real runs blocked → rollback.
 - **Adaptive anomaly rule** (warn when far above the shape's own history)
-  exists in the replay harness only. It stays out of `decide()` until its
-  false positives on drifting workloads come down (49% in the synthetic hard
-  replay). Its size check is only as good as its input, so it gets a
+  exists in the replay harness only. Its runtime check uses a **drift-aware
+  baseline** (`thresholds.DriftAwareBaseline`): a robust Theil–Sen trend on
+  log runtime, so steady growth is expected; a run is flagged only when it
+  beats the trend-expected runtime by more than the shape's own 0.99
+  residual (recurring peaks such as month-end runs are normal) and by
+  `REGRESSION_RATIO` (1.5). The trend is ignored when the history's halves
+  disagree on it, so a regression that began inside the history isn't
+  learned as normal. In the synthetic hard replay, on 10 held-out seeds:
+  false positives fall from 50.5% (flat median / p95) to 1.1%, catch from 80%
+  to 72.5% (the noisy shape's bad runs sit inside the noise by design). It
+  stays out of `decide()` until it has real history. Its size check is only as good as its input, so it gets a
   **two-way** estimate (`estimate(sql, two_way_ranges=True)`) while caps keep
   the raise-only one. Caps must never see an underestimate; the anomaly rule
   compares runs of one shape, so it needs relative accuracy. On TheLook a
@@ -268,6 +276,7 @@ Never stored: SQL text, literal values, result rows.
 | 2026-10-14 | Function-on-partition rule made warehouse-aware, from a measured allowlist | Dry-run pairs showed BigQuery prunes through 9 wrapper forms; unknown forms keep warning |
 | 2026-10-14 | Adaptive replay re-run on TheLook with DuckDB estimates vs BigQuery dry-run bytes | The synthetic replay's 100% leaned on evenly spread dates; on real dates DuckDB's estimate can't separate the windows, exact bytes can |
 | 2026-10-14 | Anomaly rule gets a two-way range estimate; caps stay raise-only | Raise-only hid the separation (×2); two-way restores it (×104) without letting a cap see an underestimate |
+| 2026-10-14 | Drift-aware runtime baselines for the anomaly rule; held-out seeds pre-registered first | Flat median/p95 flagged growth and early creep (~50% FP); trend + own-residual + 1.5× gives 1.1% FP on held-out seeds |
 | 2026-10-14 | Billing linked; full-history copies (no partition expiry) | Confirm the sandbox result on real dates: 0 of 9 again, allowlist unchanged; unprunable wrappers bill ~877× a pruned day filter on full `events` |
 
 ## 13. Open questions

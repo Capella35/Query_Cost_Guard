@@ -248,10 +248,27 @@ static-only vs static+adaptive.
   planted anomaly, small test split (6 bad / 23 good), no runtime; the
   two-way estimate assumes evenly spread values, so it can't see a window
   that is expensive only because of skew.
-- Hard variant (`--variant hard`, 240 simulated runs: gradual drift, noisy
-  durations, a legitimately 10× month-end shape, a slow creep): adaptive
-  catches 71% of bad runs with **49% false positives** — drift and creep look
-  like anomalies to a per-fingerprint rule. Adaptive does not win here.
+- Hard variant (240 simulated runs per seed: gradual drift, noisy durations,
+  a legitimately 10× month-end shape, a slow creep;
+  [`eval/RESULTS_replay_hard.md`](eval/RESULTS_replay_hard.md)). With a flat
+  baseline (median / p95) drift and creep look like anomalies: **~50% false
+  positives**. With **drift-aware baselines** (`thresholds.DriftAwareBaseline`:
+  a robust trend on log runtime, flag only beyond the shape's own 0.99
+  residual and 1.5× the trend-expected runtime, trend ignored when the
+  history's halves disagree) on 10 held-out seeds pre-registered before the
+  method existed:
+
+  | baseline | catch | false positives |
+  |---|---|---|
+  | flat (median / p95) | 80% | 50.5% |
+  | drift-aware | 72.5% | **1.1%** |
+
+  Drift no longer flags (0/180 vs 176/180); creep is caught 58/60 with no
+  false alarm on its still-acceptable runs (vs 118/120). The catch drop is
+  the noisy shape (4/20 → 0/20), whose bad runs sit inside the noise by
+  design. Limits: same generator for all seeds (guards against seed noise,
+  not against the scenario design, which the author wrote); the 0.99
+  quantile was chosen on the dev seed; simulated runtimes.
 
 **Known limitation:** no human ground truth for false positives anywhere above.
 
@@ -332,8 +349,10 @@ PYTHONPATH=src .venv/bin/python demo/demo.py
   only if range estimates start to matter near the cap: DuckDB's flat 20%
   guess (which the registry can only raise, from min/max) still runs ~2.6×
   low on TheLook's skewed dates.
-- Wire the adaptive anomaly rule into `decide()` once the hard replay's false
-  positives are addressed (drift-aware baselines).
+- Wire the adaptive anomaly rule (two-way size estimate + drift-aware
+  runtime baseline) into `decide()` / the runtime path. The replays now
+  support it; it still needs real query history, and the query log should
+  record the two-way size estimate.
 - From the 2026-10-14 external review. Measurement is built (`report`),
   results are not in yet:
   - **Do warnings change behavior?** The warn follow-through rate needs real
@@ -343,9 +362,10 @@ PYTHONPATH=src .venv/bin/python demo/demo.py
     opportunity are in the report. The cache itself waits for that
     opportunity to be measured on real traffic.
   - **Cost of being wrong:** evals now report `false_block_rate` separately
-    from `false_warn_rate`, and the report counts bypasses. The 49% false
-    positives are the adaptive rule's, in the synthetic hard replay; that
-    rule is not in `decide()` and stays out until they come down.
+    from `false_warn_rate`, and the report counts bypasses. The adaptive
+    rule's ~50% false positives in the synthetic hard replay are down to 1.1%
+    on held-out seeds with drift-aware baselines; the rule is still not in
+    `decide()`.
   - **Spend before vs after:** needs a pilot with real billing data. The
     report's weekly ledger is the in-product proxy.
 - Run and publish the live LLM evals (rewrite equivalence rate, judge
