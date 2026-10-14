@@ -199,6 +199,14 @@ def main() -> None:
         "labels_changed": sum(r["expected"] != r["expected_original"] for r in results),
         "catch_rate": round(sum(r["got"] in FLAGGED for r in bad) / len(bad), 3) if bad else None,
         "false_positive_rate": round(sum(r["got"] != "allow" for r in good) / len(good), 3) if good else None,
+        # Not all errors cost the same: a blocked good query stops someone's
+        # work (and breeds bypasses); a warned one costs a glance.
+        "false_block_rate": round(sum(r["got"] == "block" for r in good) / len(good), 3) if good else None,
+        "false_warn_rate": round(sum(r["got"] in FLAGGED and r["got"] != "block" for r in good) / len(good), 3)
+        if good else None,
+        "under_block_rate": (round(sum(r["got"] != "block" for r in results if r["expected"] == "block")
+                                   / sum(r["expected"] == "block" for r in results), 3)
+                             if any(r["expected"] == "block" for r in results) else None),
         "rewrites_expected": sum(r["expected"] == "rewrite" for r in results),
         "rewrites_offered": len(rewrites),
         "rewrite_equivalence_rate_full_data": (

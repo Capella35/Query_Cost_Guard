@@ -35,15 +35,18 @@ What exists in code today. "How it works" below only describes rows marked **bui
 | Escape hatch: block → warn only with `guard.allow_bypass: true` + a reason; traced; never for writes | **built** | `guard._maybe_bypass` |
 | JSONL tracing of every decision | **built** | `tracing.py` |
 | Runtime watchdog: per-query timeout (learned threshold or hard cap), DuckDB interrupt | **built** | `runtime.py` |
-| Query log (fingerprints + numbers, no raw SQL) and `get_query_history` | **built** | `runtime.py`, `tools/` |
+| Query log (fingerprints + numbers, no raw SQL) and `get_query_history`; optional caller id, keyed hash of the exact query (repeat detection without storing literals), offered-rewrite shape, bypass flag | **built** | `runtime.py`, `tools/` |
+| Workload report (`report`): warn follow-through (did the warned user adopt the rewrite, change the query, or re-run it unchanged), cost by query shape, result-cache opportunity, spend ledger (executed / killed / blocked, bypasses, by week). Dollars are MODELED and appear only when a price is set | **built** — measured on test logs only; no real users yet | `ledger.py` |
 | Investigator: regression check vs a pre-regression baseline, bounded tightening, rule-store lookup, episodic memory | **built** | `investigator.py` |
 | Threshold updater: deterministic gates → optional judge → shadow trial → enforce → probation, auto-rollback | **built** (offline-tested) | `thresholds.ThresholdUpdater` |
-| CLI: `check`, `run`, `investigate` | **built** | `python -m cost_guard` |
+| CLI: `check`, `run` (`--user`, `--bypass-reason`), `investigate`, `report` | **built** | `python -m cost_guard` |
 | LLM rewrite proposer, flag explainer, threshold judge (Claude) | **built, live eval not yet run** — tested with fakes; needs Anthropic credentials | `llm.py` |
 | Adaptive anomaly rule (far above own fingerprint history) | **built in the replay harness only** — not called by `decide()` | `eval/run_replay.anomaly_flag` |
 | BigQuery backend: dry-run bytes, table metadata (incl. partition column), watchdog execute | **partial** — fake-client tests only, never run on a live project; no sampled verification (rewrites fail closed) | `backends/bigquery_backend.py` |
 | BigQuery history from `INFORMATION_SCHEMA.JOBS`; telemetry exporter | **planned** (interfaces only) | `interfaces.py` |
 | Human ground truth for false positives | **planned** | — |
+| Result cache (serve identical repeats from a stored result) | **planned** — the report measures the opportunity first | — |
+| Spend before vs after from real billing (pilot + `INFORMATION_SCHEMA.JOBS`) | **planned** | — |
 
 ## How it works
 
@@ -80,6 +83,14 @@ verdict, never silently skipped.
 **Runtime:** every query that runs gets a timeout — the shape's learned
 threshold if one is enforced, else the hard cap — and lands in the query log.
 
+**Report:** `python -m cost_guard report` reads the query log and measures
+what the verdicts don't: whether warned users changed their next query
+(within 30 minutes), which query shapes cost the most in total, how often an
+identical query is recomputed within an hour (what a result cache would
+save, assuming the data did not change), and what ran, was killed or was
+blocked. Blocked work is reported as an estimate of what did not run, not as
+money saved.
+
 **Investigator:** finds shapes whose recent runs regressed against their own
 earlier baseline and proposes a tighter threshold: baseline p95 × 1.5,
 computed only from runs before the regression, moving at most 25% per update.
@@ -115,12 +126,12 @@ DuckDB; labels fixed before the Guard ran; full table in
 | exact action match, **original labels** | 26/30 (87%) |
 | exact action match, current labels (4 changed after seeing results) | 30/30 |
 | bad queries flagged (warn/rewrite/block) | 15/15 |
-| good queries flagged (false positives) | 0/15 |
+| good queries flagged (false positives) | 0/15 (0 blocked, 0 warned) |
 | rewrites offered | 4 (Q05, Q07, Q08, Q09) — all 4 equivalent on the full data |
 
 **Label changes, made after seeing results** (recorded per query under
 `label_change` in `eval/eval_queries.yaml`; `run_eval.py` reports both
-scores every run, and the original 25/30 is the honest headline):
+scores every run, and the original 26/30 is the honest headline):
 - Q01, Q11 (`SELECT *`) and Q03 (no date filter): rewrite → warn. No
   equivalent rewrite exists — dropping columns or adding a date filter
   changes the result, so a human has to choose.
@@ -137,16 +148,25 @@ held-out query set (ideally written by someone else) run once.
 
 Limits: 30 queries written by the project author; rewrite speedups are
 1.0–1.2× on ~3–12 ms queries — timing noise. DuckDB's optimizer already
-pushes filters and shares repeated scans; the catalog's benefit is clearer
-on engines billed per byte scanned or without those optimizations.
+pushes filters and shares repeated scans. **Rewrite savings are unproven:**
+the evals prove rewrites are equivalent and not costlier by estimate, not
+that they save money. The one large measured gain is a sargable date range
+on the 2.4M-row `events` table (held-out H06, ×19). Money savings need an
+engine billed per byte scanned, where pruning shows up on the bill.
 
 **Held-out set** (`eval/holdout_queries.yaml`, 30 queries): queries and
 labels committed 2026-10-14 **before any Guard run** on them, with the
-labeling guide in the file header. Not yet run. Run it once with
-`eval/run_eval.py --suite holdout`; the runner refuses a second run unless
-`--rerun` is passed and marks any rerun in `eval/RESULTS_holdout.md`.
-Limit: written by the same AI assistant that wrote the Guard's rules, so it
-is held out from the results, not independent of the author.
+labeling guide in the file header. **Run once on 2026-10-14: 29/30**
+([`eval/RESULTS_holdout.md`](eval/RESULTS_holdout.md)) — catch rate 16/16,
+1 false positive of 14 (H28, a false *warn*: a near-unique GROUP BY inside a
+CTE the outer query re-aggregates; no false blocks), 3/3 rewrites equivalent
+on the full data. Two correct verdicts were right for a weaker reason than
+their pattern suggests: H14 (unbounded sort) and H18 (NOT IN with NULLs) were
+flagged only for the missing date filter. Checks added afterwards (sort
+plan flag, long IN lists, warehouse partition column) make any rerun a
+tuning run; the runner refuses one without `--rerun`. Limit: written by the
+same AI assistant that wrote the Guard's rules, so it is held out from the
+results, not independent of the author.
 
 **Threshold gates + judge** (`eval/run_judge_eval.py`,
 [`eval/RESULTS_judge.md`](eval/RESULTS_judge.md)): 20 labeled proposals.
@@ -260,6 +280,20 @@ PYTHONPATH=src .venv/bin/python demo/demo.py
   low on TheLook's skewed dates.
 - Wire the adaptive anomaly rule into `decide()` once the hard replay's false
   positives are addressed (drift-aware baselines).
+- From the 2026-10-14 external review. Measurement is built (`report`),
+  results are not in yet:
+  - **Do warnings change behavior?** The warn follow-through rate needs real
+    analysts sending `--user`.
+  - **Do rewrites save money?** Needs per-byte billing; see the eval limits.
+  - **Workload, not query:** shapes ranked by total cost and the result-cache
+    opportunity are in the report. The cache itself waits for that
+    opportunity to be measured on real traffic.
+  - **Cost of being wrong:** evals now report `false_block_rate` separately
+    from `false_warn_rate`, and the report counts bypasses. The 49% false
+    positives are the adaptive rule's, in the synthetic hard replay; that
+    rule is not in `decide()` and stays out until they come down.
+  - **Spend before vs after:** needs a pilot with real billing data. The
+    report's weekly ledger is the in-product proxy.
 - Run and publish the live LLM evals (rewrite equivalence rate, judge
   agreement and wrongly-approved count).
 - BigQuery: live dry-run validation, sampled verification, JOBS history.

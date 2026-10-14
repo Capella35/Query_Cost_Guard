@@ -48,7 +48,14 @@ guard:
 # Modeled cost figures. Label every dollar number derived from this as MODELED.
 cost_model:
   price_per_tb_usd: 6.25
+  price_per_runtime_hour_usd: null  # set for time-billed warehouses (e.g. Snowflake
+                                    # credits/hour); used only when a run has no bytes
   warehouse_size: null          # BigQuery on-demand; set if using slots/edition
+
+# Workload report (python -m cost_guard report; src/cost_guard/ledger.py).
+report:
+  followup_window_min: 30       # after a warn, the user's next run within this counts as follow-up
+  cache_ttl_min: 60             # identical query re-run within this = result-cache opportunity
 
 # Warehouse backend. DuckDB is primary (local, zero cloud spend); BigQuery is the stretch goal.
 warehouse:

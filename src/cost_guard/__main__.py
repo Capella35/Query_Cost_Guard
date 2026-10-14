@@ -3,6 +3,8 @@
   check "SQL"      Guard verdict only (nothing executes).
   run "SQL"        Guard, then execute under the watchdog; logs to runs/query_log.jsonl.
   investigate      Baselines from the query log -> threshold proposals.
+  report           Workload report from the query log: warn follow-through,
+                   cost by query shape, result-cache opportunity, spend ledger.
 
 The warehouse is the DuckDB file from customer.yaml (warehouse.duckdb.db_path)
 unless --db is given. --llm claude enables the LLM explainer/rewrite proposer
@@ -43,6 +45,13 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("sql")
         p.add_argument("--workload", default="interactive")
         p.add_argument("--llm", choices=["none", "claude"], default="none")
+        if name == "run":
+            p.add_argument("--user", help="opaque caller id (pseudonymize upstream)")
+            p.add_argument("--bypass-reason", help="run a cost-blocked query anyway "
+                           "(only when customer.yaml guard.allow_bypass is true)")
+    p = sub.add_parser("report")
+    p.add_argument("--log", default="runs/query_log.jsonl")
+    p.add_argument("--top", type=int, default=10)
     p = sub.add_parser("investigate")
     p.add_argument("--log", default="runs/query_log.jsonl")
     p.add_argument("--workload", default="interactive")
@@ -61,7 +70,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "run":
         from .runtime import run_query
 
-        out = run_query(args.sql, _backend(args, customer), args.workload, customer=customer)
+        out = run_query(args.sql, _backend(args, customer), args.workload, customer=customer,
+                        user=args.user, bypass_reason=args.bypass_reason)
         print(json.dumps({
             "decision": out.verdict.decision,
             "reason": out.verdict.reason,
@@ -69,6 +79,13 @@ def main(argv: list[str] | None = None) -> int:
             "timeout_sec": out.timeout_sec,
         }, indent=2, default=str))
         return 2 if out.verdict.decision == "block" else 0
+
+    if args.cmd == "report":
+        from .ledger import build_report
+        from .runtime import read_log
+
+        print(json.dumps(build_report(read_log(args.log), customer, args.top), indent=2))
+        return 0
 
     if args.cmd == "investigate":
         from .investigator import investigate
