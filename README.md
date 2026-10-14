@@ -104,20 +104,23 @@ DuckDB; labels fixed before the Guard ran; full table in
 
 | | |
 |---|---|
-| exact action match | 25/30 (83%) |
+| exact action match, **original labels** | 25/30 (83%) |
+| exact action match, current labels (4 changed after seeing results) | 29/30 (97%) |
 | bad queries flagged (warn/rewrite/block) | 14/15 (93%) |
 | good queries flagged (false positives) | 0/15 |
 | rewrites offered | 4 (Q05, Q07, Q08, Q09) — all 4 equivalent on the full data |
 
-Misses (5):
-- Q01, Q11 (`SELECT *`) and Q03 (no date filter) are labeled "rewrite" but
-  get "warn": dropping columns or adding a date filter changes the result,
-  so no equivalent rewrite exists. A human has to choose the columns or the
-  dates. These labels arguably expect something no verified rewrite can do.
-- Q05 is labeled "warn" but gets a rewrite: it is the same pattern as Q08
-  (filter after a join inside a subquery), which is labeled "rewrite". The
-  two labels contradict each other; any consistent Guard misses one of them.
-- Q04 (redundant DISTINCT) is not detected at all.
+**Label changes, made after seeing results** (recorded per query under
+`label_change` in `eval/eval_queries.yaml`; `run_eval.py` reports both
+scores every run, and the original 25/30 is the honest headline):
+- Q01, Q11 (`SELECT *`) and Q03 (no date filter): rewrite → warn. No
+  equivalent rewrite exists — dropping columns or adding a date filter
+  changes the result, so a human has to choose.
+- Q05: warn → rewrite. Same pattern as Q08 (filter after a join inside a
+  subquery), which was labeled rewrite; the two labels contradicted each
+  other.
+
+Remaining miss: Q04 (redundant DISTINCT) is not detected at all.
 
 Limits: 30 queries written by the project author; rewrite speedups are
 1.0–1.2× on ~3–12 ms queries — timing noise. DuckDB's optimizer already

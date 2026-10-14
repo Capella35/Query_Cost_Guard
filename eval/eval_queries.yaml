@@ -13,8 +13,14 @@
 #
 # SQL is written for the local DuckDB TheLook load (data/thelook.duckdb, schema
 # checked with PRAGMA table_info on 2026-10-13). Labels (guard_action_expected)
-# were fixed before the Guard was run on these queries and are not tuned to it;
-# eval/run_eval.py reports misses as misses. Run on BigQuery only after
+# were fixed before the Guard was run on these queries; eval/run_eval.py
+# reports misses as misses.
+#
+# LABEL CHANGES (2026-10-14, made AFTER seeing Guard results, recorded per
+# query under `label_change`): Q01, Q03, Q11 rewrite -> warn (no equivalent
+# rewrite can exist); Q05 warn -> rewrite (contradicted Q08, same pattern).
+# eval/run_eval.py reports accuracy under BOTH the current and the original
+# labels, so the effect of these changes stays visible. Run on BigQuery only after
 # scripts/verify_schema.py and with caps set.
 #
 # --- Partitioned copies DDL (TODO: fill in after schema verification) ------------
@@ -43,8 +49,14 @@ queries:
     description: "SELECT * on a wide table when only a few columns are needed."
     sql: "SELECT * FROM users WHERE country = 'Brasil' AND traffic_source = 'Search' LIMIT 200"
     expected_effect: "Column pruning cuts bytes scanned."
-    rewrite_equivalent: true
-    guard_action_expected: rewrite
+    rewrite_equivalent: false
+    guard_action_expected: warn
+    label_change:
+      from: rewrite
+      to: warn
+      date: 2026-10-14
+      reason: "no equivalent rewrite exists: the only cheaper versions drop columns (SELECT *) or rows (adding a date filter), which changes the result; a human must choose. rewrite_equivalent was also true and is now false for the same reason"
+
 
   - id: Q02
     pair: 2
@@ -63,8 +75,14 @@ queries:
     description: "Query against a partitioned table with no partition filter."
     sql: "SELECT event_type, COUNT(*) AS n FROM events GROUP BY event_type"
     expected_effect: "Injecting the partition filter cuts bytes scanned."
-    rewrite_equivalent: true
-    guard_action_expected: rewrite
+    rewrite_equivalent: false
+    guard_action_expected: warn
+    label_change:
+      from: rewrite
+      to: warn
+      date: 2026-10-14
+      reason: "no equivalent rewrite exists: the only cheaper versions drop columns (SELECT *) or rows (adding a date filter), which changes the result; a human must choose. rewrite_equivalent was also true and is now false for the same reason"
+
 
   - id: Q04
     pair: 4
@@ -84,7 +102,13 @@ queries:
     sql: "SELECT t.order_id, t.country FROM (SELECT o.order_id, o.created_at, u.country FROM orders o JOIN users u ON u.id = o.user_id) t WHERE t.created_at >= TIMESTAMP '2023-06-01' AND t.country = 'Japan'"
     expected_effect: "Measure first; pattern still detected even if no savings."
     rewrite_equivalent: true
-    guard_action_expected: warn
+    guard_action_expected: rewrite
+    label_change:
+      from: warn
+      to: rewrite
+      date: 2026-10-14
+      reason: "same pattern as Q08 (filter after a join inside a subquery), which is labeled rewrite; the two labels contradicted each other. A verified equivalent pushdown is worth offering because whether the optimizer already does it is engine-specific"
+
 
   - id: Q06
     pair: 6
@@ -143,8 +167,14 @@ queries:
     description: "SELECT * on the wide events table."
     sql: "SELECT * FROM events WHERE created_at >= TIMESTAMP '2024-01-01'"
     expected_effect: "Column pruning cuts bytes scanned."
-    rewrite_equivalent: true
-    guard_action_expected: rewrite
+    rewrite_equivalent: false
+    guard_action_expected: warn
+    label_change:
+      from: rewrite
+      to: warn
+      date: 2026-10-14
+      reason: "no equivalent rewrite exists: the only cheaper versions drop columns (SELECT *) or rows (adding a date filter), which changes the result; a human must choose. rewrite_equivalent was also true and is now false for the same reason"
+
 
   - id: Q12
     pair: 12

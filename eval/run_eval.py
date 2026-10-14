@@ -62,6 +62,9 @@ def load_thelook_cases() -> list[dict]:
             "id": q["id"],
             "sql": q["sql"],
             "expected": q["guard_action_expected"],
+            # Label before any recorded post-hoc change (label_change in the YAML).
+            "expected_original": (q.get("label_change") or {}).get("from", q["guard_action_expected"]),
+            "label_change": q.get("label_change"),
             "pattern": q["pattern"],
             "role": q["role"],
             "pair": q["pair"],
@@ -75,7 +78,8 @@ def load_regression_cases() -> list[dict]:
     from regression_cases import CASES
 
     return [
-        {**c, "pattern": "regression", "role": "good" if c["expected"] == "allow" else "bad"}
+        {**c, "pattern": "regression", "role": "good" if c["expected"] == "allow" else "bad",
+         "expected_original": c["expected"]}
         for c in CASES
     ]
 
@@ -141,8 +145,11 @@ def main() -> None:
             "pattern": case["pattern"],
             "role": case["role"],
             "expected": case["expected"],
+            "expected_original": case.get("expected_original", case["expected"]),
             "got": v.decision,
             "ok": v.decision == case["expected"],
+            "ok_original_labels": v.decision == case.get("expected_original", case["expected"]),
+            "label_change": case.get("label_change"),
             "latency_ms": round(sum(s["t_ms"] or 0 for s in spans), 1),
             "checks": len(spans),
             "estimate_rows": v.estimated_rows,
@@ -167,6 +174,9 @@ def main() -> None:
     metrics = {
         "n": len(results),
         "exact_accuracy": round(sum(r["ok"] for r in results) / len(results), 3),
+        "exact_accuracy_original_labels": round(
+            sum(r["ok_original_labels"] for r in results) / len(results), 3),
+        "labels_changed": sum(r["expected"] != r["expected_original"] for r in results),
         "catch_rate": round(sum(r["got"] in FLAGGED for r in bad) / len(bad), 3) if bad else None,
         "false_positive_rate": round(sum(r["got"] != "allow" for r in good) / len(good), 3) if good else None,
         "rewrites_expected": sum(r["expected"] == "rewrite" for r in results),
@@ -229,7 +239,18 @@ def write_summary(ts, metrics, by_pattern, results) -> None:
     for name, p in by_pattern.items():
         lines.append(f"| {name} | {p['n']} | {p['exact']} | {p['flagged']} | "
                      f"{', '.join(i.replace('->', ' → ') for i in p['ids'])} |")
-    lines += ["", "## Misses", ""]
+    changed = [c for c in results if c["expected"] != c["expected_original"]]
+    if changed:
+        lines += ["", "## Label changes (made after seeing results)", "",
+                  f"Exact accuracy: **{sum(r['ok_original_labels'] for r in results)}/{len(results)}** "
+                  f"with the original labels, **{sum(r['ok'] for r in results)}/{len(results)}** with the "
+                  "current ones. Each change is recorded under `label_change` in "
+                  "`eval/eval_queries.yaml`.", "",
+                  "| query | original → current | Guard | reason |", "|---|---|---|---|"]
+        for r in changed:
+            reason = (r.get("label_change") or {}).get("reason", "")
+            lines.append(f"| {r['id']} | {r['expected_original']} → {r['expected']} | {r['got']} | {reason} |")
+    lines += ["", "## Misses (current labels)", ""]
     for r in results:
         if not r["ok"]:
             why = "; ".join(r["findings"]) or "no rule fired"
