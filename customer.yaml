@@ -1,0 +1,65 @@
+# Mock customer definition.
+# The pilot customer is FICTIONAL. Its "warehouse" is the public TheLook dataset
+# (bigquery-public-data.thelook_ecommerce) running in our own BigQuery project.
+customer:
+  name: "Northwind Outfitters"   # fictional e-commerce pilot customer
+  industry: e-commerce
+  pricing_model: usage           # runaways hurt the customer's bill (flat pricing would hurt our margin)
+
+# Hard caps per workload class. These NEVER adapt — learned thresholds must sit below them.
+# max_rows_processed is the DuckDB-path cost proxy (no bytes from EXPLAIN): the
+# Guard compares the plan's peak estimated row count (scans and join fan-out)
+# against it. max_bytes_scanned is the BigQuery-path cap (dry-run bytes).
+workload_classes:
+  interactive:                  # dashboards, ad-hoc exploration
+    max_bytes_scanned: 1099511627776    # 1 TB
+    max_rows_processed: 5000000         # DuckDB proxy
+    max_runtime_sec: 300                # 5 minutes
+  scheduled:                    # reports, pipelines
+    max_bytes_scanned: 5497558138880    # 5 TB
+    max_rows_processed: 50000000        # DuckDB proxy
+    max_runtime_sec: 3600               # 60 minutes
+
+# Tables treated as partitioned, and their partition column. On DuckDB the
+# "partition" is the date column whose zone maps prune row groups; on BigQuery
+# these are the partitioned copies (scripts/make_partitioned_copies.py).
+partitioned_tables:
+  orders: created_at
+  order_items: created_at
+  events: created_at
+  inventory_items: created_at
+
+# Column registry (src/cost_guard/column_registry.py): a data-profiling
+# lookup table built by scripts/build_column_registry.py on a schedule, read
+# by the Guard instead of scanning columns per query.
+column_registry:
+  max_age_days: 35            # older entries are unverified (rule skipped, visibly)
+  max_table_rows: 100000000   # size gate: larger tables are reported, not scanned
+  scan_timeout_sec: 900       # per-table profiling scan
+  use_approximate: true       # HyperLogLog distinct counts (~2% error)
+
+# Escape hatch (PROJECT_BRIEF): a blocked query runs only when this is true AND
+# the caller passes a bypass reason. Every bypass is recorded in the trace.
+guard:
+  allow_bypass: false
+
+# Modeled cost figures. Label every dollar number derived from this as MODELED.
+cost_model:
+  price_per_tb_usd: 6.25
+  warehouse_size: null          # BigQuery on-demand; set if using slots/edition
+
+# Warehouse backend. DuckDB is primary (local, zero cloud spend); BigQuery is the stretch goal.
+warehouse:
+  backend: duckdb
+  duckdb:
+    db_path: data/thelook.duckdb
+    data_dir: data/raw            # Kaggle CSVs live here (gitignored, >500 MB)
+
+# --- Stretch goal: BigQuery ---
+bigquery:
+  project: null                 # TODO: set your GCP project if/when you do the cloud path
+  dataset: thelook_ecommerce
+  location: US
+  # Project-level safety net — set BEFORE running anything, especially Q13.
+  maximum_bytes_billed: 1099511627776
+  query_timeout_sec: 3600

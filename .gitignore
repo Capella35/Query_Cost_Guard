@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+runs/
+*.jsonl
+.DS_Store
+# Kaggle CSVs (>500 MB) + local thelook.duckdb
+data/
+# generated eval reports (regenerate with eval/run_eval.py); the summaries
+# eval/RESULTS_*.md are committed on purpose
+eval/results/

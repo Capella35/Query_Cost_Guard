@@ -1,0 +1,8 @@
+pyyaml>=6.0
+duckdb>=1.1          # primary backend: local warehouse, zero cloud spend
+sqlglot>=30.0        # SQL AST for every structural check (no regex parsing)
+pytz                 # duckdb needs it to fetch TIMESTAMP WITH TIME ZONE columns
+anthropic>=1.0       # optional LLM components (rewrite proposer, explainer, judge)
+pytest>=8.0
+streamlit>=1.30      # demo UI only
+google-cloud-bigquery>=3.0  # stretch backend only

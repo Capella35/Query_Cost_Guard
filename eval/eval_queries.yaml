@@ -1,0 +1,338 @@
+# Eval set: 15 bad/good pairs (30 queries).
+# Q01-Q15 are the "bad" queries; Q16-Q30 are their "good" counterparts
+# (pair N = Q{N} [bad] + Q{N+15} [good]).
+#
+# Brief references preserved:
+#   Q02, Q14 — rewriting the bad query would CHANGE the result.
+#              Guard should WARN (allow + annotate), not auto-rewrite.
+#   Q04, Q05, Q15 — BigQuery's optimizer may already fix these patterns.
+#              Measure before claiming savings; "no savings, pattern still
+#              detected" is a valid result.
+#   Q13 — deliberately runaway join testing the long-running thresholds.
+#         Set caps (customer.yaml + project-level maximum_bytes_billed) BEFORE running it.
+#
+# SQL is written for the local DuckDB TheLook load (data/thelook.duckdb, schema
+# checked with PRAGMA table_info on 2026-10-13). Labels (guard_action_expected)
+# were fixed before the Guard was run on these queries and are not tuned to it;
+# eval/run_eval.py reports misses as misses. Run on BigQuery only after
+# scripts/verify_schema.py and with caps set.
+#
+# --- Partitioned copies DDL (TODO: fill in after schema verification) ------------
+# Public tables are probably not partitioned. Create partitioned copies in your own
+# project (one-time scan cost), e.g.:
+#   CREATE OR REPLACE TABLE `<project>.thelook_ecommerce.orders_partitioned`
+#   PARTITION BY DATE(created_at)
+#   AS SELECT * FROM `bigquery-public-data.thelook_ecommerce.orders`;
+# Repeat per table; the static rule "partitioned tables need a partition filter"
+# is evaluated against these copies.
+#
+# --- Local-first path (DuckDB, no cloud) -------------------------------------
+# Download the seven CSVs from Kaggle (free account) into data/raw/:
+#   https://www.kaggle.com/datasets/mustafakeser4/looker-ecommerce-bigquery-dataset
+# then: python scripts/load_thelook_duckdb.py --data-dir data/raw --db data/thelook.duckdb
+# Table references are bare names (no backticks/project). The "partition filter"
+# rule is evaluated against date filters on created_at (DuckDB zone maps prune
+# row groups) — no partitioned copies needed. For Q13, prefix with `timeout`.
+
+queries:
+  # ---------------- Bad queries (Q01-Q15) ----------------
+  - id: Q01
+    pair: 1
+    role: bad
+    pattern: select_star_wide_table
+    description: "SELECT * on a wide table when only a few columns are needed."
+    sql: "SELECT * FROM users WHERE country = 'Brasil' AND traffic_source = 'Search' LIMIT 200"
+    expected_effect: "Column pruning cuts bytes scanned."
+    rewrite_equivalent: true
+    guard_action_expected: rewrite
+
+  - id: Q02
+    pair: 2
+    role: bad
+    pattern: result_changing_rewrite
+    description: "A cheaper rewrite exists but would CHANGE the result (e.g. dropping a filter that looks redundant but isn't)."
+    sql: "SELECT user_id, SUM(sale_price) AS lifetime_value FROM order_items WHERE status = 'Complete' GROUP BY user_id"
+    expected_effect: "No safe rewrite; warn only."
+    rewrite_equivalent: false
+    guard_action_expected: warn
+
+  - id: Q03
+    pair: 3
+    role: bad
+    pattern: missing_partition_filter
+    description: "Query against a partitioned table with no partition filter."
+    sql: "SELECT event_type, COUNT(*) AS n FROM events GROUP BY event_type"
+    expected_effect: "Injecting the partition filter cuts bytes scanned."
+    rewrite_equivalent: true
+    guard_action_expected: rewrite
+
+  - id: Q04
+    pair: 4
+    role: bad
+    pattern: optimizer_may_fix
+    description: "Anti-pattern the BigQuery optimizer may already fix (e.g. redundant DISTINCT)."
+    sql: "SELECT DISTINCT status, COUNT(*) AS n FROM orders WHERE created_at >= TIMESTAMP '2023-07-01' AND created_at < TIMESTAMP '2023-10-01' GROUP BY status"
+    expected_effect: "Measure first; pattern still detected even if no savings."
+    rewrite_equivalent: true
+    guard_action_expected: warn
+
+  - id: Q05
+    pair: 5
+    role: bad
+    pattern: optimizer_may_fix
+    description: "Anti-pattern the BigQuery optimizer may already fix (e.g. predicate pushdown it already does)."
+    sql: "SELECT t.order_id, t.country FROM (SELECT o.order_id, o.created_at, u.country FROM orders o JOIN users u ON u.id = o.user_id) t WHERE t.created_at >= TIMESTAMP '2023-06-01' AND t.country = 'Japan'"
+    expected_effect: "Measure first; pattern still detected even if no savings."
+    rewrite_equivalent: true
+    guard_action_expected: warn
+
+  - id: Q06
+    pair: 6
+    role: bad
+    pattern: cross_join_without_condition
+    description: "Explicit CROSS JOIN with no join condition."
+    sql: "SELECT u.id AS user_id, p.id AS product_id FROM users u CROSS JOIN products p"
+    expected_effect: "Blocked before execution."
+    rewrite_equivalent: false
+    guard_action_expected: block
+
+  - id: Q07
+    pair: 7
+    role: bad
+    pattern: function_on_partition_column
+    description: "Function wrapped around the partition column in a filter (kills partition pruning)."
+    sql: "SELECT order_id, status FROM orders WHERE DATE_TRUNC('month', created_at) = TIMESTAMP '2023-06-01'"
+    expected_effect: "Rewriting to a sargable filter restores pruning."
+    rewrite_equivalent: true
+    guard_action_expected: rewrite
+
+  - id: Q08
+    pair: 8
+    role: bad
+    pattern: filter_after_join
+    description: "Filter applied after the join instead of before it."
+    sql: "SELECT j.order_id, j.sale_price FROM (SELECT oi.order_id, oi.sale_price, oi.created_at, p.category FROM order_items oi JOIN products p ON p.id = oi.product_id) j WHERE j.category = 'Jeans' AND j.created_at >= TIMESTAMP '2023-01-01'"
+    expected_effect: "Pushing the filter below the join cuts input rows."
+    rewrite_equivalent: true
+    guard_action_expected: rewrite
+
+  - id: Q09
+    pair: 9
+    role: bad
+    pattern: repeated_subquery_no_cte
+    description: "Identical subquery repeated instead of a CTE."
+    sql: "SELECT a.user_id, a.spend, b.spend AS spend_again FROM (SELECT user_id, SUM(sale_price) AS spend FROM order_items WHERE created_at >= TIMESTAMP '2023-01-01' GROUP BY user_id) a JOIN (SELECT user_id, SUM(sale_price) AS spend FROM order_items WHERE created_at >= TIMESTAMP '2023-01-01' GROUP BY user_id) b ON a.user_id = b.user_id ORDER BY a.spend DESC, a.user_id LIMIT 100"
+    expected_effect: "CTE rewrite scans once."
+    rewrite_equivalent: true
+    guard_action_expected: rewrite
+
+  - id: Q10
+    pair: 10
+    role: bad
+    pattern: unbounded_full_scan
+    description: "No date filter on a large event table — full scan."
+    sql: "SELECT traffic_source, COUNT(*) AS n FROM events GROUP BY traffic_source"
+    expected_effect: "Warn or block depending on workload-class caps."
+    rewrite_equivalent: false
+    guard_action_expected: warn
+
+  - id: Q11
+    pair: 11
+    role: bad
+    pattern: select_star_wide_table
+    description: "SELECT * on the wide events table."
+    sql: "SELECT * FROM events WHERE created_at >= TIMESTAMP '2024-01-01'"
+    expected_effect: "Column pruning cuts bytes scanned."
+    rewrite_equivalent: true
+    guard_action_expected: rewrite
+
+  - id: Q12
+    pair: 12
+    role: bad
+    pattern: implicit_comma_join_no_condition
+    description: "Comma join with a missing join condition (accidental cross product)."
+    sql: "SELECT o.order_id, u.email FROM orders o, users u WHERE o.status = 'Shipped'"
+    expected_effect: "Blocked before execution."
+    rewrite_equivalent: false
+    guard_action_expected: block
+
+  - id: Q13
+    pair: 13
+    role: bad
+    pattern: runaway_join
+    description: "DELIBERATE runaway join — tests long-running thresholds and the runtime watchdog. Set caps first."
+    sql: "SELECT a.user_id, COUNT(*) AS pairs FROM events a JOIN events b ON a.user_id = b.user_id GROUP BY a.user_id"
+    expected_effect: "Blocked pre-execution or killed by the watchdog."
+    rewrite_equivalent: false
+    guard_action_expected: block
+
+  - id: Q14
+    pair: 14
+    role: bad
+    pattern: result_changing_rewrite
+    description: "A cheaper rewrite exists but would CHANGE the result."
+    sql: "SELECT user_id, MAX(created_at) AS last_seen FROM events WHERE user_id IS NOT NULL GROUP BY user_id"
+    expected_effect: "No safe rewrite; warn only."
+    rewrite_equivalent: false
+    guard_action_expected: warn
+
+  - id: Q15
+    pair: 15
+    role: bad
+    pattern: optimizer_may_fix
+    description: "Anti-pattern the BigQuery optimizer may already fix."
+    sql: "SELECT status, COUNT(*) AS n FROM orders WHERE created_at >= TIMESTAMP '2023-01-01' GROUP BY status HAVING status <> 'Cancelled'"
+    expected_effect: "Measure first; pattern still detected even if no savings."
+    rewrite_equivalent: true
+    guard_action_expected: warn
+
+  # ---------------- Good queries (Q16-Q30) ----------------
+  - id: Q16
+    pair: 1
+    role: good
+    pattern: clean
+    description: "Same intent as Q01 with an explicit column list."
+    sql: "SELECT id, first_name, last_name, email FROM users WHERE country = 'Brasil' AND traffic_source = 'Search' LIMIT 200"
+    expected_effect: "Baseline — allow."
+    rewrite_equivalent: true
+    guard_action_expected: allow
+
+  - id: Q17
+    pair: 2
+    role: good
+    pattern: clean
+    description: "Same intent as Q02, written so no rewrite is needed."
+    sql: "SELECT user_id, SUM(sale_price) AS spend_2023 FROM order_items WHERE status = 'Complete' AND created_at >= TIMESTAMP '2023-01-01' AND created_at < TIMESTAMP '2024-01-01' GROUP BY user_id"
+    expected_effect: "Baseline — allow."
+    rewrite_equivalent: true
+    guard_action_expected: allow
+
+  - id: Q18
+    pair: 3
+    role: good
+    pattern: clean
+    description: "Same intent as Q03 with a partition filter present."
+    sql: "SELECT event_type, COUNT(*) AS n FROM events WHERE created_at >= TIMESTAMP '2023-12-01' AND created_at < TIMESTAMP '2024-01-01' GROUP BY event_type"
+    expected_effect: "Baseline — allow."
+    rewrite_equivalent: true
+    guard_action_expected: allow
+
+  - id: Q19
+    pair: 4
+    role: good
+    pattern: clean
+    description: "Same intent as Q04 without the redundant operation."
+    sql: "SELECT status, COUNT(*) AS n FROM orders WHERE created_at >= TIMESTAMP '2023-07-01' AND created_at < TIMESTAMP '2023-10-01' GROUP BY status"
+    expected_effect: "Baseline — allow."
+    rewrite_equivalent: true
+    guard_action_expected: allow
+
+  - id: Q20
+    pair: 5
+    role: good
+    pattern: clean
+    description: "Same intent as Q05 in optimizer-friendly form."
+    sql: "SELECT o.order_id, u.country FROM orders o JOIN users u ON u.id = o.user_id WHERE o.created_at >= TIMESTAMP '2023-06-01' AND u.country = 'Japan'"
+    expected_effect: "Baseline — allow."
+    rewrite_equivalent: true
+    guard_action_expected: allow
+
+  - id: Q21
+    pair: 6
+    role: good
+    pattern: clean
+    description: "Same intent as Q06 with a proper join condition."
+    sql: "SELECT p.name AS product, dc.name AS distribution_center FROM products p JOIN distribution_centers dc ON dc.id = p.distribution_center_id"
+    expected_effect: "Baseline — allow."
+    rewrite_equivalent: true
+    guard_action_expected: allow
+
+  - id: Q22
+    pair: 7
+    role: good
+    pattern: clean
+    description: "Same intent as Q07 with a sargable partition filter."
+    sql: "SELECT order_id, status FROM orders WHERE created_at >= TIMESTAMP '2023-06-01' AND created_at < TIMESTAMP '2023-07-01'"
+    expected_effect: "Baseline — allow."
+    rewrite_equivalent: true
+    guard_action_expected: allow
+
+  - id: Q23
+    pair: 8
+    role: good
+    pattern: clean
+    description: "Same intent as Q08 with the filter before the join."
+    sql: "SELECT oi.order_id, oi.sale_price FROM order_items oi JOIN (SELECT id FROM products WHERE category = 'Jeans') p ON p.id = oi.product_id WHERE oi.created_at >= TIMESTAMP '2023-01-01'"
+    expected_effect: "Baseline — allow."
+    rewrite_equivalent: true
+    guard_action_expected: allow
+
+  - id: Q24
+    pair: 9
+    role: good
+    pattern: clean
+    description: "Same intent as Q09 using a CTE."
+    sql: "WITH spend AS (SELECT user_id, SUM(sale_price) AS spend FROM order_items WHERE created_at >= TIMESTAMP '2023-01-01' GROUP BY user_id) SELECT a.user_id, a.spend, b.spend AS spend_again FROM spend a JOIN spend b ON a.user_id = b.user_id ORDER BY a.spend DESC, a.user_id LIMIT 100"
+    expected_effect: "Baseline — allow."
+    rewrite_equivalent: true
+    guard_action_expected: allow
+
+  - id: Q25
+    pair: 10
+    role: good
+    pattern: clean
+    description: "Same intent as Q10 with a bounded date filter."
+    sql: "SELECT traffic_source, COUNT(*) AS n FROM events WHERE created_at >= TIMESTAMP '2023-12-01' AND created_at < TIMESTAMP '2024-01-01' GROUP BY traffic_source"
+    expected_effect: "Baseline — allow."
+    rewrite_equivalent: true
+    guard_action_expected: allow
+
+  - id: Q26
+    pair: 11
+    role: good
+    pattern: clean
+    description: "Same intent as Q11 with an explicit column list."
+    sql: "SELECT id, user_id, session_id, event_type, uri FROM events WHERE created_at >= TIMESTAMP '2024-01-01'"
+    expected_effect: "Baseline — allow."
+    rewrite_equivalent: true
+    guard_action_expected: allow
+
+  - id: Q27
+    pair: 12
+    role: good
+    pattern: clean
+    description: "Same intent as Q12 with an explicit JOIN ... ON."
+    sql: "SELECT o.order_id, u.email FROM orders o JOIN users u ON u.id = o.user_id WHERE o.status = 'Shipped' AND o.created_at >= TIMESTAMP '2023-12-01'"
+    expected_effect: "Baseline — allow."
+    rewrite_equivalent: true
+    guard_action_expected: allow
+
+  - id: Q28
+    pair: 13
+    role: good
+    pattern: clean
+    description: "Same intent as Q13 with the join constrained (bounded, filtered)."
+    sql: "SELECT a.event_type AS step, b.event_type AS next_step, COUNT(*) AS n FROM events a JOIN events b ON a.session_id = b.session_id AND b.sequence_number = a.sequence_number + 1 WHERE a.created_at >= TIMESTAMP '2024-01-01' AND b.created_at >= TIMESTAMP '2024-01-01' GROUP BY 1, 2"
+    expected_effect: "Baseline — allow."
+    rewrite_equivalent: true
+    guard_action_expected: allow
+
+  - id: Q29
+    pair: 14
+    role: good
+    pattern: clean
+    description: "Same intent as Q14, written so no rewrite is needed."
+    sql: "SELECT user_id, MAX(created_at) AS last_seen FROM events WHERE user_id IS NOT NULL AND created_at >= TIMESTAMP '2023-10-01' GROUP BY user_id"
+    expected_effect: "Baseline — allow."
+    rewrite_equivalent: true
+    guard_action_expected: allow
+
+  - id: Q30
+    pair: 15
+    role: good
+    pattern: clean
+    description: "Same intent as Q15 in optimizer-friendly form."
+    sql: "SELECT status, COUNT(*) AS n FROM orders WHERE created_at >= TIMESTAMP '2023-01-01' AND status <> 'Cancelled' GROUP BY status"
+    expected_effect: "Baseline — allow."
+    rewrite_equivalent: true
+    guard_action_expected: allow
