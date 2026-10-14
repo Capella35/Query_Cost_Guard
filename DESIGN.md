@@ -215,6 +215,45 @@ A refusal or error means no output: no rewrite, no explanation, judge holds.
 
 ## 10. Measurement
 
+### What the tests are for
+
+One goal: keep analytics query costs under control without getting in
+analysts' way. Each group of tests answers one question about that.
+
+1. **Does the Guard make the right call before a query runs?** The 30-query
+   eval, the held-out set and the regression cases check allow / warn /
+   rewrite / block, and count the kinds of mistake separately: a wrongly
+   blocked query stops someone's work; a wrong warning costs a glance.
+   *Status:* good on the project's own queries (held-out 29/30); unknown on
+   queries written by someone else.
+2. **When it offers a cheaper version, is it the same answer, and really
+   cheaper?** Rewrite verification and the BigQuery dry runs. Same answer:
+   yes, every time. Cheaper: depends on the warehouse — up to ×48 on DuckDB,
+   0 bytes saved on BigQuery, which already does those optimizations. Hence
+   the warehouse-aware rules.
+3. **Can it learn what's normal for each recurring query, and notice when
+   something goes wrong, without crying wolf?** The replays. With DuckDB's
+   raw estimates the anomaly rule missed oversized queries; with a flat
+   baseline it flagged normal growth about half the time. With two-way
+   estimates and drift-aware baselines it catches most bad runs at ~1% false
+   alarms. *Status:* works on simulated data; not tried on real history or
+   wired into the live path.
+4. **Does it change behavior and save money?** The workload report: do
+   warned analysts fix their queries, which repeated queries cost most, what
+   a result cache would save, spend over time. *Status:* measurement built,
+   no answers yet; needs real users and real billing data.
+
+Underneath all four: **can the numbers be trusted?** Labels are fixed
+before results, label changes are recorded with both scores reported,
+held-out sets run once, eval caps are frozen, and tuned choices are named.
+A number quietly fitted to the test is useless for deciding anything.
+
+In short: 1–3 show the machinery works as designed, mostly on the project's
+own or synthetic data. 4 — whether it saves real money in real use — only a
+pilot can answer.
+
+### Evals and the report
+
 **Evals measure verdict correctness** (`eval/run_eval.py`): exact match under
 original and current labels, catch rate, and false positives split into
 `false_block_rate` (costly: stops work, breeds bypasses) and
