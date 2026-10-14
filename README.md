@@ -26,7 +26,7 @@ What exists in code today. "How it works" below only describes rows marked **bui
 | Read-only classifier: one SELECT/WITH statement, no write nodes, file/network/env functions denied, fails closed on parse errors | **built** | `sql_ast.read_only_violation` |
 | Cost estimate from DuckDB's plan (`EXPLAIN` cardinalities, incl. join fan-out), corrected where the plan is provably or measurably off: GROUP BY outputs bounded by registry distinct counts (only lowers), scans whose always-true filter the planner dropped count every row, remaining range filters can be RAISED (never lowered) from the registry's min/max; joins above recomputed. Limit: DuckDB's own flat 20% range guess still runs low on skewed data (TheLook 2023–2025 window: ~26k estimated vs 68k actual); labeled `explain+corrected`; labeled table-sum fallback | **built** | `backends/duckdb_backend.py`, `plan_estimate.py` |
 | Hard caps per workload class, loaded from `customer.yaml` (rows on DuckDB, bytes on BigQuery) | **built** | `config.py`, `guard.py` |
-| 8 static rules on the sqlglot AST: SELECT * on wide tables, missing partition filter, cartesian product, function on partition column, filter after join/HAVING without aggregate, repeated subquery, high-cardinality GROUP BY, SUM/AVG on an identifier column (by name, or near-unique per the column registry) | **built** | `rules/static_rules.py`, `sql_ast.py` |
+| 9 static rules on the sqlglot AST: SELECT * on wide tables, missing partition filter, cartesian product, function on partition column, filter after join/HAVING without aggregate, repeated subquery, high-cardinality GROUP BY, SUM/AVG on an identifier column (by name, or near-unique per the column registry), redundant DISTINCT (GROUP BY already unique, one-row aggregate, inside IN/EXISTS/UNION) | **built** | `rules/static_rules.py`, `sql_ast.py` |
 | Skipped-rule reporting on every verdict and trace | **built** | `GuardVerdict.skipped_rules` |
 | Column registry: a data-profiling lookup table (distinct count, NULL count, total rows, and min/max for numeric and date/time columns), one scan per table, stored in a local file next to the warehouse (`data/thelook.registry.duckdb`) — the build only reads the warehouse, and reading the registry is free; size gate, scan timeout, refresh modes (missing / stale / all), dropped-column cleanup; the Guard looks profiles up instead of scanning, and treats entries older than `max_age_days` as unverified | **built** (DuckDB; BigQuery not built) | `column_registry.py`, `scripts/build_column_registry.py` |
 | Deterministic rewrite catalog: repeated subquery → CTE; `DATE_TRUNC(unit, col) = X` / `CAST(col AS DATE) = X` → range on the bare column; filter after join → pushed into the derived table. No catalog entry for SELECT * or a missing date filter: any fix changes the result | **built** | `rewrites.py` |
@@ -104,9 +104,9 @@ DuckDB; labels fixed before the Guard ran; full table in
 
 | | |
 |---|---|
-| exact action match, **original labels** | 25/30 (83%) |
-| exact action match, current labels (4 changed after seeing results) | 29/30 (97%) |
-| bad queries flagged (warn/rewrite/block) | 14/15 (93%) |
+| exact action match, **original labels** | 26/30 (87%) |
+| exact action match, current labels (4 changed after seeing results) | 30/30 |
+| bad queries flagged (warn/rewrite/block) | 15/15 |
 | good queries flagged (false positives) | 0/15 |
 | rewrites offered | 4 (Q05, Q07, Q08, Q09) — all 4 equivalent on the full data |
 
@@ -120,7 +120,12 @@ scores every run, and the original 25/30 is the honest headline):
   subquery), which was labeled rewrite; the two labels contradicted each
   other.
 
-Remaining miss: Q04 (redundant DISTINCT) is not detected at all.
+**This set is no longer held out.** Every miss it showed has since been
+answered — the rewrite catalog after Q07/Q08, the redundant-DISTINCT rule
+after Q04, four label changes — and the queries and labels were written by
+the project author. 30/30 measures fit to these queries, not how the Guard
+does on queries nobody tuned against. An independent number needs a fresh,
+held-out query set (ideally written by someone else) run once.
 
 Limits: 30 queries written by the project author; rewrite speedups are
 1.0–1.2× on ~3–12 ms queries — timing noise. DuckDB's optimizer already
@@ -189,7 +194,7 @@ static-only vs static+adaptive.
 │   └── rules/static_rules.py
 ├── scripts/                  # TheLook loader, column registry build, BigQuery schema check
 ├── demo/                     # synthetic warehouse, 4-beat CLI demo, Streamlit UI
-└── tests/                    # 135 tests (TheLook-dependent ones skip without data/)
+└── tests/                    # 152 tests (TheLook-dependent ones skip without data/)
 ```
 
 ## Quickstart (local-first, no cloud)

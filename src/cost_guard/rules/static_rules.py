@@ -174,6 +174,12 @@ def no_sum_on_identifier(sql: str, metadata: dict) -> list[str]:
     return findings
 
 
+def no_redundant_distinct(sql: str, metadata: dict) -> list[str]:
+    """DISTINCT that provably cannot change the result (see
+    sql_ast.redundant_distincts). It still costs a hash/sort over every row."""
+    return sql_ast.redundant_distincts(sql_ast.parse_one(sql))
+
+
 ALL_RULES = [
     no_select_star_on_wide_tables,
     require_partition_filter,
@@ -183,6 +189,7 @@ ALL_RULES = [
     repeated_subquery_to_cte,
     no_high_cardinality_groupby,
     no_sum_on_identifier,
+    no_redundant_distinct,
 ]
 
 # Rules about query structure only: run once per query, not once per table,
@@ -191,4 +198,5 @@ QUERY_RULES = {
     no_cross_join_without_condition,
     filter_before_join,
     repeated_subquery_to_cte,
+    no_redundant_distinct,
 }

@@ -224,6 +224,60 @@ def table_aliases(tree: exp.Expression, table: str) -> set[str]:
     }
 
 
+def redundant_distincts(tree: exp.Expression) -> list[str]:
+    """SELECT DISTINCTs that provably cannot change the result:
+
+    1. GROUP BY already makes rows unique — every grouped expression is in
+       the select list (directly, by alias, or by ordinal);
+    2. the select list is all aggregates with no GROUP BY — one row;
+    3. duplicates are irrelevant where the SELECT sits: an IN (...) or
+       EXISTS (...) subquery, or an arm of a deduplicating UNION.
+
+    Skipped: DISTINCT ON, ROLLUP/CUBE/GROUPING SETS (subtotal rows can
+    collide with real NULL keys), window functions.
+    """
+    out: list[str] = []
+    for sel in tree.find_all(exp.Select):
+        d = sel.args.get("distinct")
+        if d is None or d.args.get("on") is not None or sel.find(exp.Window) is not None:
+            continue
+        parent = sel.parent
+        if isinstance(parent, exp.Subquery) and isinstance(parent.parent, exp.In):
+            out.append("SELECT DISTINCT inside IN (...) — membership ignores duplicates; drop DISTINCT")
+            continue
+        if isinstance(parent, exp.Exists):
+            out.append("SELECT DISTINCT inside EXISTS (...) — existence ignores duplicates; drop DISTINCT")
+            continue
+        if isinstance(parent, exp.Union) and parent.args.get("distinct"):
+            out.append("SELECT DISTINCT inside a UNION that already deduplicates; drop DISTINCT")
+            continue
+        group = sel.args.get("group")
+        projections = sel.expressions
+        if group is None:
+            if projections and all(
+                e.unalias().find(exp.AggFunc) is not None and not isinstance(e.unalias(), exp.Column)
+                for e in projections
+            ):
+                out.append("SELECT DISTINCT over aggregates with no GROUP BY — the result is "
+                           "one row; drop DISTINCT")
+            continue
+        if group.find(exp.Rollup, exp.Cube, exp.GroupingSets) is not None:
+            continue
+        proj_sql = {e.unalias().sql(dialect=DIALECT).lower() for e in projections}
+        aliases = {e.alias.lower() for e in projections if e.alias}
+        keys = group.expressions
+        if keys and all(
+            (isinstance(k, exp.Literal) and not k.is_string)  # GROUP BY 1, 2 -> in the list
+            or k.sql(dialect=DIALECT).lower() in proj_sql
+            or (isinstance(k, exp.Column) and not k.table and k.name.lower() in aliases)
+            for k in keys
+        ):
+            cols = ", ".join(k.sql(dialect=DIALECT) for k in keys)
+            out.append(f"SELECT DISTINCT is redundant: GROUP BY {cols} already makes every "
+                       "row unique; drop DISTINCT (the engine may already skip it)")
+    return list(dict.fromkeys(out))
+
+
 def has_order_by(tree: exp.Expression) -> bool:
     """Top-level ORDER BY — decides whether result order is part of the answer."""
     return tree.args.get("order") is not None
