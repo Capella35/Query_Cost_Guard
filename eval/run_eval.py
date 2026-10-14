@@ -73,7 +73,7 @@ def load_thelook_cases(filename: str = "eval_queries.yaml") -> list[dict]:
             "label_change": q.get("label_change"),
             "pattern": q["pattern"],
             "role": q["role"],
-            "pair": q["pair"],
+            "pair": q.get("pair"),  # only eval_queries.yaml is built in pairs
             "why": q["description"],
         }
         for q in data["queries"]
