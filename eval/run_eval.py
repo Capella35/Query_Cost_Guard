@@ -152,10 +152,13 @@ def main() -> None:
 
         llm = ClaudeLLM(backend=wh)
 
+    from eval_config import load_eval_customer
+
+    customer = load_eval_customer()  # caps the labels were written under
     tracer = Tracer()
     results = []
     for case in cases:
-        v = decide(case["sql"], backend=wh, tracer=tracer, llm=llm)
+        v = decide(case["sql"], customer=customer, backend=wh, tracer=tracer, llm=llm)
         spans = [s for s in tracer.spans if s["name"] != "guard.decide"]
         r = {
             "id": case["id"],

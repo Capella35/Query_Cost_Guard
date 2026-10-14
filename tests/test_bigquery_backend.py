@@ -35,17 +35,17 @@ class FakeClient:
 
 
 def test_dry_run_estimate_and_bytes_cap():
-    fake = FakeClient(nbytes=2 * 1024**4)  # 2 TB > 1 TB interactive cap
+    fake = FakeClient(nbytes=500 * 1024**3)  # 500 GB: over the 200 GB interactive cap, under 1 TB scheduled
     wh = BigQueryWarehouse("proj", client=fake)
     est = wh.estimate("SELECT order_id FROM orders")
-    assert est.source == "dry_run" and est.estimated_bytes_scanned == 2 * 1024**4
+    assert est.source == "dry_run" and est.estimated_bytes_scanned == 500 * 1024**3
     assert fake.configs[0].dry_run and fake.configs[0].maximum_bytes_billed
     v = decide("SELECT order_id FROM orders WHERE created_at >= '2024-01-01'",
                backend=wh, tracer=Tracer())
     assert v.decision == "block" and "bytes scanned" in v.reason
     sched = decide("SELECT order_id FROM orders WHERE created_at >= '2024-01-01'",
                    "scheduled", backend=wh, tracer=Tracer())
-    assert sched.decision != "block"  # 5 TB scheduled cap
+    assert sched.decision != "block"  # 1 TB scheduled cap
 
 
 def test_metadata_and_watchdog_config():

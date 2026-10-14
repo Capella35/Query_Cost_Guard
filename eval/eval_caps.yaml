@@ -1,0 +1,21 @@
+# Hard caps the eval labels were written under — FROZEN.
+#
+# The eval sets (eval_queries.yaml, holdout_queries.yaml, regression_cases.py)
+# and the replay were labeled against these caps; the held-out labeling guide
+# names the 5,000,000-row interactive cap explicitly. The runners overlay these
+# workload_classes onto customer.yaml, so a production policy change does not
+# silently re-score labels written under the old policy. Everything else
+# (partitioned tables, registry settings) still comes from customer.yaml.
+#
+# Production caps changed on 2026-10-14 (customer.yaml): rows 1M / 10M,
+# bytes 200 GB / 1 TB, runtime 60 s / 600 s. Re-labeling the sets to the new
+# caps is a separate, recorded change (label_change), not an edit here.
+workload_classes:
+  interactive:
+    max_bytes_scanned: 1099511627776    # 1 TB
+    max_rows_processed: 5000000
+    max_runtime_sec: 300
+  scheduled:
+    max_bytes_scanned: 5497558138880    # 5 TB
+    max_rows_processed: 50000000
+    max_runtime_sec: 3600

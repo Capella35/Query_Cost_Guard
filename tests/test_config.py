@@ -12,9 +12,10 @@ from cost_guard.tracing import Tracer
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Synthetic events self-join: EXPLAIN estimates ~21M rows — between the
-# interactive (5M) and scheduled (50M) caps.
-SELF_JOIN = "SELECT a.user_id FROM events a JOIN events b ON a.user_id = b.user_id"
+# Synthetic orders x events join: EXPLAIN estimates ~2M rows — between the
+# interactive (1M) and scheduled (10M) caps.
+BETWEEN_CAPS = ("SELECT o.order_id, e.event_id FROM orders o JOIN events e "
+                "ON e.user_id = o.user_id WHERE o.created_at >= '2024-06-01'")
 
 
 def test_load_customer_has_distinct_caps():
@@ -26,8 +27,12 @@ def test_load_customer_has_distinct_caps():
 
 
 def test_interactive_vs_scheduled_differ(synthetic_wh):
-    v_i = decide(SELF_JOIN, "interactive", backend=synthetic_wh, tracer=Tracer())
-    v_s = decide(SELF_JOIN, "scheduled", backend=synthetic_wh, tracer=Tracer())
+    cfg = load_customer()
+    rows = synthetic_wh.estimate(BETWEEN_CAPS).rows_processed
+    assert (caps_for(cfg, "interactive")["max_rows_processed"] < rows
+            <= caps_for(cfg, "scheduled")["max_rows_processed"])  # the query still fits the test
+    v_i = decide(BETWEEN_CAPS, "interactive", backend=synthetic_wh, tracer=Tracer())
+    v_s = decide(BETWEEN_CAPS, "scheduled", backend=synthetic_wh, tracer=Tracer())
     assert v_i.decision == "block" and "interactive hard cap" in v_i.reason
     assert v_s.decision != "block"
     assert v_i.caps != v_s.caps

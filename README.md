@@ -98,6 +98,14 @@ never rows.
 
 All numbers below regenerate from the scripts named; each has its limits next to it.
 
+**Caps the evals run under:** every eval below (and the regression tests) runs
+with the caps its labels were written under — 5M / 50M rows, 1 TB / 5 TB,
+300 s / 3600 s — frozen in `eval/eval_caps.yaml` and overlaid on
+`customer.yaml`. Production caps were tightened on 2026-10-14 to 1M / 10M rows,
+200 GB / 1 TB, 60 s / 600 s. Under the new row cap, four warn-labeled full
+scans of 1M–2.4M-row tables (Q03, Q10, E06, E10) would block; re-scoring the
+sets against the new caps would mean relabeling them, as a recorded change.
+
 **Guard on 30 TheLook queries** (`eval/run_eval.py`, real Kaggle TheLook data in
 DuckDB; labels fixed before the Guard ran; full table in
 [`eval/RESULTS_thelook.md`](eval/RESULTS_thelook.md)), no LLM:

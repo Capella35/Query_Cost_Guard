@@ -88,7 +88,7 @@ def investigate(
     store: BaselineStore,
     memory: EpisodicMemory,
     rules: Optional[RuleStore] = None,
-    hard_cap_sec: float = 300.0,
+    hard_cap_sec: float = 60.0,
     max_move: float = 0.25,
     recent_window: int = 5,
 ) -> InvestigationReport:

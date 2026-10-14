@@ -41,7 +41,10 @@ sys.path.insert(0, str(ROOT / "demo"))
 
 from warehouse import build_synthetic_warehouse
 from cost_guard.guard import decide
+from eval_config import load_eval_customer  # noqa: E402
 from cost_guard.thresholds import BaselineStore, FingerprintStats
+
+EVAL_CUSTOMER = load_eval_customer()  # caps the replay labels were written under
 
 EXEC_TIMEOUT_SEC = 45  # defensive; authored queries finish in << 1 s
 COLD_START_RUNS = 20  # brief: static rules only below ~20 runs per fingerprint
@@ -186,7 +189,7 @@ def run_standard() -> None:
     store = BaselineStore(min_runs_for_adaptive=COLD_START_RUNS)
     skipped = 0
     for rec in history:
-        verdict = decide(rec["sql"], backend=wh)
+        verdict = decide(rec["sql"], customer=EVAL_CUSTOMER, backend=wh)
         if verdict.decision == "block":
             continue  # never runs; contributes no runtime baseline
         est = wh.estimate(rec["sql"])
@@ -205,7 +208,7 @@ def run_standard() -> None:
     # Phase 2: replay test queries through both modes.
     rows = []
     for rec in test:
-        verdict = decide(rec["sql"], backend=wh)
+        verdict = decide(rec["sql"], customer=EVAL_CUSTOMER, backend=wh)
         est = wh.estimate(rec["sql"])
         dur = None
         if verdict.decision != "block":

@@ -12,13 +12,13 @@ customer:
 # against it. max_bytes_scanned is the BigQuery-path cap (dry-run bytes).
 workload_classes:
   interactive:                  # dashboards, ad-hoc exploration
-    max_bytes_scanned: 1099511627776    # 1 TB
-    max_rows_processed: 5000000         # DuckDB proxy
-    max_runtime_sec: 300                # 5 minutes
+    max_bytes_scanned: 214748364800     # 200 GB
+    max_rows_processed: 1000000         # DuckDB proxy
+    max_runtime_sec: 60                 # 1 minute
   scheduled:                    # reports, pipelines
-    max_bytes_scanned: 5497558138880    # 5 TB
-    max_rows_processed: 50000000        # DuckDB proxy
-    max_runtime_sec: 3600               # 60 minutes
+    max_bytes_scanned: 1099511627776    # 1 TB
+    max_rows_processed: 10000000        # DuckDB proxy
+    max_runtime_sec: 600                # 10 minutes
 
 # Tables treated as partitioned, and their partition column — the FALLBACK.
 # When the warehouse reports a table's partitioning (BigQuery), that wins and a
