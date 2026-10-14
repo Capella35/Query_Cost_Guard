@@ -9,6 +9,8 @@ tighter per-query-shape runtime thresholds.
 > goal). Nothing here touches a real customer's data or spends real money.
 > See `customer.yaml`.
 
+Design principles, trade-offs and the decision log: [DESIGN.md](DESIGN.md).
+
 ## The problem
 
 Analytics platforms run on shared, usage-billed warehouses. The people writing
