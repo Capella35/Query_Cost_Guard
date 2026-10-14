@@ -72,7 +72,7 @@ def no_cross_join_without_condition(sql: str, metadata: dict) -> list[str]:
 
 # Wrappers BigQuery still prunes through, on a table partitioned by
 # DATE(col): each was dry-run against its bare-column equivalent and billed
-# the same bytes (2026-10-14, TheLook events; eval/RESULTS_bq_dryrun.md).
+# the same bytes (2026-10-14, TheLook orders + events; eval/RESULTS_bq_dryrun_*.md).
 # Measured NOT to prune: EXTRACT, UNIX_SECONDS, col + INTERVAL,
 # FORMAT_TIMESTAMP('%Y-%m', ...), FORMAT_DATE(...), CAST(col AS STRING).
 # Anything not listed still warns.

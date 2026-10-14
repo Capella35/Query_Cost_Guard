@@ -156,7 +156,7 @@ that they save money. The one large measured gain is a sargable date range
 on the 2.4M-row `events` table (held-out H06, ×19).
 
 **BigQuery dry run** (`scripts/bq_dryrun_compare.py`,
-[`eval/RESULTS_bq_dryrun.md`](eval/RESULTS_bq_dryrun.md); dry runs only,
+[`eval/RESULTS_bq_dryrun_sandbox.md`](eval/RESULTS_bq_dryrun_sandbox.md); dry runs only,
 nothing executed): **0 of 9 rewrites bill fewer bytes than their original**
 on copies partitioned by `DATE(created_at)`. BigQuery already prunes
 partitions for `CAST(col AS DATE) = X`, `DATE(col) = X`,

@@ -103,7 +103,7 @@ def test_ingestion_time_partition_filter():
 
 
 # Warehouse-aware no_function_on_partition_column: forms measured by dry run
-# (eval/RESULTS_bq_dryrun.md) to prune on BigQuery don't warn there; they
+# (eval/RESULTS_bq_dryrun_*.md) to prune on BigQuery don't warn there; they
 # still warn on DuckDB, which only skips row groups for the bare column.
 PRUNED_ON_BQ = [
     "CAST(created_at AS DATE) = DATE '2024-03-01'",

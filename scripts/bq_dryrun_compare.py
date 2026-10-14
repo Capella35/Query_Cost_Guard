@@ -19,13 +19,17 @@ Steps:
   3. Each original and rewrite is adapted to BigQuery SQL (see to_bigquery),
      dry-run against the partitioned copies, and compared.
 
-Output: eval/RESULTS_bq_dryrun.md and eval/results/bq_dryrun_<ts>.json.
+Output: eval/RESULTS_bq_dryrun_full.md (full history) or
+eval/RESULTS_bq_dryrun_sandbox.md (--recent-window), and
+eval/results/bq_dryrun_<ts>.json.
 Dollars are MODELED from customer.yaml price_per_tb_usd.
 
 Run:
   .venv/bin/python scripts/bq_dryrun_compare.py --project $GCP_PROJECT --plan-copies   # bytes only
   .venv/bin/python scripts/bq_dryrun_compare.py --project $GCP_PROJECT --create-copies
   .venv/bin/python scripts/bq_dryrun_compare.py --project $GCP_PROJECT
+  # sandbox (60-day partition expiry): --recent-window; after linking billing:
+  .venv/bin/python scripts/bq_dryrun_compare.py --project $GCP_PROJECT --create-copies --recreate
 """
 from __future__ import annotations
 
@@ -225,7 +229,7 @@ def dry_run_bytes(client, sql: str, dataset: str | None, max_bytes: int):
 
 
 def create_copies(client, project: str, dataset: str, location: str, max_bytes: int,
-                  plan_only: bool = False) -> None:
+                  plan_only: bool = False, recreate: bool = False) -> None:
     from google.cloud import bigquery
 
     ddl = [(t, f"CREATE TABLE IF NOT EXISTS `{project}.{dataset}.{t}` "
@@ -245,9 +249,22 @@ def create_copies(client, project: str, dataset: str, location: str, max_bytes: 
         return
     ds = bigquery.Dataset(f"{project}.{dataset}")
     ds.location = location
-    client.create_dataset(ds, exists_ok=True)
+    ds = client.create_dataset(ds, exists_ok=True)
+    if recreate:
+        # Sandbox datasets carry 60-day defaults; with billing linked they can be
+        # cleared, and new tables then keep every partition.
+        ds.default_partition_expiration_ms = None
+        ds.default_table_expiration_ms = None
+        client.update_dataset(ds, ["default_partition_expiration_ms", "default_table_expiration_ms"])
+        ddl = [(t, sql.replace("CREATE TABLE IF NOT EXISTS", "CREATE OR REPLACE TABLE")
+                      .replace("CREATE VIEW IF NOT EXISTS", "CREATE OR REPLACE VIEW")) for t, sql in ddl]
     for t, sql in ddl:
         client.query(sql, job_config=bigquery.QueryJobConfig(maximum_bytes_billed=max_bytes)).result()
+        if t in PARTITIONED and recreate:
+            tbl = client.get_table(f"{project}.{dataset}.{t}")
+            if tbl.partition_expiration is not None:
+                tbl.partition_expiration = None
+                client.update_table(tbl, ["partition_expiration"])
         print(f"  created {t}")
 
 
@@ -409,7 +426,7 @@ def write_summary(rows: list[dict], project_dataset: str, price_per_tb: float, t
         lines += [f"| {c['table']} | {c['copy_rows']:,} | {c['public_rows']:,} | {c['ratio']} |" for c in checks]
     lines += ["", "Cases: the 30-query set's rewrites (a tuning set), the held-out set's rewrites "
               "as recorded by its first run, and X1/X2 (`CAST(created_at AS DATE) = X`)."]
-    dest = ROOT / "eval" / "RESULTS_bq_dryrun.md"
+    dest = ROOT / "eval" / ("RESULTS_bq_dryrun_sandbox.md" if shifts is not None else "RESULTS_bq_dryrun_full.md")
     dest.write_text("\n".join(lines) + "\n")
     return dest
 
@@ -425,6 +442,9 @@ def main() -> None:
                     help="cap for every job, including the copy step (default 20 GiB)")
     ap.add_argument("--create-copies", action="store_true",
                     help="create the partitioned copies first (runs queries; see the dry-run bytes it prints)")
+    ap.add_argument("--recreate", action="store_true",
+                    help="with --create-copies: clear the dataset's expiry defaults and replace "
+                         "the copies (needs billing linked; the sandbox keeps 60 days)")
     ap.add_argument("--plan-copies", action="store_true",
                     help="only print the bytes the copy step would process, then exit")
     ap.add_argument("--recent-window", action="store_true",
@@ -438,7 +458,7 @@ def main() -> None:
     client = bigquery.Client(project=args.project, location=args.location)
     if args.plan_copies or args.create_copies:
         create_copies(client, args.project, args.dataset, args.location, args.max_bytes_billed,
-                      plan_only=args.plan_copies)
+                      plan_only=args.plan_copies, recreate=args.recreate)
         if args.plan_copies:
             return
     checks = check_copies(client, args.project, args.dataset)
