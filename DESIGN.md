@@ -163,7 +163,7 @@ TheLook that rewrite measured ×39–×48.
 **Savings are engine-specific, and none are claimed.** The evals prove equivalence. On DuckDB
 the date-range fix measured ×39–×48; the others ~1× (its optimizer already
 pushes filters). On BigQuery, dry runs bill **the same bytes** for all nine
-rewrites: BigQuery itself prunes `CAST(col AS DATE)`, `DATE(col)`,
+rewrites, on both the 60-day sandbox copies and the full history: BigQuery itself prunes `CAST(col AS DATE)`, `DATE(col)`,
 `TIMESTAMP_TRUNC(col, …)` and `FORMAT_TIMESTAMP(…)` filters on a
 `DATE(col)`-partitioned table, and already pushes filters and reuses
 repeated subqueries. Only forms such as `EXTRACT(DAY FROM col)` defeat
@@ -260,6 +260,7 @@ Never stored: SQL text, literal values, result rows.
 | 2026-10-14 | Date-range rewrite exempt from the estimate check | It restates the filter; estimates differ only through the estimator; measured ×39–×48 on TheLook |
 | 2026-10-14 | BigQuery measured by dry run on sandbox copies (60-day window, dates moved) | Free; it turned "rewrite savings unproven" into a number: 0 bytes saved on BigQuery |
 | 2026-10-14 | Function-on-partition rule made warehouse-aware, from a measured allowlist | Dry-run pairs showed BigQuery prunes through 9 wrapper forms; unknown forms keep warning |
+| 2026-10-14 | Billing linked; full-history copies (no partition expiry) | Confirm the sandbox result on real dates: 0 of 9 again, allowlist unchanged; unprunable wrappers bill ~877× a pruned day filter on full `events` |
 
 ## 13. Open questions
 

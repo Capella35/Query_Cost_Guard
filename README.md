@@ -155,25 +155,39 @@ the evals prove rewrites are equivalent and not costlier by estimate, not
 that they save money. The one large measured gain is a sargable date range
 on the 2.4M-row `events` table (held-out H06, ×19).
 
-**BigQuery dry run** (`scripts/bq_dryrun_compare.py`,
-[`eval/RESULTS_bq_dryrun_sandbox.md`](eval/RESULTS_bq_dryrun_sandbox.md); dry runs only,
-nothing executed): **0 of 9 rewrites bill fewer bytes than their original**
-on copies partitioned by `DATE(created_at)`. BigQuery already prunes
-partitions for `CAST(col AS DATE) = X`, `DATE(col) = X`,
-`TIMESTAMP_TRUNC(col, MONTH) = X` and even `FORMAT_TIMESTAMP(...) = X`, and
-its optimizer already does the pushdown and the CTE. Of the forms tried, only
-`EXTRACT(DAY FROM col) = n` could not prune (more bytes than no filter at all).
-So on BigQuery the date-range rewrite saves nothing. The "function on the
-partition column prevents pruning" rule is now **warehouse-aware**: on
-BigQuery it warns only for wrappers not measured to prune
-(`static_rules.BIGQUERY_PRUNES_THROUGH`, each backed by a dry-run pair in the
-results file); on DuckDB every wrapper still warns. On
-DuckDB, which does not prune them, the same rewrite measured ×39–×48. Limits: sandbox copies hold
-only the last ~60 days (the sandbox drops older partitions), so each case's
-dates were moved into last month. That doesn't change a 0% result, since
-original and rewrite prune the same partitions. The rewrites themselves are
-DuckDB SQL: BigQuery rejects them as-is (TIMESTAMP vs DATE comparisons)
-until the catalog emits BigQuery types.
+**Rewrite savings across warehouses** (`scripts/bq_dryrun_compare.py`;
+[`eval/RESULTS_bq_dryrun_full.md`](eval/RESULTS_bq_dryrun_full.md),
+[`eval/RESULTS_bq_dryrun_sandbox.md`](eval/RESULTS_bq_dryrun_sandbox.md)).
+BigQuery figures are dry runs (nothing executed) on TheLook copies
+partitioned by `DATE(created_at)`; DuckDB figures are measured runtime.
+
+| case | rewrite | DuckDB runtime | BigQuery bytes, sandbox (60 days, dates moved) | BigQuery bytes, full history |
+|---|---|---|---|---|
+| X1 `CAST(created_at AS DATE) = X` on `orders` | date range | ×38.7 | same (1.3 KB) | same (344 B) |
+| X2 same on `events` | date range | ×48.4 | same (17.8 KB) | same (6.1 KB) |
+| H06 `CAST(...) = X` on `orders` | date range | ×19.1 | same | same |
+| Q07, H25 `DATE_TRUNC('month', …) = X` | date range | ~1× (×1.1–1.3, ms noise) | same | same |
+| Q05, Q08, H16 | filter pushdown | ~1× (×0.92–1.13) | same | same |
+| Q09 | CTE | ~1× (×1.08–1.12) | same | same |
+
+**0 of 9 rewrites bill fewer bytes on BigQuery**, on either the 60-day
+sandbox copies or the full history. BigQuery already prunes partitions
+through `CAST(col AS DATE)`, `DATE(col)`, `TIMESTAMP_TRUNC`/`DATE_TRUNC`,
+`TIMESTAMP_ADD/SUB`, `DATE_ADD/SUB` and `FORMAT_TIMESTAMP('%Y-%m-%d', …)`;
+each billed exactly what its bare-column range bills. Its optimizer also
+already does the pushdown and the CTE. The date-range rewrite pays off only on
+DuckDB, which can't prune through those wrappers.
+
+What the rule still protects against on BigQuery is wrappers that do defeat
+pruning: `EXTRACT`, `UNIX_SECONDS`, `col + INTERVAL`,
+`FORMAT_TIMESTAMP('%Y-%m', …)` and `FORMAT_DATE`. On the full `events`
+history, a one-day filter written that way bills **87.7 MiB instead of
+0.1 MiB** (~877×; ~68× on the 60-day sandbox copy). So the rule is now
+**warehouse-aware**: on BigQuery it warns only for wrappers not measured
+to prune (`static_rules.BIGQUERY_PRUNES_THROUGH`, re-checked on every run);
+on DuckDB every wrapper still warns. The rewrites themselves are DuckDB SQL:
+BigQuery rejects them as-is (TIMESTAMP-vs-DATE comparisons) until the
+catalog emits BigQuery types.
 
 **Held-out set** (`eval/holdout_queries.yaml`, 30 queries): queries and
 labels committed 2026-10-14 **before any Guard run** on them, with the
