@@ -327,17 +327,51 @@ HARD_DEV_SEED = 7
 HARD_HELDOUT_SEEDS = tuple(range(101, 111))
 
 
-def score_hard(seed: int, flag_fn=None) -> tuple[dict, list[dict]]:
-    """(per-fingerprint counts, rows) for one seed of the hard traffic."""
-    flag_fn = flag_fn or (lambda stats, rec: anomaly_flag(stats, rec["rows"], rec["dur"]))
+def drift_aware_flag(stats: FingerprintStats | None, baseline, rows_scanned, t_h: float,
+                     duration_sec: float | None, min_runs: int = COLD_START_RUNS) -> str | None:
+    """The anomaly rule with a drift-aware runtime clause: the size clause is
+    unchanged; runtime is compared with the shape's trend-expected runtime
+    (thresholds.DriftAwareBaseline) instead of its flat median/p95."""
+    from cost_guard.investigator import REGRESSION_RATIO
+
+    if stats is None or stats.run_count < min_runs:
+        return None
+    size = anomaly_flag(stats, rows_scanned, None, min_runs)  # size clause only
+    if size:
+        return size
+    if (baseline is not None and duration_sec is not None and duration_sec > MIN_ABS_DURATION_SEC
+            and baseline.is_anomaly(t_h, duration_sec, REGRESSION_RATIO)):
+        return (f"adaptive anomaly: runtime {duration_sec:.2f}s is "
+                f"{baseline.excess(t_h, duration_sec):.1f}x the shape's trend-expected "
+                f"{baseline.expected(t_h):.2f}s ({baseline.runs} runs, trend "
+                f"{'used' if baseline.trend_trusted else 'not trusted: flat'})")
+    return None
+
+
+def score_hard(seed: int, method: str = "flat") -> tuple[dict, list[dict]]:
+    """(per-fingerprint counts, rows) for one seed of the hard traffic.
+    method: "flat" (median/p95 of history, the current rule) or "drift"."""
+    from cost_guard.thresholds import DriftAwareBaseline
+
     traffic = gen_hard_traffic(seed)
     history, test = split_chronological(traffic)
+    t0 = traffic[0]["ts"]
+    hours = lambda rec: (rec["ts"] - t0).total_seconds() / 3600  # noqa: E731
     stats: dict[str, FingerprintStats] = {}
     for rec in history:
         stats.setdefault(rec["fp"], FingerprintStats(rec["fp"])).runs.append((rec["rows"], rec["dur"]))
+    baselines = {}
+    if method == "drift":
+        for fp in stats:
+            h = [r for r in history if r["fp"] == fp]
+            baselines[fp] = DriftAwareBaseline.fit([hours(r) for r in h], [r["dur"] for r in h])
     rows = []
     for rec in test:
-        flag = flag_fn(stats.get(rec["fp"]), rec)
+        if method == "drift":
+            flag = drift_aware_flag(stats.get(rec["fp"]), baselines.get(rec["fp"]), rec["rows"],
+                                    hours(rec), rec["dur"])
+        else:
+            flag = anomaly_flag(stats.get(rec["fp"]), rec["rows"], rec["dur"])
         rows.append({"fp": rec["fp"], "label": rec["label"], "duration_sec": round(rec["dur"], 3),
                      "caught_adaptive": flag is not None})
     per_fp = {}
@@ -362,10 +396,10 @@ def aggregate(per_fps: list[dict]) -> dict:
             "false_positive_rate": round(sum(v["false_pos"] for v in tot.values()) / good, 3) if good else None}
 
 
-def run_hard_heldout() -> dict:
-    """The current anomaly rule on the pre-registered held-out seeds."""
-    agg = aggregate([score_hard(s)[0] for s in HARD_HELDOUT_SEEDS])
-    print(f"hard variant, held-out seeds {HARD_HELDOUT_SEEDS[0]}-{HARD_HELDOUT_SEEDS[-1]}: "
+def run_hard_heldout(method: str = "flat") -> dict:
+    """An anomaly-rule method on the pre-registered held-out seeds."""
+    agg = aggregate([score_hard(s, method)[0] for s in HARD_HELDOUT_SEEDS])
+    print(f"hard variant [{method}], held-out seeds {HARD_HELDOUT_SEEDS[0]}-{HARD_HELDOUT_SEEDS[-1]}: "
           f"catch {agg['catch_rate']}  false-pos {agg['false_positive_rate']}")
     for fp, v in agg["per_fingerprint"].items():
         print(f"  {fp:<14}{v['bad']:>4}{v['caught']:>8}{v['good']:>6}{v['false_pos']:>11}")

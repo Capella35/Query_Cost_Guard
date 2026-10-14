@@ -83,6 +83,75 @@ class FingerprintStats:
 
 
 @dataclass
+class DriftAwareBaseline:
+    """Expected runtime for a query shape that may drift (e.g. a table that
+    grows): a robust trend on log(runtime) over time, plus how far above the
+    trend this shape's runs normally land.
+
+    A run is anomalous when it beats its trend-expected runtime by more than
+    both (a) the history's own `residual_q` residual quantile — the shape's
+    normal spread, recurring peaks included — and (b) `min_ratio`.
+    residual_q is 0.99 (≈ the largest past residual at 20–100 runs) because a
+    legitimate recurring peak (a 10x month-end run, ~10% of runs) has its own
+    spread: at 0.95 the threshold sat on the lowest peak and flagged the next
+    one. Found on the hard replay's development seed, so it is a tuning
+    choice; the held-out seeds are the check.
+
+    Ratchet guard: the trend is used only when the first and second half of
+    the history agree on its direction and the halves' slopes are within
+    `max_slope_ratio` of each other; otherwise the slope is 0 (flat median).
+    A regression that started inside the history then shows up as a broken
+    trend, not as "slower is normal". Hard caps still bound everything.
+    """
+
+    intercept: float  # log-seconds at t = 0
+    slope: float  # log-seconds per hour (0 when the trend was not trusted)
+    residual_upper: float  # residual_q quantile of log(observed / expected)
+    runs: int
+    trend_trusted: bool
+
+    @staticmethod
+    def _theil_sen(ts: list[float], ys: list[float]) -> float:
+        slopes = sorted((ys[j] - ys[i]) / (ts[j] - ts[i])
+                        for i in range(len(ts)) for j in range(i + 1, len(ts)) if ts[j] != ts[i])
+        return slopes[len(slopes) // 2] if slopes else 0.0
+
+    @classmethod
+    def fit(cls, times_h: list[float], durations: list[float], residual_q: float = 0.99,
+            max_slope_ratio: float = 3.0) -> "DriftAwareBaseline":
+        import math
+
+        pts = sorted((t, math.log(d)) for t, d in zip(times_h, durations) if d and d > 0)
+        ts, ys = [p[0] for p in pts], [p[1] for p in pts]
+        slope = cls._theil_sen(ts, ys)
+        half = len(ts) // 2
+        s1, s2 = cls._theil_sen(ts[:half], ys[:half]), cls._theil_sen(ts[half:], ys[half:])
+        trusted = (len(ts) >= 8 and s1 * s2 > 0
+                   and max(abs(s1), abs(s2)) <= max_slope_ratio * min(abs(s1), abs(s2)))
+        if not trusted:
+            slope = 0.0
+        intercept = sorted(y - slope * t for t, y in zip(ts, ys))[len(ts) // 2]
+        resid = sorted(y - (intercept + slope * t) for t, y in zip(ts, ys))
+        k = min(int(residual_q * len(resid)), len(resid) - 1)
+        return cls(intercept, slope, resid[k] if resid else 0.0, len(ts), trusted)
+
+    def expected(self, t_h: float) -> float:
+        import math
+
+        return math.exp(self.intercept + self.slope * t_h)
+
+    def excess(self, t_h: float, duration: float) -> float:
+        """observed / expected runtime."""
+        return duration / self.expected(t_h)
+
+    def is_anomaly(self, t_h: float, duration: float, min_ratio: float) -> bool:
+        import math
+
+        r = math.log(duration) - math.log(self.expected(t_h))
+        return r > max(self.residual_upper, math.log(min_ratio))
+
+
+@dataclass
 class BaselineStore:
     """Per-fingerprint baselines computed from the query log."""
 
