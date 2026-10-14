@@ -253,6 +253,15 @@ def suggest_pushdown_rewrite(sql: str) -> Optional[str]:
     return out if sql_ast.try_parse(out) is not None else None
 
 
+# Fixers that only restate a filter in a form the engine can prune on: same
+# predicate, same table, same rows. They read no more than the original, so the
+# Guard does not hold them to the "not costlier by estimate" check — the plan
+# estimates the two forms differently (DuckDB: an equality on CAST(col AS DATE)
+# from the distinct count, a range at a flat 20%), which says nothing about
+# cost. compare_results still verifies them.
+PRUNING_ONLY_FIXERS = frozenset({"sargable"})
+
+
 def deterministic_rewrite(sql: str, findings: list[str]) -> tuple[Optional[str], list[str]]:
     """Apply every catalog fixer the findings call for, chained. Returns
     (rewritten SQL or None, fixer names applied)."""

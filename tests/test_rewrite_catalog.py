@@ -84,3 +84,18 @@ def test_select_star_and_missing_filter_get_no_rewrite(synthetic_wh):
               "SELECT event_type, COUNT(*) FROM events GROUP BY event_type"):
         v = decide(q, backend=synthetic_wh, tracer=Tracer())
         assert v.decision == "warn" and v.rewritten_sql is None
+
+
+def test_cast_date_rewrite_not_held_to_estimate_gate(synthetic_wh):
+    """DuckDB estimates `CAST(col AS DATE) = X` from the distinct count (~1k rows)
+    and the equivalent range at a flat 20% (200k), so the estimate gate used to
+    reject this rewrite. A pruning-only fix reads no more than the original;
+    compare_results still has to pass."""
+    from cost_guard.guard import decide
+    from cost_guard.tracing import Tracer
+
+    q = "SELECT order_id FROM orders WHERE CAST(created_at AS DATE) = DATE '2024-03-01'"
+    v = decide(q, backend=synthetic_wh, tracer=Tracer())
+    assert v.decision == "rewrite" and v.rewrite_source == "deterministic:sargable"
+    assert "prunable form" in v.reason
+    assert not any("not cheaper by estimate" in f for f in v.findings)

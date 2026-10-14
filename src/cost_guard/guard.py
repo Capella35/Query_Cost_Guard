@@ -109,7 +109,7 @@ def _maybe_bypass(verdict, customer, bypass_reason, tracer, tid) -> GuardVerdict
 def _decide(sql, workload_class, customer, backend, tracer, tid, llm) -> GuardVerdict:
     from .column_registry import registry_settings
     from .config import caps_for, partition_column
-    from .rewrites import deterministic_rewrite
+    from .rewrites import PRUNING_ONLY_FIXERS, deterministic_rewrite
     from .rules.static_rules import ALL_RULES, LARGE_TABLE_ROWS, QUERY_RULES
     from .tools.compare_results import compare_results
 
@@ -282,6 +282,7 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm) -> GuardVe
             span["attrs"]["fixers"] = applied
         if cand:
             candidates.append(("deterministic:" + "+".join(applied), cand))
+        pruning_only = bool(applied) and set(applied) <= PRUNING_ONLY_FIXERS
         if not candidates and llm is not None:
             with tracer.span(tid, "llm.propose_rewrite") as span:
                 try:
@@ -297,7 +298,7 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm) -> GuardVe
             if sql_ast.read_only_violation(cand):
                 findings.append(f"{source} rewrite is not read-only — not offered")
                 continue
-            if estimate is not None:
+            if estimate is not None and not (source.startswith("deterministic:") and pruning_only):
                 cand_est = backend.estimate(cand)
                 if cand_est.rows_processed > rows:
                     findings.append(f"{source} rewrite is not cheaper by estimate — not offered")
@@ -307,7 +308,10 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm) -> GuardVe
             if res.passed:
                 return GuardVerdict(
                     decision="rewrite",
-                    reason="verified rewrite available (not costlier by estimate): " + "; ".join(findings),
+                    reason=("verified rewrite available ("
+                            + ("same filter in a prunable form" if source.startswith("deterministic:")
+                               and pruning_only else "not costlier by estimate")
+                            + "): " + "; ".join(findings)),
                     rewritten_sql=cand,
                     findings=findings,
                     rewrite_source=source,
