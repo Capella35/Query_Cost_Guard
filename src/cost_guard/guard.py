@@ -109,7 +109,7 @@ def _maybe_bypass(verdict, customer, bypass_reason, tracer, tid) -> GuardVerdict
 def _decide(sql, workload_class, customer, backend, tracer, tid, llm) -> GuardVerdict:
     from .column_registry import registry_settings
     from .config import caps_for, partition_column
-    from .rewrites import suggest_cte_rewrite
+    from .rewrites import deterministic_rewrite
     from .rules.static_rules import ALL_RULES, LARGE_TABLE_ROWS, QUERY_RULES
     from .tools.compare_results import compare_results
 
@@ -251,14 +251,14 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm) -> GuardVe
         )
 
     if findings and backend is not None:
-        # Deterministic fixer first; then the LLM proposer if configured.
-        # Either way an unverified rewrite is never offered.
+        # Deterministic fixers first (chained); then the LLM proposer if
+        # configured. Either way an unverified rewrite is never offered.
         candidates = []
-        if any("CTE" in f for f in findings):
-            with tracer.span(tid, "suggest_rewrite"):
-                cand = suggest_cte_rewrite(sql)
-            if cand:
-                candidates.append(("deterministic:cte", cand))
+        with tracer.span(tid, "suggest_rewrite") as span:
+            cand, applied = deterministic_rewrite(sql, findings)
+            span["attrs"]["fixers"] = applied
+        if cand:
+            candidates.append(("deterministic:" + "+".join(applied), cand))
         if not candidates and llm is not None:
             with tracer.span(tid, "llm.propose_rewrite") as span:
                 try:

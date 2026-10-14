@@ -29,7 +29,7 @@ What exists in code today. "How it works" below only describes rows marked **bui
 | 8 static rules on the sqlglot AST: SELECT * on wide tables, missing partition filter, cartesian product, function on partition column, filter after join/HAVING without aggregate, repeated subquery, high-cardinality GROUP BY, SUM/AVG on an identifier column (by name, or near-unique per the column registry) | **built** | `rules/static_rules.py`, `sql_ast.py` |
 | Skipped-rule reporting on every verdict and trace | **built** | `GuardVerdict.skipped_rules` |
 | Column registry: a data-profiling lookup table (distinct count, NULL count, total rows, and min/max for numeric and date/time columns), one scan per table, stored in a local file next to the warehouse (`data/thelook.registry.duckdb`) — the build only reads the warehouse, and reading the registry is free; size gate, scan timeout, refresh modes (missing / stale / all), dropped-column cleanup; the Guard looks profiles up instead of scanning, and treats entries older than `max_age_days` as unverified | **built** (DuckDB; BigQuery not built) | `column_registry.py`, `scripts/build_column_registry.py` |
-| Deterministic rewrite: repeated subquery → CTE | **built** | `rewrites.py` |
+| Deterministic rewrite catalog: repeated subquery → CTE; `DATE_TRUNC(unit, col) = X` / `CAST(col AS DATE) = X` → range on the bare column; filter after join → pushed into the derived table. No catalog entry for SELECT * or a missing date filter: any fix changes the result | **built** | `rewrites.py` |
 | `compare_results`: both queries on the same sampled inputs, timeout, order-insensitive / float-tolerant / NULL-consistent hash | **built** | `tools/compare_results.py`, `results.py` |
 | Escape hatch: block → warn only with `guard.allow_bypass: true` + a reason; traced; never for writes | **built** | `guard._maybe_bypass` |
 | JSONL tracing of every decision | **built** | `tracing.py` |
@@ -66,8 +66,10 @@ Guard (before execution) → watchdog execution → query log → Investigator (
    predicate links, unless provably tiny) is blocked; other findings warn.
    Column cardinality for the GROUP BY rule is a lookup in the column
    registry (profiled once, refreshed on a schedule), not a scan.
-4. A repeated subquery gets a CTE rewrite, offered only if `compare_results`
-   verifies it on sampled inputs. With an LLM configured, other findings may
+4. Findings the deterministic catalog can fix — a repeated subquery, a
+   function wrapped around a date column, a filter applied after a join —
+   get an equivalent rewrite, offered only if `compare_results` verifies it
+   on sampled inputs. With an LLM configured, other findings may
    get an LLM-proposed rewrite under the same verification, and warn/block
    verdicts get a plain-language explanation. The LLM never changes
    allow/block.
@@ -102,17 +104,25 @@ DuckDB; labels fixed before the Guard ran; full table in
 
 | | |
 |---|---|
-| exact action match | 24/30 (80%) |
+| exact action match | 25/30 (83%) |
 | bad queries flagged (warn/rewrite/block) | 14/15 (93%) |
 | good queries flagged (false positives) | 0/15 |
-| rewrites offered / expected | 1/6 — equivalent on full data 1/1 |
+| rewrites offered | 4 (Q05, Q07, Q08, Q09) — all 4 equivalent on the full data |
 
-Misses: five queries labeled "rewrite" got "warn" — detected, but there is no
-deterministic fixer for SELECT *, missing or wrapped partition filters, or
-filter pushdown (Q01, Q03, Q07, Q08, Q11). Q04 (redundant DISTINCT) is not
-detected at all. Limits: 30 queries written by the project author; the one
-rewrite's speedup (1.1–1.2× across runs on a ~10 ms query) is within timing
-noise — DuckDB already shares much of the repeated scan.
+Misses (5):
+- Q01, Q11 (`SELECT *`) and Q03 (no date filter) are labeled "rewrite" but
+  get "warn": dropping columns or adding a date filter changes the result,
+  so no equivalent rewrite exists. A human has to choose the columns or the
+  dates. These labels arguably expect something no verified rewrite can do.
+- Q05 is labeled "warn" but gets a rewrite: it is the same pattern as Q08
+  (filter after a join inside a subquery), which is labeled "rewrite". The
+  two labels contradict each other; any consistent Guard misses one of them.
+- Q04 (redundant DISTINCT) is not detected at all.
+
+Limits: 30 queries written by the project author; rewrite speedups are
+1.0–1.2× on ~3–12 ms queries — timing noise. DuckDB's optimizer already
+pushes filters and shares repeated scans; the catalog's benefit is clearer
+on engines billed per byte scanned or without those optimizations.
 
 **Threshold gates + judge** (`eval/run_judge_eval.py`,
 [`eval/RESULTS_judge.md`](eval/RESULTS_judge.md)): 20 labeled proposals.
@@ -176,7 +186,7 @@ static-only vs static+adaptive.
 │   └── rules/static_rules.py
 ├── scripts/                  # TheLook loader, column registry build, BigQuery schema check
 ├── demo/                     # synthetic warehouse, 4-beat CLI demo, Streamlit UI
-└── tests/                    # 119 tests (TheLook-dependent ones skip without data/)
+└── tests/                    # 135 tests (TheLook-dependent ones skip without data/)
 ```
 
 ## Quickstart (local-first, no cloud)
@@ -219,8 +229,6 @@ PYTHONPATH=src .venv/bin/python demo/demo.py
 
 ## Roadmap
 
-- Deterministic fixers for the patterns the eval shows as "detected, not
-  fixed" (SELECT *, partition filters, filter pushdown).
 - Quantiles (an equi-depth histogram) per range column in the registry —
   only if range estimates start to matter near the cap: DuckDB's flat 20%
   guess (which the registry can only raise, from min/max) still runs ~2.6×

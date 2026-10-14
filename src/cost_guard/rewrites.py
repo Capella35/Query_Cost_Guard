@@ -1,16 +1,30 @@
 """Deterministic rewrite fixers — no LLM needed.
 
-Each fixer turns a detected anti-pattern into a cheaper, equivalent query.
-Every fixer output MUST pass compare_results before the Guard offers it;
-an unverified rewrite is never shown to the analyst.
+Each fixer turns a detected anti-pattern into an EQUIVALENT query (same
+rows, same columns) that is cheaper or at least no costlier. Every fixer
+output MUST pass compare_results before the Guard offers it; an unverified
+rewrite is never shown to the analyst.
 
-Detection is on the sqlglot AST; the rewrite edits the analyst's own text
-(so they see their query, not a reformatted one) and must re-parse.
+Catalog:
+- repeated subquery -> CTE (suggest_cte_rewrite): edits the analyst's own
+  text, so they see their query, not a reformatted one;
+- function on a date column -> range (suggest_sargable_rewrite):
+  DATE_TRUNC(unit, col) = X  and  CAST(col AS DATE) = X  become a range on
+  the bare column, which zone maps / partitions can prune;
+- filter after join -> pushed into the derived table
+  (suggest_pushdown_rewrite).
+The last two rebuild the query from the AST (sqlglot formatting).
+
+Not in the catalog, on purpose: SELECT * -> column list and "add a date
+filter". Both change the result (fewer columns / fewer rows), so no
+equivalent rewrite exists; they stay warnings for a human to decide.
 """
 from __future__ import annotations
 
 import re
 from typing import Optional
+
+from sqlglot import exp
 
 from . import sql_ast
 
@@ -99,3 +113,158 @@ def suggest_cte_rewrite(sql: str) -> Optional[str]:
     else:
         new_sql = f"WITH {name} AS ({inner}) " + body
     return new_sql if sql_ast.try_parse(new_sql) is not None else None
+
+
+_TRUNC_UNITS = {"YEAR", "QUARTER", "MONTH", "WEEK", "DAY", "HOUR", "MINUTE"}
+
+
+def _const(e: exp.Expression) -> bool:
+    return e.find(exp.Column) is None and not any(
+        isinstance(n, exp.Func) and not isinstance(n, exp.Cast) for n in e.walk()
+    )
+
+
+def _typed(x: exp.Expression) -> exp.Expression:
+    """An untyped string literal gets an explicit TIMESTAMP type so date
+    arithmetic on it is well-defined; typed constants are left alone."""
+    if isinstance(x, exp.Literal) and x.is_string:
+        return exp.cast(x.copy(), "TIMESTAMP")
+    return x.copy()
+
+
+def _sargable(cmp: exp.Expression) -> Optional[exp.Expression]:
+    """Range replacement for one `f(col) = X` predicate, or None."""
+    if not isinstance(cmp, exp.EQ):
+        return None
+    for fn, x in ((cmp.this, cmp.expression), (cmp.expression, cmp.this)):
+        if not _const(x) or (isinstance(x, exp.Literal) and not x.is_string):
+            continue
+        if isinstance(fn, (exp.TimestampTrunc, exp.DateTrunc)) and isinstance(fn.this, exp.Column):
+            unit = (fn.args.get("unit").name if fn.args.get("unit") is not None else "").upper()
+            if unit not in _TRUNC_UNITS:
+                return None
+            col, lo = fn.this, _typed(x)
+            hi = exp.Add(this=_typed(x), expression=exp.Interval(
+                this=exp.Literal.string("1"), unit=exp.Var(this=unit)))
+            aligned = exp.EQ(this=exp.TimestampTrunc(this=_typed(x), unit=exp.Var(this=unit)),
+                             expression=_typed(x))
+            # DATE_TRUNC(u, col) = X  <=>  X is u-aligned AND X <= col < X + 1 u
+            return exp.and_(exp.GTE(this=col.copy(), expression=lo),
+                            exp.LT(this=col.copy(), expression=hi), aligned)
+        if (isinstance(fn, exp.Cast) and isinstance(fn.this, exp.Column)
+                and fn.to.this == exp.DataType.Type.DATE):
+            col, day = fn.this, exp.cast(x.copy(), "DATE")
+            hi = exp.Add(this=day.copy(), expression=exp.Interval(
+                this=exp.Literal.string("1"), unit=exp.Var(this="DAY")))
+            # CAST(col AS DATE) = X  <=>  X <= col < X + 1 day
+            return exp.and_(exp.GTE(this=col.copy(), expression=day), exp.LT(this=col.copy(), expression=hi))
+    return None
+
+
+def suggest_sargable_rewrite(sql: str) -> Optional[str]:
+    """Replace `DATE_TRUNC(unit, col) = X` / `CAST(col AS DATE) = X` WHERE
+    conjuncts with an equivalent range on the bare column. None when there
+    is nothing to rewrite."""
+    tree = sql_ast.try_parse(sql)
+    if tree is None:
+        return None
+    tree = tree.copy()
+    changed = False
+    for where in list(tree.find_all(exp.Where)):
+        for conj in sql_ast.conjuncts(where):
+            new = _sargable(conj)
+            if new is not None:
+                conj.replace(exp.Paren(this=new))
+                changed = True
+    if not changed:
+        return None
+    out = tree.sql(dialect=sql_ast.DIALECT)
+    return out if sql_ast.try_parse(out) is not None else None
+
+
+def _pushable_inner(inner: exp.Expression) -> Optional[dict]:
+    """alias -> expression map for a derived table whose WHERE can take an
+    outer filter without changing results; None otherwise."""
+    if not isinstance(inner, exp.Select):
+        return None
+    for arg in ("group", "having", "distinct", "limit", "offset", "qualify", "with"):
+        if inner.args.get(arg) is not None:
+            return None
+    if inner.find(exp.Window) is not None:
+        return None
+    mapping = {}
+    for e in inner.expressions:
+        if isinstance(e, exp.Star) or (isinstance(e, exp.Column) and isinstance(e.this, exp.Star)):
+            return None
+        target = e.unalias()
+        if target.find(exp.AggFunc) is not None or target.find(exp.Rand) is not None:
+            return None
+        mapping[e.alias_or_name.lower()] = target
+    return mapping
+
+
+def suggest_pushdown_rewrite(sql: str) -> Optional[str]:
+    """Move outer WHERE conjuncts on a joined derived table into that derived
+    table's WHERE (before its rows leave the join). Equivalent when the
+    derived table has no aggregation, DISTINCT, LIMIT or window — its own
+    WHERE is applied after its join anyway — and the outer query reads it
+    alone (no other relations). None when nothing can be pushed."""
+    tree = sql_ast.try_parse(sql)
+    if tree is None:
+        return None
+    tree = tree.copy()
+    changed = False
+    for outer in list(tree.find_all(exp.Select)):
+        from_ = outer.args.get("from_")
+        where = outer.args.get("where")
+        if from_ is None or where is None or outer.args.get("joins"):
+            continue
+        sub = from_.this
+        if not isinstance(sub, exp.Subquery) or not sub.this.args.get("joins"):
+            continue
+        mapping = _pushable_inner(sub.this)
+        if mapping is None:
+            continue
+        alias = (sub.alias or "").lower()
+        keep, push = [], []
+        for conj in sql_ast.conjuncts(where):
+            cols = list(conj.find_all(exp.Column))
+            ok = (cols and conj.find(exp.Subquery) is None and conj.find(exp.AggFunc) is None
+                  and all((not c.table or c.table.lower() == alias)
+                          and c.name.lower() in mapping for c in cols))
+            (push if ok else keep).append(conj)
+        if not push:
+            continue
+        inner = sub.this
+        for conj in push:
+            moved = conj.copy()
+            for c in list(moved.find_all(exp.Column)):
+                target = mapping[c.name.lower()].copy()
+                c.replace(target if isinstance(target, exp.Column) else exp.Paren(this=target))
+            inner.where(moved, copy=False)
+        if keep:
+            outer.set("where", exp.Where(this=exp.and_(*[k.copy() for k in keep])))
+        else:
+            outer.set("where", None)
+        changed = True
+    if not changed:
+        return None
+    out = tree.sql(dialect=sql_ast.DIALECT)
+    return out if sql_ast.try_parse(out) is not None else None
+
+
+def deterministic_rewrite(sql: str, findings: list[str]) -> tuple[Optional[str], list[str]]:
+    """Apply every catalog fixer the findings call for, chained. Returns
+    (rewritten SQL or None, fixer names applied)."""
+    current, applied = sql, []
+    steps = [
+        ("cte", lambda f: "CTE" in f, suggest_cte_rewrite),
+        ("sargable", lambda f: "wrapped in an expression" in f, suggest_sargable_rewrite),
+        ("pushdown", lambda f: "applied after the join" in f, suggest_pushdown_rewrite),
+    ]
+    for name, wanted, fixer in steps:
+        if any(wanted(f) for f in findings):
+            out = fixer(current)
+            if out and out.strip() != current.strip():
+                current, applied = out, applied + [name]
+    return (current if applied else None), applied

@@ -97,26 +97,35 @@ class FakeLLM:
         return "plain-language explanation"
 
 
+# A flagged pattern the deterministic catalog does not fix (HAVING without an
+# aggregate), so the LLM proposer is consulted.
+HAVING = ("SELECT status, COUNT(*) AS n FROM orders WHERE created_at >= '2024-01-01' "
+          "GROUP BY status HAVING status <> 'cancelled'")
 WRAPPED = ("SELECT order_id, status FROM orders "
            "WHERE DATE_TRUNC('month', created_at) = DATE '2024-01-01'")
 
 
 def test_correct_llm_rewrite_is_offered_after_verification(synthetic_wh):
-    good = ("SELECT order_id, status FROM orders "
-            "WHERE created_at >= DATE '2024-01-01' AND created_at < DATE '2024-02-01'")
-    v = decide(WRAPPED, backend=synthetic_wh, tracer=Tracer(), llm=FakeLLM(good))
+    good = ("SELECT status, COUNT(*) AS n FROM orders WHERE created_at >= '2024-01-01' "
+            "AND status <> 'cancelled' GROUP BY status")
+    v = decide(HAVING, backend=synthetic_wh, tracer=Tracer(), llm=FakeLLM(good))
     assert v.decision == "rewrite" and v.rewrite_source == "llm"
     assert "match" in v.verification
 
 
 def test_wrong_llm_rewrite_is_rejected(synthetic_wh):
-    wrong = ("SELECT order_id, status FROM orders "
-             "WHERE created_at >= DATE '2024-01-01' AND created_at < DATE '2024-01-15'")
-    llm = FakeLLM(wrong)
-    v = decide(WRAPPED, backend=synthetic_wh, tracer=Tracer(), llm=llm)
+    wrong = ("SELECT status, COUNT(*) AS n FROM orders WHERE created_at >= '2024-06-01' "
+             "AND status <> 'cancelled' GROUP BY status")
+    v = decide(HAVING, backend=synthetic_wh, tracer=Tracer(), llm=FakeLLM(wrong))
     assert v.decision == "warn"
     assert any("llm rewrite failed verification" in f for f in v.findings)
     assert v.explanation == "plain-language explanation"  # F3.3: warn gets explained
+
+
+def test_deterministic_fixer_runs_before_the_llm(synthetic_wh):
+    llm = FakeLLM("SELECT 1")
+    v = decide(WRAPPED, backend=synthetic_wh, tracer=Tracer(), llm=llm)
+    assert v.decision == "rewrite" and v.rewrite_source == "deterministic:sargable"
 
 
 def test_llm_not_called_on_clean_queries(synthetic_wh):
@@ -126,7 +135,7 @@ def test_llm_not_called_on_clean_queries(synthetic_wh):
 
 
 def test_llm_rewrite_that_writes_is_refused(synthetic_wh):
-    v = decide(WRAPPED, backend=synthetic_wh, tracer=Tracer(), llm=FakeLLM("DROP TABLE orders"))
+    v = decide(HAVING, backend=synthetic_wh, tracer=Tracer(), llm=FakeLLM("DROP TABLE orders"))
     assert v.decision == "warn"
     assert any("not read-only" in f for f in v.findings)
 
