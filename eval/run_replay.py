@@ -319,6 +319,59 @@ def gen_hard_traffic(seed: int = 7) -> list[dict]:
     return sorted(runs, key=lambda x: x["ts"])
 
 
+# Pre-registered 2026-10-14, BEFORE any drift-aware method was written: the
+# hard replay's held-out seeds. Methods are developed on HARD_DEV_SEED only and
+# evaluated on these once. Same generator and parameters, so they guard
+# against fitting one seed's noise, not against fitting the scenario design.
+HARD_DEV_SEED = 7
+HARD_HELDOUT_SEEDS = tuple(range(101, 111))
+
+
+def score_hard(seed: int, flag_fn=None) -> tuple[dict, list[dict]]:
+    """(per-fingerprint counts, rows) for one seed of the hard traffic."""
+    flag_fn = flag_fn or (lambda stats, rec: anomaly_flag(stats, rec["rows"], rec["dur"]))
+    traffic = gen_hard_traffic(seed)
+    history, test = split_chronological(traffic)
+    stats: dict[str, FingerprintStats] = {}
+    for rec in history:
+        stats.setdefault(rec["fp"], FingerprintStats(rec["fp"])).runs.append((rec["rows"], rec["dur"]))
+    rows = []
+    for rec in test:
+        flag = flag_fn(stats.get(rec["fp"]), rec)
+        rows.append({"fp": rec["fp"], "label": rec["label"], "duration_sec": round(rec["dur"], 3),
+                     "caught_adaptive": flag is not None})
+    per_fp = {}
+    for fp in ("drift", "noisy", "wide_spread", "creep"):
+        sub_ = [r for r in rows if r["fp"] == fp]
+        per_fp[fp] = {
+            "bad": sum(r["label"] == "bad" for r in sub_),
+            "caught": sum(r["label"] == "bad" and r["caught_adaptive"] for r in sub_),
+            "good": sum(r["label"] == "good" for r in sub_),
+            "false_pos": sum(r["label"] == "good" and r["caught_adaptive"] for r in sub_),
+        }
+    return per_fp, rows
+
+
+def aggregate(per_fps: list[dict]) -> dict:
+    tot = {fp: {k: sum(p[fp][k] for p in per_fps) for k in ("bad", "caught", "good", "false_pos")}
+           for fp in per_fps[0]}
+    bad = sum(v["bad"] for v in tot.values())
+    good = sum(v["good"] for v in tot.values())
+    return {"per_fingerprint": tot, "bad_runs": bad, "good_runs": good,
+            "catch_rate": round(sum(v["caught"] for v in tot.values()) / bad, 3) if bad else None,
+            "false_positive_rate": round(sum(v["false_pos"] for v in tot.values()) / good, 3) if good else None}
+
+
+def run_hard_heldout() -> dict:
+    """The current anomaly rule on the pre-registered held-out seeds."""
+    agg = aggregate([score_hard(s)[0] for s in HARD_HELDOUT_SEEDS])
+    print(f"hard variant, held-out seeds {HARD_HELDOUT_SEEDS[0]}-{HARD_HELDOUT_SEEDS[-1]}: "
+          f"catch {agg['catch_rate']}  false-pos {agg['false_positive_rate']}")
+    for fp, v in agg["per_fingerprint"].items():
+        print(f"  {fp:<14}{v['bad']:>4}{v['caught']:>8}{v['good']:>6}{v['false_pos']:>11}")
+    return agg
+
+
 def run_hard() -> dict:
     traffic = gen_hard_traffic()
     history, test = split_chronological(traffic)
@@ -372,9 +425,11 @@ def main() -> None:
     import argparse
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--variant", choices=["standard", "hard"], default="standard")
+    ap.add_argument("--variant", choices=["standard", "hard", "hard-heldout"], default="standard")
     args = ap.parse_args()
-    if args.variant == "hard":
+    if args.variant == "hard-heldout":
+        run_hard_heldout()
+    elif args.variant == "hard":
         run_hard()
     else:
         run_standard()
