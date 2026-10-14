@@ -224,7 +224,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python scripts/build_column_registry.py   # refresh stale/new profiles into data/thelook.registry.duckdb (schedule it)
 .venv/bin/python -m pytest -q
 .venv/bin/python eval/run_eval.py
-.venv/bin/python -m cost_guard check "SELECT * FROM users, orders"
+PYTHONPATH=src .venv/bin/python -m cost_guard check "SELECT * FROM users, orders"
 ```
 
 `data/` is gitignored. Cost on this path is modeled from EXPLAIN row
