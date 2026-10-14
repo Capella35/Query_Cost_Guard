@@ -153,8 +153,24 @@ Limits: 30 queries written by the project author; rewrite speedups are
 pushes filters and shares repeated scans. **Rewrite savings are unproven:**
 the evals prove rewrites are equivalent and not costlier by estimate, not
 that they save money. The one large measured gain is a sargable date range
-on the 2.4M-row `events` table (held-out H06, ×19). Money savings need an
-engine billed per byte scanned, where pruning shows up on the bill.
+on the 2.4M-row `events` table (held-out H06, ×19).
+
+**BigQuery dry run** (`scripts/bq_dryrun_compare.py`,
+[`eval/RESULTS_bq_dryrun.md`](eval/RESULTS_bq_dryrun.md); dry runs only,
+nothing executed): **0 of 9 rewrites bill fewer bytes than their original**
+on copies partitioned by `DATE(created_at)`. BigQuery already prunes
+partitions for `CAST(col AS DATE) = X`, `DATE(col) = X`,
+`TIMESTAMP_TRUNC(col, MONTH) = X` and even `FORMAT_TIMESTAMP(...) = X`, and
+its optimizer already does the pushdown and the CTE. Of the forms tried, only
+`EXTRACT(DAY FROM col) = n` could not prune (more bytes than no filter at all).
+So on BigQuery the date-range rewrite saves nothing, and the "function on the
+partition column prevents pruning" warning is wrong for those forms. On
+DuckDB, which does not prune them, the same rewrite measured ×39–×48. Limits: sandbox copies hold
+only the last ~60 days (the sandbox drops older partitions), so each case's
+dates were moved into last month. That doesn't change a 0% result, since
+original and rewrite prune the same partitions. The rewrites themselves are
+DuckDB SQL: BigQuery rejects them as-is (TIMESTAMP vs DATE comparisons)
+until the catalog emits BigQuery types.
 
 **Held-out set** (`eval/holdout_queries.yaml`, 30 queries): queries and
 labels committed 2026-10-14 **before any Guard run** on them, with the

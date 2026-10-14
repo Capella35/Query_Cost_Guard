@@ -151,9 +151,14 @@ inconsistently (an equality from the distinct count, a range at a flat 20%),
 so the estimate comparison would measure the estimator, not cost. On
 TheLook that rewrite measured ×39–×48.
 
-**Savings are not claimed.** The evals prove equivalence. Most rewrites
-measure ~1× on DuckDB, whose optimizer already pushes filters down. Money
-savings need an engine billed per byte scanned.
+**Savings are engine-specific, and none are claimed.** The evals prove equivalence. On DuckDB
+the date-range fix measured ×39–×48; the others ~1× (its optimizer already
+pushes filters). On BigQuery, dry runs bill **the same bytes** for all nine
+rewrites: BigQuery itself prunes `CAST(col AS DATE)`, `DATE(col)`,
+`TIMESTAMP_TRUNC(col, …)` and `FORMAT_TIMESTAMP(…)` filters on a
+`DATE(col)`-partitioned table, and already pushes filters and reuses
+repeated subqueries. Only forms such as `EXTRACT(DAY FROM col)` defeat
+pruning there.
 
 ## 8. The LLM's place
 
@@ -244,8 +249,17 @@ Never stored: SQL text, literal values, result rows.
 | 2026-10-14 | Caps tightened (1M/10M rows, 200 GB/1 TB, 60/600 s); evals keep their own frozen caps | Production policy changes; labels encode the policy they were written under |
 | 2026-10-14 | Report measures behavior, workload and modeled spend; cache deferred | Measure the opportunity before building the cache |
 | 2026-10-14 | Date-range rewrite exempt from the estimate check | It restates the filter; estimates differ only through the estimator; measured ×39–×48 on TheLook |
+| 2026-10-14 | BigQuery measured by dry run on sandbox copies (60-day window, dates moved) | Free; it turned "rewrite savings unproven" into a number: 0 bytes saved on BigQuery |
 
 ## 13. Open questions
+
+- Make the function-on-partition-column rule engine-aware. On BigQuery it
+  wrongly warns for forms BigQuery prunes (`CAST`/`DATE`/`TIMESTAMP_TRUNC`/
+  `FORMAT_TIMESTAMP`); it should warn there only for forms that defeat
+  pruning (e.g. `EXTRACT`). On DuckDB it is right.
+- Before offering rewrites on BigQuery, the catalog must emit BigQuery SQL:
+  TIMESTAMP literals for TIMESTAMP columns, no `DATE`-vs-`TIMESTAMP`
+  comparisons.
 
 - Count rows read instead of rows out of scans? It would make "scanned"
   honest, but it shifts every estimate and possibly verdicts.
