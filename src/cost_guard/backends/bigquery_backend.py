@@ -95,7 +95,7 @@ class BigQueryWarehouse:
             "num_bytes": int(t.num_bytes or 0),
             "column_count": len(t.schema),
             "columns": [f.name for f in t.schema],
-            "partitioned_by": t.time_partitioning.field if t.time_partitioning else None,
+            "partitioned_by": _partition_column(t),
             "clustered_by": list(t.clustering_fields or []),
         }
 
@@ -111,3 +111,13 @@ class BigQueryWarehouse:
         )
         n, ndv, null_frac = list(self._bq().query(sql, job_config=self._job_config()).result())[0]
         return ColumnProfile(table, column, int(ndv or 0), float(null_frac or 0.0), int(n))
+
+
+def _partition_column(t) -> Optional[str]:
+    """The column a filter must name for BigQuery to prune partitions:
+    the time-partitioning column, _PARTITIONTIME for ingestion-time
+    partitioning (no column), or the integer-range partitioning column."""
+    if t.time_partitioning is not None:
+        return t.time_partitioning.field or "_PARTITIONTIME"
+    rp = getattr(t, "range_partitioning", None)
+    return rp.field if rp is not None else None

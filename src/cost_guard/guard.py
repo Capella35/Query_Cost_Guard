@@ -164,7 +164,17 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm) -> GuardVe
             continue
         md["table"] = t
         md["large"] = (md.get("num_rows") or 0) >= LARGE_TABLE_ROWS
-        md["partition_column"] = partition_column(customer, t)
+        # The warehouse's own partitioning wins; customer.yaml is the fallback
+        # for engines without real partitions (DuckDB: the zone-mapped date column).
+        declared = partition_column(customer, t)
+        actual = md.get("partitioned_by")
+        md["partition_column"] = actual or declared
+        md["partition_source"] = ("warehouse" if actual
+                                  else "customer.yaml" if declared else None)
+        if actual and declared and actual.lower() != declared.lower():
+            with tracer.span(tid, "partition_column.mismatch", table=t,
+                             warehouse=actual, customer_yaml=declared):
+                pass
         # Column profiles for grouped columns come from the column registry
         # (profiled once, refreshed on a schedule) — a lookup, never a scan.
         profiles = {}

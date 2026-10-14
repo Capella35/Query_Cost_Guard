@@ -20,9 +20,11 @@ workload_classes:
     max_rows_processed: 50000000        # DuckDB proxy
     max_runtime_sec: 3600               # 60 minutes
 
-# Tables treated as partitioned, and their partition column. On DuckDB the
-# "partition" is the date column whose zone maps prune row groups; on BigQuery
-# these are the partitioned copies (scripts/make_partitioned_copies.py).
+# Tables treated as partitioned, and their partition column — the FALLBACK.
+# When the warehouse reports a table's partitioning (BigQuery), that wins and a
+# disagreement with this list is traced. On DuckDB (no real partitions) this
+# list is the only source: the "partition" is the date column whose zone maps
+# prune row groups.
 partitioned_tables:
   orders: created_at
   order_items: created_at

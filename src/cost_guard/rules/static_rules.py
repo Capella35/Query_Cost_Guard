@@ -57,7 +57,7 @@ def require_partition_filter(sql: str, metadata: dict) -> list[str]:
     rows = metadata.get("num_rows")
     rows_s = f"{rows:,}" if isinstance(rows, int) else "?"
     return [
-        f"no date filter on {pcol} in '{metadata.get('table')}' "
+        f"no filter on partition column {pcol} in '{metadata.get('table')}' "
         f"({rows_s} rows) — full scan"
     ]
 
