@@ -231,14 +231,23 @@ static-only vs static+adaptive.
   is still estimated ~2.6× low.
 - **On TheLook, DuckDB estimates vs BigQuery bytes** (`eval/run_replay_bq.py`,
   [`eval/RESULTS_replay_bq.md`](eval/RESULTS_replay_bq.md); same 96-run
-  traffic shape on TheLook columns, size check only): with DuckDB's row
-  estimate the adaptive rule adds **nothing** (catch 33%, static only); with
-  BigQuery dry-run bytes it catches **100%** of the bad runs, 0% false
-  positives. The cause is separation: DuckDB's raise-only range estimate
-  puts a 2-year window at ~2× a 7-day one; exact bytes after pruning put it
-  at ×114 (`orders`) and ×139 (`order_items`). So the standard variant's 100%
-  depended on the synthetic data's even date spread. Same caveats: planted
-  anomaly, small test split (6 bad / 23 good), no runtime.
+  traffic shape on TheLook columns, size check only):
+
+  | size signal for the anomaly rule | catch (static + adaptive) | false positives | 2-year vs 7-day window |
+  |---|---|---|---|
+  | DuckDB estimate, raise-only (what the caps use) | 33% (= static only) | 0% | ×2 |
+  | DuckDB estimate, two-way (now the anomaly rule's input) | **100%** | 0% | ×104 |
+  | BigQuery dry-run bytes (exact, after pruning) | **100%** | 0% | ×114–×139 |
+
+  The raise-only estimate keeps the caps safe but hides the difference the
+  anomaly rule needs: it lifts a 2-year window from the planner's flat 20% to
+  ~40% and never lowers a 7-day one. The two-way estimate
+  (`estimate(sql, two_way_ranges=True)`) also lowers a range to the registry's
+  min/max fraction; it is used only to compare runs of one shape, never for
+  a cap. The synthetic standard replay stays at 100% / 0% with it. Caveats:
+  planted anomaly, small test split (6 bad / 23 good), no runtime; the
+  two-way estimate assumes evenly spread values, so it can't see a window
+  that is expensive only because of skew.
 - Hard variant (`--variant hard`, 240 simulated runs: gradual drift, noisy
   durations, a legitimately 10× month-end shape, a slow creep): adaptive
   catches 71% of bad runs with **49% false positives** — drift and creep look

@@ -192,7 +192,7 @@ def run_standard() -> None:
         verdict = decide(rec["sql"], customer=EVAL_CUSTOMER, backend=wh)
         if verdict.decision == "block":
             continue  # never runs; contributes no runtime baseline
-        est = wh.estimate(rec["sql"])
+        est = wh.estimate(rec["sql"], two_way_ranges=True)  # anomaly input: compare runs, not caps
         dur = timed_execute("/tmp/cg_replay.duckdb", rec["sql"])
         if dur is None:
             skipped += 1
@@ -209,7 +209,7 @@ def run_standard() -> None:
     rows = []
     for rec in test:
         verdict = decide(rec["sql"], customer=EVAL_CUSTOMER, backend=wh)
-        est = wh.estimate(rec["sql"])
+        est = wh.estimate(rec["sql"], two_way_ranges=True)  # anomaly input: compare runs, not caps
         dur = None
         if verdict.decision != "block":
             dur = timed_execute("/tmp/cg_replay.duckdb", rec["sql"])

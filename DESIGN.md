@@ -197,10 +197,13 @@ A refusal or error means no output: no rewrite, no explanation, judge holds.
 - **Adaptive anomaly rule** (warn when far above the shape's own history)
   exists in the replay harness only. It stays out of `decide()` until its
   false positives on drifting workloads come down (49% in the synthetic hard
-  replay). Its size check is only as good as its input. On TheLook, DuckDB's
-  raise-only estimate puts a 2-year window at ~2× a 7-day one (rule catches
-  none of them); BigQuery dry-run bytes put it at ×114–×139 (rule catches
-  all, no false positives).
+  replay). Its size check is only as good as its input, so it gets a
+  **two-way** estimate (`estimate(sql, two_way_ranges=True)`) while caps keep
+  the raise-only one. Caps must never see an underestimate; the anomaly rule
+  compares runs of one shape, so it needs relative accuracy. On TheLook a
+  2-year window reads ~2× a 7-day one raise-only (rule catches none), ×104
+  two-way and ×114–×139 in BigQuery dry-run bytes (rule catches all, no false
+  positives, with either).
 
 ## 10. Measurement
 
@@ -264,15 +267,11 @@ Never stored: SQL text, literal values, result rows.
 | 2026-10-14 | BigQuery measured by dry run on sandbox copies (60-day window, dates moved) | Free; it turned "rewrite savings unproven" into a number: 0 bytes saved on BigQuery |
 | 2026-10-14 | Function-on-partition rule made warehouse-aware, from a measured allowlist | Dry-run pairs showed BigQuery prunes through 9 wrapper forms; unknown forms keep warning |
 | 2026-10-14 | Adaptive replay re-run on TheLook with DuckDB estimates vs BigQuery dry-run bytes | The synthetic replay's 100% leaned on evenly spread dates; on real dates DuckDB's estimate can't separate the windows, exact bytes can |
+| 2026-10-14 | Anomaly rule gets a two-way range estimate; caps stay raise-only | Raise-only hid the separation (×2); two-way restores it (×104) without letting a cap see an underestimate |
 | 2026-10-14 | Billing linked; full-history copies (no partition expiry) | Confirm the sandbox result on real dates: 0 of 9 again, allowlist unchanged; unprunable wrappers bill ~877× a pruned day filter on full `events` |
 
 ## 13. Open questions
 
-- Feed the anomaly rule a two-way range estimate on DuckDB. Caps need the
-  raise-only estimate (never under-estimate cost); the anomaly rule compares
-  runs of one shape, so it needs relative accuracy. Using the registry's
-  min/max both ways for it should recover much of the separation BigQuery
-  bytes show.
 
 - Before offering rewrites on BigQuery, the catalog must emit BigQuery SQL:
   TIMESTAMP literals for TIMESTAMP columns, no `DATE`-vs-`TIMESTAMP`

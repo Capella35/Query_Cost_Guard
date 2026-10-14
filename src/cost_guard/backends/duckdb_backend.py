@@ -109,7 +109,13 @@ class DuckDBWarehouse:
             ).fetchone()[0]
         return self._row_counts[table]
 
-    def estimate(self, sql: str) -> PlanEstimate:
+    def estimate(self, sql: str, two_way_ranges: bool = False) -> PlanEstimate:
+        """Plan estimate with registry corrections. Range filters are RAISED
+        only (default): the caps must never see an underestimate.
+        two_way_ranges=True also LOWERS them to the registry's min/max
+        fraction — for comparing runs of one query shape against each other
+        (the anomaly rule), never for a cap: a 7-day window then reads as
+        ~7 days of rows instead of the planner's flat 20%."""
         con = self._connect()
         try:
             rows = con.execute("EXPLAIN (FORMAT JSON) " + sql).fetchall()
@@ -121,7 +127,7 @@ class DuckDBWarehouse:
         except Exception:  # noqa: BLE001 — no registry: uncorrected EXPLAIN
             registry = None
         card = plan_cardinality(plans, registry, self.registry_max_age_days,
-                                scan_hook=self._scan_hook(registry))
+                                scan_hook=self._scan_hook(registry, two_way_ranges))
         detail = (f"EXPLAIN estimate: ~{card.scanned:,} rows from scans, "
                   f"peak ~{card.peak:,} rows")
         if card.corrections:
@@ -137,7 +143,7 @@ class DuckDBWarehouse:
             estimated_sorted_rows=max(card.sorts, default=0),
         )
 
-    def _scan_hook(self, registry):
+    def _scan_hook(self, registry, two_way_ranges: bool = False):
         """Scan-level corrections for plan_estimate (see its rules)."""
 
         def hook(schema: str, table: str, filters: Optional[str], orig: int):
@@ -164,6 +170,12 @@ class DuckDBWarehouse:
             # and runs low on skewed data (~2.3x on TheLook), so it may lift
             # the planner's flat guess but never cut it — an underestimate
             # could let a costly query under the cap.
+            if two_way_ranges and new < orig:
+                return new, (
+                    f"scan of {table}: range filter on {col} covers ~{fraction:.1%} of its "
+                    f"value range per the column registry — LOWERED from the planner's "
+                    f"flat {orig:,} (two-way estimate, for comparing runs; never for caps)"
+                )
             if new <= orig:
                 return None
             return new, (

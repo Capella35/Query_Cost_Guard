@@ -99,6 +99,7 @@ def measure(runs: list[dict], duck, bq_client, dataset: str, max_bytes: int, cus
         v = decide(r["sql"], customer=customer, backend=duck, tracer=Tracer())
         r["decision"] = v.decision
         r["duck_rows"] = duck.estimate(r["sql"]).rows_processed
+        r["duck_rows_two_way"] = duck.estimate(r["sql"], two_way_ranges=True).rows_processed
         r["bq_bytes"], r["bq_error"] = dry_run_bytes(bq_client, to_bigquery(r["sql"]), dataset, max_bytes)
 
 
@@ -142,7 +143,7 @@ def separation(runs: list[dict], key: str) -> list[dict]:
     return out
 
 
-def write_summary(duck: dict, bq: dict, sep: dict, n_runs: int, dataset: str, ts: datetime) -> Path:
+def write_summary(duck: dict, duck2: dict, bq: dict, sep: dict, n_runs: int, dataset: str, ts: datetime) -> Path:
     lines = [
         "# Adaptive replay: DuckDB row estimates vs BigQuery dry-run bytes",
         "",
@@ -159,19 +160,24 @@ def write_summary(duck: dict, bq: dict, sep: dict, n_runs: int, dataset: str, ts
         "| size signal | test runs (bad/good) | catch, static only | catch, static + adaptive | false positives |",
         "|---|---|---|---|---|",
     ]
-    for name, m in (("DuckDB row estimate", duck), ("BigQuery dry-run bytes", bq)):
+    for name, m in (("DuckDB row estimate (raise-only, as the caps use)", duck),
+                    ("DuckDB two-way estimate (for the anomaly rule)", duck2),
+                    ("BigQuery dry-run bytes", bq)):
         lines.append(f"| {name} | {m['test_runs']} ({m['bad']}/{m['good']}) | {m['catch_static_only']} | "
                      f"{m['catch_static_plus_adaptive']} | {m['false_positive_rate']} |")
     lines += ["", "## Why: how far apart good and bad runs look", "",
               "| size signal | shape | good median | bad median | bad / good |", "|---|---|---|---|---|"]
-    for k, label in (("duckdb_rows_estimate", "DuckDB rows (estimate)"),
+    for k, label in (("duckdb_rows_estimate", "DuckDB rows (raise-only)"),
+                     ("duckdb_rows_two_way", "DuckDB rows (two-way)"),
                      ("bigquery_dry_run_bytes", "BigQuery bytes (exact)")):
         for x in sep[k]:
             lines.append(f"| {label} | {x['shape']} | {x['good_median']:,} | {x['bad_median']:,} | ×{x['ratio']} |")
     lines += ["", "The rule flags a run above its shape's history p95 or 3× its median. DuckDB "
               "estimates a range filter at a flat selectivity, raised (never lowered) from the "
               "column's min/max, so a 2-year window on TheLook's 5-year history looks only ~2× a "
-              "7-day one. A dry run on a partitioned table returns the bytes after pruning."]
+              "7-day one. The two-way estimate also lowers a range filter to the registry's min/max "
+              "fraction (assumes evenly spread values; used only to compare runs of one shape, "
+              "never for caps). A dry run on a partitioned table returns the bytes after pruning."]
     dest = ROOT / "eval" / "RESULTS_replay_bq.md"
     dest.write_text("\n".join(lines) + "\n")
     return dest
@@ -196,13 +202,16 @@ def main() -> None:
             f"{args.project}.{args.dataset}", args.max_bytes_billed, load_eval_customer())
     errors = [r for r in runs if r["bq_error"]]
     duck = evaluate(runs, "duck_rows")
+    duck2 = evaluate(runs, "duck_rows_two_way")
     bq = evaluate(runs, "bq_bytes")
     sep = {"duckdb_rows_estimate": separation(runs, "duck_rows"),
+           "duckdb_rows_two_way": separation(runs, "duck_rows_two_way"),
            "bigquery_dry_run_bytes": separation(runs, "bq_bytes")}
 
     print(f"traffic: {len(runs)} runs; BigQuery dry-run errors: {len(errors)}")
     print(f"\n{'size signal':<26}{'catch static':>14}{'catch +adaptive':>17}{'false-pos':>11}")
-    for name, m in (("DuckDB row estimate", duck), ("BigQuery dry-run bytes", bq)):
+    for name, m in (("DuckDB row estimate", duck), ("DuckDB two-way estimate", duck2),
+                    ("BigQuery dry-run bytes", bq)):
         print(f"{name:<26}{m['catch_static_only']!s:>14}{m['catch_static_plus_adaptive']!s:>17}"
               f"{m['false_positive_rate']!s:>11}")
     print("\ngood vs bad run size (median), per shape:")
@@ -213,14 +222,15 @@ def main() -> None:
     ts = datetime.now(timezone.utc)
     out = {"ts": ts.isoformat(), "dataset": f"{args.project}.{args.dataset}",
            "labels": "synthetic; wide windows are bad BY CONSTRUCTION",
-           "duckdb_rows_estimate": duck, "bigquery_dry_run_bytes": bq, "separation": sep,
+           "duckdb_rows_estimate": duck, "duckdb_rows_two_way": duck2,
+           "bigquery_dry_run_bytes": bq, "separation": sep,
            "bq_errors": [{"sql": r["sql"][:90], "error": r["bq_error"]} for r in errors],
            "runs": [{k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in r.items()} for r in runs]}
     dest = ROOT / "eval" / "results" / f"replay_bq_{ts:%Y%m%d_%H%M%S}.json"
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(json.dumps(out, indent=2, default=str))
     print(f"results -> {dest.relative_to(ROOT)}")
-    print(f"summary -> {write_summary(duck, bq, sep, len(runs), f'{args.project}.{args.dataset}', ts).relative_to(ROOT)}")
+    print(f"summary -> {write_summary(duck, duck2, bq, sep, len(runs), f'{args.project}.{args.dataset}', ts).relative_to(ROOT)}")
 
 
 if __name__ == "__main__":

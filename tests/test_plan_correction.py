@@ -153,3 +153,22 @@ def test_no_range_claims_outside_the_profiled_range_or_for_non_ranges(synthetic_
               "SELECT order_id FROM orders WHERE status = 'complete'",
               "SELECT order_id FROM orders WHERE created_at >= '2024-01-01' OR amount_cents > 400"):
         assert not any("value range" in c for c in synthetic_wh.estimate(q).corrections)
+
+
+def test_two_way_range_estimate_is_opt_in(thelook_wh):
+    """The caps see the raise-only estimate; the anomaly rule's two-way
+    estimate also lowers a narrow range to its min/max fraction."""
+    week = ("SELECT order_id FROM orders WHERE created_at >= TIMESTAMP '2021-03-01' "
+            "AND created_at < TIMESTAMP '2021-03-08'")
+    two_years = ("SELECT order_id FROM orders WHERE created_at >= TIMESTAMP '2021-01-01' "
+                 "AND created_at < TIMESTAMP '2023-01-01'")
+    raise_only = thelook_wh.estimate(week).rows_processed
+    two_way = thelook_wh.estimate(week, two_way_ranges=True)
+    assert two_way.rows_processed < raise_only / 10
+    assert any("LOWERED" in c for c in two_way.corrections)
+    # The Guard (and so every cap) keeps the raise-only estimate.
+    assert decide(week, backend=thelook_wh, tracer=Tracer()).estimated_rows == raise_only
+    # Separation between a narrow and a wide window of the same shape.
+    wide = thelook_wh.estimate(two_years, two_way_ranges=True).rows_processed
+    assert wide / two_way.rows_processed > 50
+    assert wide / raise_only < 3  # what the raise-only estimate shows
