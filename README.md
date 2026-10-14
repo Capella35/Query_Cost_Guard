@@ -132,6 +132,14 @@ Limits: 30 queries written by the project author; rewrite speedups are
 pushes filters and shares repeated scans; the catalog's benefit is clearer
 on engines billed per byte scanned or without those optimizations.
 
+**Held-out set** (`eval/holdout_queries.yaml`, 30 queries): queries and
+labels committed 2026-10-14 **before any Guard run** on them, with the
+labeling guide in the file header. Not yet run. Run it once with
+`eval/run_eval.py --suite holdout`; the runner refuses a second run unless
+`--rerun` is passed and marks any rerun in `eval/RESULTS_holdout.md`.
+Limit: written by the same AI assistant that wrote the Guard's rules, so it
+is held out from the results, not independent of the author.
+
 **Threshold gates + judge** (`eval/run_judge_eval.py`,
 [`eval/RESULTS_judge.md`](eval/RESULTS_judge.md)): 20 labeled proposals.
 Deterministic gates reject 6/6 gate-type bad proposals (loosened to p99, tiny
@@ -172,7 +180,8 @@ static-only vs static+adaptive.
 ├── FIX_LIST.md               # review findings this version addresses
 ├── customer.yaml             # mock customer: workload-class caps, partitioned tables, bypass flag
 ├── eval/
-│   ├── eval_queries.yaml     # 30 labeled TheLook queries (15 bad/good pairs)
+│   ├── eval_queries.yaml     # 30 labeled TheLook queries (15 bad/good pairs) — no longer held out
+│   ├── holdout_queries.yaml  # 30 held-out queries, pre-registered; run ONCE (--suite holdout)
 │   ├── run_eval.py           # headline eval (TheLook) + --suite regression
 │   ├── regression_cases.py   # 11 inline cases (regression tests, not evidence)
 │   ├── run_judge_eval.py     # 20 labeled threshold proposals: gates + judge

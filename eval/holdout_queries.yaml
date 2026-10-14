@@ -1,0 +1,246 @@
+# Held-out Guard eval: 30 TheLook queries, to be run ONCE.
+#
+# PROVENANCE AND LIMITS (read before quoting any number from this set)
+# - Written 2026-10-14 by the AI assistant that also wrote the Guard's rules.
+#   It is therefore NOT independent of the rules; it is held out only in the
+#   sense that no Guard verdict on these queries was seen before the labels
+#   were committed. A set written by someone else would be stronger.
+# - Before the first run, the SQL was checked with DuckDB alone (EXPLAIN,
+#   ok/error only). No Guard verdict, rule finding or row estimate was looked
+#   at. Queries and labels were committed before the first run — the git
+#   history shows the order.
+# - Run with: .venv/bin/python eval/run_eval.py --suite holdout
+#   The runner refuses a second run unless --rerun is passed, and marks any
+#   rerun in eval/RESULTS_holdout.md. Do NOT change the Guard and re-run to
+#   improve this score: that turns it into a tuning set, like eval_queries.yaml.
+#
+# LABELING GUIDE (fixed before writing the queries; labels follow it, not a
+# prediction of what the Guard does)
+#   block   - a non-read-only statement; or a join that multiplies rows far
+#             past the interactive cap (5,000,000 rows processed, see
+#             customer.yaml) — cartesian products and joins on a
+#             low-cardinality non-key column.
+#   rewrite - an EQUIVALENT cheaper query exists (same rows and columns) that
+#             can be produced mechanically, without a human choosing columns
+#             or dates.
+#   warn    - a wasteful, risky or wrong pattern with no equivalent fix: a
+#             full scan of a table the customer marks as partitioned
+#             (customer.yaml partitioned_tables) with no filter on its date
+#             column, SELECT * on a wide table (8+ columns), a sort of a large
+#             table with no LIMIT, a meaningless aggregate (SUM of an ID), a
+#             NOT IN over a column with NULLs, redundant work (DISTINCT that
+#             cannot remove anything), GROUP BY a near-unique column.
+#   allow   - a reasonable query: filtered or small, bounded output, sensible
+#             aggregation.
+# role: good = labeled allow; bad = anything else.
+
+queries:
+  - id: H01
+    role: good
+    pattern: clean
+    description: "Monthly completed revenue for Q4 2023."
+    sql: "SELECT DATE_TRUNC('month', created_at) AS month, SUM(sale_price) AS revenue FROM order_items WHERE status = 'Complete' AND created_at >= TIMESTAMP '2023-10-01' AND created_at < TIMESTAMP '2024-01-01' GROUP BY 1 ORDER BY 1"
+    guard_action_expected: allow
+
+  - id: H02
+    role: good
+    pattern: clean
+    description: "Top 10 brands by 2023 revenue."
+    sql: "SELECT p.brand, SUM(oi.sale_price) AS revenue FROM order_items oi JOIN products p ON p.id = oi.product_id WHERE oi.created_at >= TIMESTAMP '2023-01-01' AND oi.created_at < TIMESTAMP '2024-01-01' GROUP BY p.brand ORDER BY revenue DESC LIMIT 10"
+    guard_action_expected: allow
+
+  - id: H03
+    role: good
+    pattern: clean
+    description: "Customers per country (users is not a partitioned table)."
+    sql: "SELECT country, COUNT(*) AS customers FROM users GROUP BY country ORDER BY customers DESC"
+    guard_action_expected: allow
+
+  - id: H04
+    role: bad
+    pattern: unbounded_full_scan
+    description: "Browser share across all events, no date filter."
+    sql: "SELECT browser, COUNT(*) AS n FROM events GROUP BY browser"
+    guard_action_expected: warn
+
+  - id: H05
+    role: bad
+    pattern: runaway_join
+    description: "Event-pair funnel by joining every event of a user to every other, all history."
+    sql: "SELECT a.event_type AS first_type, b.event_type AS second_type, COUNT(*) AS n FROM events a JOIN events b ON a.user_id = b.user_id GROUP BY 1, 2"
+    guard_action_expected: block
+
+  - id: H06
+    role: bad
+    pattern: function_on_partition_column
+    description: "Black Friday orders via a cast on the date column."
+    sql: "SELECT order_id, status FROM orders WHERE CAST(created_at AS DATE) = DATE '2023-11-24'"
+    guard_action_expected: rewrite
+
+  - id: H07
+    role: bad
+    pattern: select_star_wide_table
+    description: "All columns of December order items."
+    sql: "SELECT * FROM order_items WHERE created_at >= TIMESTAMP '2023-12-01'"
+    guard_action_expected: warn
+
+  - id: H08
+    role: good
+    pattern: clean
+    description: "Point lookup of one customer."
+    sql: "SELECT id, email FROM users WHERE id = 4242"
+    guard_action_expected: allow
+
+  - id: H09
+    role: bad
+    pattern: implicit_comma_join_no_condition
+    description: "Emails paired with Jeans products, join condition forgotten."
+    sql: "SELECT u.email, p.name FROM users u, products p WHERE p.category = 'Jeans'"
+    guard_action_expected: block
+
+  - id: H10
+    role: good
+    pattern: clean
+    description: "Sell-through rate per distribution center for 2023+ inventory."
+    sql: "SELECT product_distribution_center_id, COUNT(*) FILTER (WHERE sold_at IS NOT NULL) * 1.0 / COUNT(*) AS sell_through FROM inventory_items WHERE created_at >= TIMESTAMP '2023-01-01' GROUP BY 1"
+    guard_action_expected: allow
+
+  - id: H11
+    role: bad
+    pattern: sum_of_identifier
+    description: "Summing order IDs per status."
+    sql: "SELECT status, SUM(order_id) AS total FROM orders WHERE created_at >= TIMESTAMP '2023-01-01' GROUP BY status"
+    guard_action_expected: warn
+
+  - id: H12
+    role: good
+    pattern: clean
+    description: "Average items per order by gender, 2023."
+    sql: "SELECT gender, AVG(num_of_item) AS avg_items FROM orders WHERE created_at >= TIMESTAMP '2023-01-01' AND created_at < TIMESTAMP '2024-01-01' GROUP BY gender"
+    guard_action_expected: allow
+
+  - id: H13
+    role: good
+    pattern: clean
+    description: "Events per session in January 2024 (session length)."
+    sql: "SELECT session_id, COUNT(*) AS events_in_session FROM events WHERE created_at >= TIMESTAMP '2024-01-01' GROUP BY session_id"
+    guard_action_expected: allow
+
+  - id: H14
+    role: bad
+    pattern: unbounded_sort
+    description: "Every event sorted newest first, no filter and no LIMIT."
+    sql: "SELECT id, uri, created_at FROM events ORDER BY created_at DESC"
+    guard_action_expected: warn
+
+  - id: H15
+    role: good
+    pattern: clean
+    description: "Latest 100 events since mid-January 2024."
+    sql: "SELECT id, uri FROM events WHERE created_at >= TIMESTAMP '2024-01-15' ORDER BY created_at DESC LIMIT 100"
+    guard_action_expected: allow
+
+  - id: H16
+    role: bad
+    pattern: filter_after_join
+    description: "California orders since September, filtered outside the joined subquery."
+    sql: "SELECT x.order_id FROM (SELECT o.order_id, o.created_at, u.state FROM orders o JOIN users u ON u.id = o.user_id) x WHERE x.state = 'California' AND x.created_at >= TIMESTAMP '2023-09-01'"
+    guard_action_expected: rewrite
+
+  - id: H17
+    role: good
+    pattern: clean
+    description: "Cancel-page events since 2023, substring match."
+    sql: "SELECT COUNT(*) AS n FROM events WHERE uri LIKE '%cancel%' AND created_at >= TIMESTAMP '2023-01-01'"
+    guard_action_expected: allow
+
+  - id: H18
+    role: bad
+    pattern: not_in_with_nulls
+    description: "Users who never generated an event — NOT IN over a column with NULLs, all history."
+    sql: "SELECT COUNT(*) AS n FROM users WHERE id NOT IN (SELECT user_id FROM events)"
+    guard_action_expected: warn
+
+  - id: H19
+    role: bad
+    pattern: unbounded_full_scan
+    description: "Last order date per Japanese customer via a correlated subquery over all orders."
+    sql: "SELECT u.id, (SELECT MAX(o.created_at) FROM orders o WHERE o.user_id = u.id) AS last_order FROM users u WHERE u.country = 'Japan'"
+    guard_action_expected: warn
+
+  - id: H20
+    role: bad
+    pattern: non_read_only
+    description: "Cleanup attempt from an analyst session."
+    sql: "DELETE FROM events WHERE created_at < TIMESTAMP '2020-01-01'"
+    guard_action_expected: block
+
+  - id: H21
+    role: good
+    pattern: clean
+    description: "2024 row counts for orders and order items side by side."
+    sql: "SELECT 'orders' AS src, COUNT(*) AS n FROM orders WHERE created_at >= TIMESTAMP '2024-01-01' UNION ALL SELECT 'order_items', COUNT(*) FROM order_items WHERE created_at >= TIMESTAMP '2024-01-01'"
+    guard_action_expected: allow
+
+  - id: H22
+    role: bad
+    pattern: unbounded_full_scan
+    description: "Distinct users across all events ever."
+    sql: "SELECT COUNT(DISTINCT user_id) AS users FROM events"
+    guard_action_expected: warn
+
+  - id: H23
+    role: good
+    pattern: clean
+    description: "Average margin by department and category."
+    sql: "SELECT department, category, ROUND(AVG(retail_price - cost), 2) AS avg_margin FROM products GROUP BY 1, 2"
+    guard_action_expected: allow
+
+  - id: H24
+    role: bad
+    pattern: runaway_join
+    description: "Events joined to users on traffic source instead of user id."
+    sql: "SELECT e.session_id, u.email FROM events e JOIN users u ON u.traffic_source = e.traffic_source"
+    guard_action_expected: block
+
+  - id: H25
+    role: bad
+    pattern: function_on_partition_column
+    description: "December 2023 event count via DATE_TRUNC on the date column."
+    sql: "SELECT COUNT(*) AS n FROM events WHERE DATE_TRUNC('month', created_at) = TIMESTAMP '2023-12-01'"
+    guard_action_expected: rewrite
+
+  - id: H26
+    role: good
+    pattern: clean
+    description: "Order sequence number per customer since July 2023."
+    sql: "SELECT user_id, order_id, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at) AS nth_order FROM orders WHERE created_at >= TIMESTAMP '2023-07-01'"
+    guard_action_expected: allow
+
+  - id: H27
+    role: bad
+    pattern: redundant_distinct
+    description: "Customers per state with a DISTINCT that cannot remove anything."
+    sql: "SELECT DISTINCT state, COUNT(*) AS customers FROM users GROUP BY state"
+    guard_action_expected: warn
+
+  - id: H28
+    role: good
+    pattern: clean
+    description: "Average Q4 2023 orders per buyer, by country."
+    sql: "WITH recent AS (SELECT user_id, COUNT(*) AS n FROM orders WHERE created_at >= TIMESTAMP '2023-10-01' GROUP BY user_id) SELECT u.country, AVG(r.n) AS avg_orders FROM recent r JOIN users u ON u.id = r.user_id GROUP BY u.country"
+    guard_action_expected: allow
+
+  - id: H29
+    role: bad
+    pattern: select_star_wide_table
+    description: "Every column of 2024 events joined to every column of users."
+    sql: "SELECT * FROM events e JOIN users u ON u.id = e.user_id WHERE e.created_at >= TIMESTAMP '2024-01-01'"
+    guard_action_expected: warn
+
+  - id: H30
+    role: good
+    pattern: clean
+    description: "Products per distribution center."
+    sql: "SELECT dc.name, COUNT(*) AS products FROM products p JOIN distribution_centers dc ON dc.id = p.distribution_center_id GROUP BY dc.name"
+    guard_action_expected: allow
