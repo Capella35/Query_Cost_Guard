@@ -229,6 +229,16 @@ static-only vs static+adaptive.
   them. Caveat: the synthetic dates are evenly spread, the best case; on
   TheLook, where orders grow over time, a partial wide window (2023–2025)
   is still estimated ~2.6× low.
+- **On TheLook, DuckDB estimates vs BigQuery bytes** (`eval/run_replay_bq.py`,
+  [`eval/RESULTS_replay_bq.md`](eval/RESULTS_replay_bq.md); same 96-run
+  traffic shape on TheLook columns, size check only): with DuckDB's row
+  estimate the adaptive rule adds **nothing** (catch 33%, static only); with
+  BigQuery dry-run bytes it catches **100%** of the bad runs, 0% false
+  positives. The cause is separation: DuckDB's raise-only range estimate
+  puts a 2-year window at ~2× a 7-day one; exact bytes after pruning put it
+  at ×114 (`orders`) and ×139 (`order_items`). So the standard variant's 100%
+  depended on the synthetic data's even date spread. Same caveats: planted
+  anomaly, small test split (6 bad / 23 good), no runtime.
 - Hard variant (`--variant hard`, 240 simulated runs: gradual drift, noisy
   durations, a legitimately 10× month-end shape, a slow creep): adaptive
   catches 71% of bad runs with **49% false positives** — drift and creep look
