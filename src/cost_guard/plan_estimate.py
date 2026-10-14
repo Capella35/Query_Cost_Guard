@@ -19,8 +19,9 @@ Rules:
      estimate (20% of the table) — that is raised to the table's row count;
    - a range filter that remains is estimated from the registry's min/max:
      the fraction of the column's value range it covers, assuming values are
-     spread evenly. An ESTIMATE, not a bound — it replaces DuckDB's flat
-     guess, up or down, and is labeled as such.
+     spread evenly. That assumption runs low on skewed data, so it is used
+     RAISE-ONLY: it lifts DuckDB's flat guess when the range is wider, and
+     never lowers it (an underestimate could let a costly query under the cap).
 3. Join: recomputed only when an input below it changed, as
    rows(L) x rows(R) / max(distinct(L.key), distinct(R.key)) on the
    corrected inputs (distinct capped at the input's rows); keys that can't

@@ -122,13 +122,23 @@ def test_registry_stores_value_ranges(synthetic_wh):
     assert reg.lookup("orders", "status").min_value is None  # text: no range
 
 
-def test_range_filters_use_the_value_range(synthetic_wh):
+def test_wide_range_raises_the_flat_estimate(synthetic_wh):
+    # ~29% of orders match; the planner's flat guess is 20% -> raised.
+    q = "SELECT order_id FROM orders WHERE created_at >= '2024-06-01'"
+    est = synthetic_wh.estimate(q)
+    assert est.source == "explain+corrected"
+    assert any("raised" in c for c in est.corrections)
+    assert abs(est.rows_processed - _actual(synthetic_wh, q)) <= 0.05 * _actual(synthetic_wh, q)
+
+
+def test_narrow_range_never_lowers_the_estimate(synthetic_wh):
+    # A 7-day window is ~1% of the range: the planner's 20% stands (an
+    # overestimate is the safe direction for a cap).
     for q in ("SELECT order_id FROM orders WHERE created_at >= '2023-06-01' AND created_at < '2023-06-08'",
-              "SELECT order_id FROM orders WHERE created_at >= '2024-06-01'",
               "SELECT order_id FROM orders WHERE amount_cents BETWEEN 10 AND 100"):
         est = synthetic_wh.estimate(q)
-        assert est.source == "explain+corrected"
-        assert abs(est.rows_processed - _actual(synthetic_wh, q)) <= 0.05 * _actual(synthetic_wh, q) + 50
+        assert not any("value range" in c for c in est.corrections)
+        assert est.rows_processed >= _actual(synthetic_wh, q)
 
 
 def test_filter_dropped_as_always_true_counts_every_row(synthetic_wh):

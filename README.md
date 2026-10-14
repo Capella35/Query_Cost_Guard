@@ -24,7 +24,7 @@ What exists in code today. "How it works" below only describes rows marked **bui
 | Component | Status | Where |
 |---|---|---|
 | Read-only classifier: one SELECT/WITH statement, no write nodes, file/network/env functions denied, fails closed on parse errors | **built** | `sql_ast.read_only_violation` |
-| Cost estimate from DuckDB's plan (`EXPLAIN` cardinalities, incl. join fan-out), corrected where the plan is provably or measurably off: GROUP BY outputs bounded by registry distinct counts (only lowers), scans whose always-true filter the planner dropped count every row, remaining range filters estimated from the registry's min/max (assumes evenly spread values — ~2.3× low on TheLook's growing data); joins above recomputed; labeled `explain+corrected`; labeled table-sum fallback | **built** | `backends/duckdb_backend.py`, `plan_estimate.py` |
+| Cost estimate from DuckDB's plan (`EXPLAIN` cardinalities, incl. join fan-out), corrected where the plan is provably or measurably off: GROUP BY outputs bounded by registry distinct counts (only lowers), scans whose always-true filter the planner dropped count every row, remaining range filters can be RAISED (never lowered) from the registry's min/max; joins above recomputed. Limit: DuckDB's own flat 20% range guess still runs low on skewed data (TheLook 2023–2025 window: ~26k estimated vs 68k actual); labeled `explain+corrected`; labeled table-sum fallback | **built** | `backends/duckdb_backend.py`, `plan_estimate.py` |
 | Hard caps per workload class, loaded from `customer.yaml` (rows on DuckDB, bytes on BigQuery) | **built** | `config.py`, `guard.py` |
 | 8 static rules on the sqlglot AST: SELECT * on wide tables, missing partition filter, cartesian product, function on partition column, filter after join/HAVING without aggregate, repeated subquery, high-cardinality GROUP BY, SUM/AVG on an identifier column (by name, or near-unique per the column registry) | **built** | `rules/static_rules.py`, `sql_ast.py` |
 | Skipped-rule reporting on every verdict and trace | **built** | `GuardVerdict.skipped_rules` |
@@ -58,9 +58,10 @@ Guard (before execution) → watchdog execution → query log → Investigator (
    file, network or environment function — is blocked.
 2. DuckDB's own plan estimates rows processed, including join fan-out. The
    column registry corrects it where the planner guesses: GROUP BY outputs
-   (bounded by distinct counts) and date/number range filters (from each
-   column's min/max instead of a flat 20%). Above the workload class's hard
-   cap from `customer.yaml`, the query is blocked.
+   (bounded by distinct counts) and wide date/number range filters (raised
+   from each column's min/max when the planner's flat 20% is too low; never
+   lowered). Above the workload class's hard cap from `customer.yaml`, the
+   query is blocked.
 3. The static rules run on the parsed AST. A cartesian product (relations no
    predicate links, unless provably tiny) is blocked; other findings warn.
    Column cardinality for the GROUP BY rule is a lookup in the column
@@ -133,12 +134,12 @@ static-only vs static+adaptive.
   the mechanism, not production performance. What changed: DuckDB gives
   every date-range filter the same flat 20% estimate, so wide and narrow
   windows used to look identical by rows and only runtime (often under the
-  20 ms noise floor) could separate them. Now a 7-day window is estimated
-  from the column's min/max (~1% of the table) and a window covering all
-  the data reads every row, so the rows clause catches the wide runs.
-  Caveat: the synthetic dates are evenly spread, which is the range
-  estimate's best case; on TheLook, where orders grow over time, the same
-  estimate comes out ~2.3× low.
+  20 ms noise floor) could separate them. Now a window covering all the
+  data counts every row while a 7-day window keeps the planner's 20%, so
+  wide runs are ~5× their fingerprint's median and the rows clause catches
+  them. Caveat: the synthetic dates are evenly spread, the best case; on
+  TheLook, where orders grow over time, a partial wide window (2023–2025)
+  is still estimated ~2.6× low.
 - Hard variant (`--variant hard`, 240 simulated runs: gradual drift, noisy
   durations, a legitimately 10× month-end shape, a slow creep): adaptive
   catches 71% of bad runs with **49% false positives** — drift and creep look
@@ -175,7 +176,7 @@ static-only vs static+adaptive.
 │   └── rules/static_rules.py
 ├── scripts/                  # TheLook loader, column registry build, BigQuery schema check
 ├── demo/                     # synthetic warehouse, 4-beat CLI demo, Streamlit UI
-└── tests/                    # 118 tests (TheLook-dependent ones skip without data/)
+└── tests/                    # 119 tests (TheLook-dependent ones skip without data/)
 ```
 
 ## Quickstart (local-first, no cloud)
@@ -220,9 +221,10 @@ PYTHONPATH=src .venv/bin/python demo/demo.py
 
 - Deterministic fixers for the patterns the eval shows as "detected, not
   fixed" (SELECT *, partition filters, filter pushdown).
-- Quantiles (an equi-depth histogram) per range column in the registry: the
-  min/max estimate assumes evenly spread values and runs ~2.3× low on
-  TheLook, where recent dates are denser.
+- Quantiles (an equi-depth histogram) per range column in the registry —
+  only if range estimates start to matter near the cap: DuckDB's flat 20%
+  guess (which the registry can only raise, from min/max) still runs ~2.6×
+  low on TheLook's skewed dates.
 - Wire the adaptive anomaly rule into `decide()` once the hard replay's false
   positives are addressed (drift-aware baselines).
 - Run and publish the live LLM evals (rewrite equivalence rate, judge

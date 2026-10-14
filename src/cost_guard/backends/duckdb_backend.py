@@ -9,8 +9,9 @@ cartesian products show up as a large peak row count. CROSS_PRODUCT nodes
 carry no estimate; their cardinality is the product of their inputs. Where
 the column registry bounds a GROUP BY's output, plan_estimate.py corrects
 the estimate (and the joins above it); a scan whose filter the planner
-dropped as always-true counts every row; a remaining range filter is
-estimated from the registry's min/max — labeled source="explain+corrected". If
+dropped as always-true counts every row; a remaining range filter may
+RAISE the estimate from the registry's min/max (never lower it) — labeled
+source="explain+corrected". If
 EXPLAIN fails, the fallback is the old upper bound — the sum of referenced
 table sizes — labeled source="table_sum_fallback" because it cannot see
 fan-out. Note: DuckDB estimates range filters at a flat selectivity, so a
@@ -158,12 +159,17 @@ class DuckDBWarehouse:
                 return None
             fraction, col = found
             new = max(1, round(rows * fraction))
-            if new == orig:
+            # Raise-only: the min/max estimate assumes evenly spread values
+            # and runs low on skewed data (~2.3x on TheLook), so it may lift
+            # the planner's flat guess but never cut it — an underestimate
+            # could let a costly query under the cap.
+            if new <= orig:
                 return None
             return new, (
                 f"scan of {table}: range filter on {col} covers ~{fraction:.1%} of its "
-                f"value range per the column registry (planner's flat estimate {orig:,}) "
-                "— assumes evenly spread values; an estimate, not a bound"
+                f"value range per the column registry, above the planner's flat "
+                f"estimate {orig:,} — raised (assumes evenly spread values; never "
+                "used to lower an estimate)"
             )
 
         return hook
