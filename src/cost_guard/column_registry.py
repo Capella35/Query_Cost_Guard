@@ -2,8 +2,16 @@
 
 Instead of scanning a column with APPROX_COUNT_DISTINCT every time a query
 groups by it, a scheduled job profiles each table once and stores one row per
-column in a `column_registry` table inside the warehouse. The Guard reads
-that table (once per backend, cached) and never profiles on the query path.
+column in a `column_registry` table in a LOCAL DuckDB file next to the
+warehouse (data/thelook.duckdb -> data/thelook.registry.duckdb). The Guard
+reads that file (once per backend, cached) and never profiles on the query
+path.
+
+Why local, not in the warehouse: the build job only READS the warehouse
+(no write access, no exclusive lock), and on a billed warehouse reading the
+registry costs nothing — a registry table in BigQuery would be a billed
+query (10 MB minimum) on every Guard start. Storage was never the cost (one
+row per column); the profiling scan still reads the data once per refresh.
 
 Build mechanics:
 - one scan per table covers all its columns (HyperLogLog distinct counts,
@@ -25,6 +33,7 @@ max_age_days are treated by the Guard as unverified (rule skipped, visibly).
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -39,6 +48,12 @@ DEFAULTS = {
     "scan_timeout_sec": 900,
     "use_approximate": True,  # HyperLogLog; exact COUNT(DISTINCT) per column is costly
 }
+
+
+def default_registry_path(db_path: str) -> str:
+    """Local registry file for a warehouse file: x.duckdb -> x.registry.duckdb."""
+    p = Path(db_path)
+    return str(p.with_name(p.stem + ".registry.duckdb"))
 
 
 def registry_settings(customer: Optional[dict] = None) -> dict:
@@ -151,12 +166,14 @@ def build_registry(
     settings: Optional[dict] = None,
     mode: str = "stale",
     schema: str = "main",
+    registry_path: Optional[str] = None,
 ) -> BuildReport:
-    """Create/refresh the registry in a DuckDB warehouse (needs a write
-    connection — run as a scheduled job, not from the Guard).
+    """Create/refresh the local registry for a DuckDB warehouse. The
+    warehouse is opened READ-ONLY; only the registry file is written.
 
     mode: "missing" | "stale" | "all" (see module docstring).
     tables: restrict to these tables (default: every base table in `schema`).
+    registry_path: default default_registry_path(db_path).
     """
     import duckdb
 
@@ -164,39 +181,42 @@ def build_registry(
     if mode not in ("missing", "stale", "all"):
         raise ValueError(f"mode must be missing|stale|all, got {mode!r}")
     report = BuildReport()
-    con = duckdb.connect(db_path)
+    registry_path = registry_path or default_registry_path(db_path)
+    Path(registry_path).parent.mkdir(parents=True, exist_ok=True)
+    wh = duckdb.connect(db_path, read_only=True)
+    reg = duckdb.connect(registry_path)
     try:
         sql_type = {"bool": "BOOLEAN", "int": "BIGINT"}
         cols_sql = ", ".join(f"{f.name} {sql_type.get(f.type, 'VARCHAR')}"
                              for f in fields(RegistryEntry))
-        existing = [r[0] for r in con.execute(
+        existing = [r[0] for r in reg.execute(
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_schema = 'main' AND table_name = ? ORDER BY ordinal_position",
             [REGISTRY_TABLE]).fetchall()]
         if existing and existing != [f.name for f in fields(RegistryEntry)]:
             # Different shape (older version): rebuild rather than ALTER —
             # old rows can't be keyed safely.
-            con.execute(f"DROP TABLE {REGISTRY_TABLE}")
-        con.execute(f"CREATE TABLE IF NOT EXISTS {REGISTRY_TABLE} ({cols_sql})")
+            reg.execute(f"DROP TABLE {REGISTRY_TABLE}")
+        reg.execute(f"CREATE TABLE IF NOT EXISTS {REGISTRY_TABLE} ({cols_sql})")
 
-        catalog = con.execute(
+        catalog = wh.execute(
             "SELECT c.table_name, c.column_name FROM information_schema.columns c "
             "JOIN information_schema.tables t USING (table_schema, table_name) "
             "WHERE c.table_schema = ? AND t.table_type = 'BASE TABLE' AND c.table_name <> ?",
-            [schema, REGISTRY_TABLE],
+            [schema, REGISTRY_TABLE],  # skip a registry table left by older versions
         ).fetchall()
         live: dict[str, set[str]] = {}
         for t, c in catalog:
             live.setdefault(t, set()).add(c)
 
         # Remove rows for tables/columns that no longer exist.
-        registered = con.execute(
+        registered = reg.execute(
             f"SELECT table_name, column_name, profiled_at FROM {REGISTRY_TABLE} WHERE schema_name = ?",
             [schema],
         ).fetchall()
         gone = [(t, c) for t, c, _ in registered if c not in live.get(t, set())]
         for t, c in gone:
-            con.execute(f"DELETE FROM {REGISTRY_TABLE} WHERE schema_name = ? AND table_name = ? "
+            reg.execute(f"DELETE FROM {REGISTRY_TABLE} WHERE schema_name = ? AND table_name = ? "
                         "AND column_name = ?", [schema, t, c])
         report.removed_rows = len(gone)
 
@@ -216,34 +236,56 @@ def build_registry(
             if not (mode == "all" or missing or (mode == "stale" and stale)):
                 report.up_to_date.append(t)
                 continue
-            rows = con.execute(f'SELECT estimated_size FROM duckdb_tables() '
-                               f"WHERE schema_name = ? AND table_name = ?", [schema, t]).fetchone()
+            rows = wh.execute("SELECT estimated_size FROM duckdb_tables() "
+                              "WHERE schema_name = ? AND table_name = ?", [schema, t]).fetchone()
             if rows and rows[0] is not None and rows[0] > cfg["max_table_rows"]:
                 report.oversized.append(f"{t} (~{rows[0]:,} rows)")
                 continue
             now = datetime.now(timezone.utc).isoformat()
             try:
-                entries = _profile_table(con, schema, t, cfg["use_approximate"], now,
+                entries = _profile_table(wh, schema, t, cfg["use_approximate"], now,
                                          cfg["scan_timeout_sec"])
             except Exception as e:  # noqa: BLE001 — one bad table must not stop the run
                 report.failed.append(f"{t}: {str(e).splitlines()[0][:100]}")
                 continue
             # Replace this table's rows atomically: a failure cannot leave
             # columns deleted and not replaced.
-            con.execute("BEGIN TRANSACTION")
+            reg.execute("BEGIN TRANSACTION")
             try:
-                con.execute(f"DELETE FROM {REGISTRY_TABLE} WHERE schema_name = ? AND table_name = ?",
+                reg.execute(f"DELETE FROM {REGISTRY_TABLE} WHERE schema_name = ? AND table_name = ?",
                             [schema, t])
                 placeholders = ", ".join("?" for _ in fields(RegistryEntry))
-                con.executemany(f"INSERT INTO {REGISTRY_TABLE} VALUES ({placeholders})",
+                reg.executemany(f"INSERT INTO {REGISTRY_TABLE} VALUES ({placeholders})",
                                 [tuple(asdict(e).values()) for e in entries])
-                con.execute("COMMIT")
+                reg.execute("COMMIT")
             except Exception:
-                con.execute("ROLLBACK")
+                reg.execute("ROLLBACK")
                 raise
             report.profiled.append(t)
             report.columns += len(entries)
         return report
+    finally:
+        wh.close()
+        reg.close()
+
+
+def load_registry(registry_path: str) -> Optional["ColumnRegistry"]:
+    """Read a local registry file; None when it hasn't been built."""
+    import duckdb
+
+    if not Path(registry_path).exists():
+        return None
+    con = duckdb.connect(registry_path, read_only=True)
+    try:
+        exists = con.execute(
+            "SELECT COUNT(*) FROM information_schema.tables "
+            f"WHERE table_schema = 'main' AND table_name = '{REGISTRY_TABLE}'"
+        ).fetchone()[0]
+        if not exists:
+            return None
+        cur = con.execute(f"SELECT * FROM {REGISTRY_TABLE}")
+        names = [d[0] for d in cur.description]
+        return ColumnRegistry.from_rows(cur.fetchall(), names)
     finally:
         con.close()
 

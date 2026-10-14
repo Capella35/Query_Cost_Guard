@@ -76,8 +76,13 @@ class _DuckDBSample:
 class DuckDBWarehouse:
     name = "duckdb"
 
-    def __init__(self, db_path: str = "data/thelook.duckdb", read_only: bool = True):
+    def __init__(self, db_path: str = "data/thelook.duckdb", read_only: bool = True,
+                 registry_path: Optional[str] = None):
+        from ..column_registry import default_registry_path
+
         self.db_path = db_path
+        # Local profiling lookup (not stored in the warehouse).
+        self.registry_path = registry_path or default_registry_path(db_path)
         self.read_only = read_only
         self._con = None
         self._row_counts: dict[str, int] = {}
@@ -324,22 +329,12 @@ class DuckDBWarehouse:
         }
 
     def column_registry(self):
-        """The column registry table (column_registry.py), read once and
-        cached. None when it has not been built for this warehouse."""
+        """The local column registry (column_registry.py) for this warehouse,
+        read once and cached. None when it has not been built."""
         if not self._registry_loaded:
-            from ..column_registry import REGISTRY_TABLE, ColumnRegistry
+            from ..column_registry import load_registry
 
-            con = self._connect()
-            exists = con.execute(
-                "SELECT COUNT(*) FROM information_schema.tables "
-                f"WHERE table_schema = 'main' AND table_name = '{REGISTRY_TABLE}'"
-            ).fetchone()[0]
-            if exists:
-                cur = con.execute(f"SELECT * FROM {REGISTRY_TABLE}")
-                names = [d[0] for d in cur.description]
-                self._registry = ColumnRegistry.from_rows(cur.fetchall(), names)
-            else:
-                self._registry = None
+            self._registry = load_registry(self.registry_path)
             self._registry_loaded = True
         return self._registry
 

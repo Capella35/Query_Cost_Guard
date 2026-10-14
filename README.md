@@ -28,7 +28,7 @@ What exists in code today. "How it works" below only describes rows marked **bui
 | Hard caps per workload class, loaded from `customer.yaml` (rows on DuckDB, bytes on BigQuery) | **built** | `config.py`, `guard.py` |
 | 8 static rules on the sqlglot AST: SELECT * on wide tables, missing partition filter, cartesian product, function on partition column, filter after join/HAVING without aggregate, repeated subquery, high-cardinality GROUP BY, SUM/AVG on an identifier column (by name, or near-unique per the column registry) | **built** | `rules/static_rules.py`, `sql_ast.py` |
 | Skipped-rule reporting on every verdict and trace | **built** | `GuardVerdict.skipped_rules` |
-| Column registry: a data-profiling lookup table (distinct count, NULL count, total rows, and min/max for numeric and date/time columns), one scan per table; size gate, scan timeout, refresh modes (missing / stale / all), dropped-column cleanup; the Guard looks profiles up instead of scanning, and treats entries older than `max_age_days` as unverified | **built** (DuckDB; BigQuery not built) | `column_registry.py`, `scripts/build_column_registry.py` |
+| Column registry: a data-profiling lookup table (distinct count, NULL count, total rows, and min/max for numeric and date/time columns), one scan per table, stored in a local file next to the warehouse (`data/thelook.registry.duckdb`) — the build only reads the warehouse, and reading the registry is free; size gate, scan timeout, refresh modes (missing / stale / all), dropped-column cleanup; the Guard looks profiles up instead of scanning, and treats entries older than `max_age_days` as unverified | **built** (DuckDB; BigQuery not built) | `column_registry.py`, `scripts/build_column_registry.py` |
 | Deterministic rewrite: repeated subquery → CTE | **built** | `rewrites.py` |
 | `compare_results`: both queries on the same sampled inputs, timeout, order-insensitive / float-tolerant / NULL-consistent hash | **built** | `tools/compare_results.py`, `results.py` |
 | Escape hatch: block → warn only with `guard.allow_bypass: true` + a reason; traced; never for writes | **built** | `guard._maybe_bypass` |
@@ -175,7 +175,7 @@ static-only vs static+adaptive.
 │   └── rules/static_rules.py
 ├── scripts/                  # TheLook loader, column registry build, BigQuery schema check
 ├── demo/                     # synthetic warehouse, 4-beat CLI demo, Streamlit UI
-└── tests/                    # 117 tests (TheLook-dependent ones skip without data/)
+└── tests/                    # 118 tests (TheLook-dependent ones skip without data/)
 ```
 
 ## Quickstart (local-first, no cloud)
@@ -185,7 +185,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 # TheLook CSVs (Kaggle; public download, ~170 MB zip) into data/raw/:
 #   https://www.kaggle.com/datasets/mustafakeser4/looker-ecommerce-bigquery-dataset
 .venv/bin/python scripts/load_thelook_duckdb.py --data-dir data/raw --db data/thelook.duckdb  # also builds the column registry
-.venv/bin/python scripts/build_column_registry.py   # refresh stale/new profiles (schedule it)
+.venv/bin/python scripts/build_column_registry.py   # refresh stale/new profiles into data/thelook.registry.duckdb (schedule it)
 .venv/bin/python -m pytest -q
 .venv/bin/python eval/run_eval.py
 .venv/bin/python -m cost_guard check "SELECT * FROM users, orders"

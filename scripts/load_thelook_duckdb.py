@@ -67,7 +67,7 @@ def main() -> None:
     from cost_guard.config import load_customer
 
     rep = build_registry(str(db_path), settings=registry_settings(load_customer()), mode="all")
-    print(f"column registry: {rep.columns} columns profiled"
+    print(f"column registry: {rep.columns} columns profiled -> {db_path.with_name(db_path.stem + '.registry.duckdb')}"
           + (f"; over size gate, not scanned: {rep.oversized}" if rep.oversized else ""))
     print(f"done -> {db_path}")
 

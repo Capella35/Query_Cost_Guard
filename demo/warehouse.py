@@ -1,7 +1,7 @@
 """Synthetic e-commerce warehouse builder, shared by the CLI demo and the UI.
 
 Builds users (50k), orders (1M), order_items (400k) and a wide events table
-(1M rows, 12 columns) in a local DuckDB file, plus its column registry.
+(1M rows, 12 columns) in a local DuckDB file, plus its local column registry file.
 Deterministic, ~3 seconds.
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from cost_guard.backends.duckdb_backend import DuckDBWarehouse
-from cost_guard.column_registry import build_registry, registry_settings
+from cost_guard.column_registry import build_registry, default_registry_path, registry_settings
 from cost_guard.config import load_customer
 
 
@@ -21,6 +21,7 @@ def build_synthetic_warehouse(db_path: str = "/tmp/cost_guard_demo.duckdb") -> D
     import duckdb
 
     Path(db_path).unlink(missing_ok=True)
+    Path(default_registry_path(db_path)).unlink(missing_ok=True)
     con = duckdb.connect(db_path)
     con.execute(
         """CREATE TABLE users AS SELECT range AS id,
@@ -69,5 +70,5 @@ def build_synthetic_warehouse(db_path: str = "/tmp/cost_guard_demo.duckdb") -> D
            FROM range(1000000)"""
     )
     con.close()
-    build_registry(db_path, settings=registry_settings(load_customer()), mode="all")  # one-time column profiling (column_registry table)
+    build_registry(db_path, settings=registry_settings(load_customer()), mode="all")  # one-time column profiling into <db>.registry.duckdb
     return DuckDBWarehouse(db_path=db_path)

@@ -3,7 +3,12 @@ import duckdb
 import pytest
 
 from cost_guard.backends.duckdb_backend import DuckDBWarehouse
-from cost_guard.column_registry import REGISTRY_TABLE, RegistryEntry, build_registry
+from cost_guard.column_registry import (
+    REGISTRY_TABLE,
+    RegistryEntry,
+    build_registry,
+    default_registry_path,
+)
 from cost_guard.guard import decide
 from cost_guard.tracing import Tracer
 
@@ -22,7 +27,7 @@ def _db(tmp_path, rows=200_000):
 
 
 def _rows(db):
-    con = duckdb.connect(db, read_only=True)
+    con = duckdb.connect(default_registry_path(db), read_only=True)
     try:
         return con.execute(f"SELECT table_name, column_name, distinct_count, null_count, "
                            f"total_rows, profiled_at FROM {REGISTRY_TABLE} ORDER BY 1, 2").fetchall()
@@ -110,3 +115,23 @@ def test_stale_entry_is_unverified_not_trusted(synthetic_wh, monkeypatch):
     v = decide(GROUP_SESSION, backend=synthetic_wh, tracer=Tracer())
     assert not any("near-unique" in f for f in v.findings)
     assert any("90 days old (> 35) — unverified" in s for s in v.skipped_rules)
+
+
+def test_registry_is_local_and_warehouse_is_read_only(tmp_path):
+    db = _db(tmp_path)
+    # A read-only connection held elsewhere must not block the build: the
+    # warehouse is only read.
+    holder = duckdb.connect(db, read_only=True)
+    try:
+        rep = build_registry(db)
+    finally:
+        holder.close()
+    assert sorted(rep.profiled) == ["events", "tiny"]
+    assert default_registry_path(db).endswith("w.registry.duckdb")
+    con = duckdb.connect(db, read_only=True)
+    try:
+        tables = [r[0] for r in con.execute("SELECT table_name FROM duckdb_tables()").fetchall()]
+    finally:
+        con.close()
+    assert REGISTRY_TABLE not in tables  # nothing written into the warehouse
+    assert DuckDBWarehouse(db).column_registry().lookup("events", "session_id") is not None
