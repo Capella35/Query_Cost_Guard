@@ -14,8 +14,10 @@ from cost_guard.tracing import Tracer  # noqa: E402
 
 class FakeClient:
     def __init__(self, nbytes, time_partitioning=SimpleNamespace(field="created_at"),
-                 range_partitioning=None, columns=("order_id", "user_id", "created_at")):
+                 range_partitioning=None, columns=("order_id", "user_id", "created_at"),
+                 views=()):
         self.nbytes = nbytes
+        self.views = views
         self.configs = []
         self.time_partitioning = time_partitioning
         self.range_partitioning = range_partitioning
@@ -26,8 +28,10 @@ class FakeClient:
         return SimpleNamespace(total_bytes_processed=self.nbytes, result=lambda timeout=None: [])
 
     def get_table(self, ref):
+        view = ref.rsplit(".", 1)[-1] in self.views
         return SimpleNamespace(
-            num_rows=125_226, num_bytes=10_000_000,
+            table_type="VIEW" if view else "TABLE",
+            num_rows=0 if view else 125_226, num_bytes=10_000_000,
             schema=[SimpleNamespace(name=n) for n in self.columns],
             time_partitioning=self.time_partitioning, range_partitioning=self.range_partitioning,
             clustering_fields=None,
@@ -147,3 +151,16 @@ def test_duckdb_still_warns_on_cast(synthetic_wh):
     v = decide("SELECT order_id FROM orders WHERE CAST(created_at AS DATE) = DATE '2024-03-01'",
                backend=synthetic_wh, tracer=Tracer())
     assert _wrap_findings(v)
+
+
+def test_view_row_count_is_unknown_not_tiny():
+    """BigQuery reports num_rows 0 for a view. Taken as a fact, it made the
+    views in a cartesian product "provably tiny" and the rule stayed quiet
+    (found live: Q06/Q12 on the TheLook copies, where users is a view)."""
+    wh = BigQueryWarehouse("proj", client=FakeClient(0, views=("users", "products")))
+    assert wh.table_metadata("users")["num_rows"] is None
+    assert wh.table_metadata("orders")["num_rows"] == 125_226
+    for q in ("SELECT u.id, p.id FROM users AS u CROSS JOIN products AS p",
+              "SELECT o.order_id, u.email FROM orders AS o, users AS u WHERE o.status = 'Shipped'"):
+        v = decide(q, backend=wh, tracer=Tracer())
+        assert v.decision == "block" and "cartesian" in v.reason

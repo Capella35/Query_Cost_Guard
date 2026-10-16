@@ -341,6 +341,8 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
 
     if estimate is None:
         reason = "clean by static rules — no backend, cost not estimated"
+    elif estimate.source == "dry_run":  # BigQuery: bytes, no row count
+        reason = f"clean — estimated {est_bytes or 0:,} bytes ({estimate.source}), within caps"
     else:
         reason = f"clean — estimated {rows:,} rows ({estimate.source}), within caps"
     return GuardVerdict(decision="allow", reason=reason, findings=[], **base)

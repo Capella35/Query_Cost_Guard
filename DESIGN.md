@@ -334,6 +334,10 @@ Never stored: SQL text, literal values, result rows.
   TIMESTAMP literals for TIMESTAMP columns, no `DATE`-vs-`TIMESTAMP`
   comparisons.
 
+- BigQuery has no row estimate: a dry run reports bytes read, so a join
+  fan-out (Q13, ~100M rows from ~10 MiB) only warns there. A fan-out
+  estimate from the column registry (rows(L) × rows(R) / distinct keys, as
+  `plan_estimate.py` does on DuckDB) needs the registry built for BigQuery.
 - Count rows read instead of rows out of scans? It would make "scanned"
   honest, but it shifts every estimate and possibly verdicts.
 - Are rewrites worth offering on DuckDB, where most measure ~1× (pushdown

@@ -44,7 +44,7 @@ What exists in code today. "How it works" below only describes rows marked **bui
 | CLI: `check`, `run` (`--user`, `--bypass-reason`), `investigate`, `report` | **built** | `python -m cost_guard` |
 | LLM rewrite proposer, flag explainer, threshold judge (Claude) | **built, live eval not yet run** — tested with fakes; needs Anthropic credentials | `llm.py` |
 | Adaptive anomaly rule (far above own fingerprint history) | **built in the replay harness only** — not called by `decide()` | `eval/run_replay.anomaly_flag` |
-| BigQuery backend: dry-run bytes, table metadata (incl. partition column), watchdog execute | **partial** — fake-client tests only, never run on a live project; no sampled verification (rewrites fail closed) | `backends/bigquery_backend.py` |
+| BigQuery backend: dry-run bytes, table metadata (incl. partition column), watchdog execute | **partial** — `check` run live (dry runs) on the 30-query set: 25 of 30 verdicts match DuckDB, 0 errors ([`eval/RESULTS_bq_live_check.md`](eval/RESULTS_bq_live_check.md)); `run` never executed live; no sampled verification (rewrites fail closed); no row estimate, so a join fan-out (Q13) only warns | `backends/bigquery_backend.py`, `scripts/bq_live_check.py` |
 | BigQuery history from `INFORMATION_SCHEMA.JOBS`; telemetry exporter | **planned** (interfaces only) | `interfaces.py` |
 | Human ground truth for false positives | **planned** | — |
 | Result cache (serve identical repeats from a stored result) | **planned** — the report measures the opportunity first | — |

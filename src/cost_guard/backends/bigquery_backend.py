@@ -89,9 +89,13 @@ class BigQueryWarehouse:
 
     def table_metadata(self, table: str) -> dict:
         t = self._bq().get_table(f"{self.project}.{self.dataset}.{table}")
+        # A view (or external table) reports num_rows 0: unknown, not empty.
+        # Passed through as 0 it made users/products "provably tiny" and
+        # silenced the cartesian rule (eval/RESULTS_bq_live_check.md).
+        known = getattr(t, "table_type", "TABLE") == "TABLE" and t.num_rows is not None
         return {
             "table": table,
-            "num_rows": int(t.num_rows or 0),
+            "num_rows": int(t.num_rows) if known else None,
             "num_bytes": int(t.num_bytes or 0),
             "column_count": len(t.schema),
             "columns": [f.name for f in t.schema],
