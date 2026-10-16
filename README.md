@@ -76,7 +76,10 @@ Guard (before execution) → watchdog execution → query log → Investigator (
    question, so it is not an automatic rewrite). Ambiguous names (`*_no`,
    `*_num`, `*_code`), near-unique registry values and a model's unconfirmed
    label only warn: each may be a real count or amount. A column kind a person
-   confirmed (`scripts/classify_columns.py --confirm`) blocks or clears.
+   confirmed (`scripts/classify_columns.py --confirm`) decides: a confirmed
+   identifier or category (e.g. `events.sequence_number`, a step within a
+   session) blocks SUM/AVG — grouping, counting and MIN/MAX stay allowed; any
+   other confirmed kind clears.
    Other findings warn.
    Column cardinality for the GROUP BY rule is a lookup in the column
    registry (profiled once, refreshed on a schedule), not a scan.

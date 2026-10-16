@@ -193,3 +193,20 @@ def test_levels(shop):
     # a person can also clear a clear-looking id name (e.g. a quantity named *_key)
     assert _verdict(shop, "sale_id", {"sales.sale_id": {"kind": "quantity", "reviewed": True}}
                     ).decision == "allow"
+
+
+def test_confirmed_category_blocks_sum_and_avg_but_not_grouping(shop):
+    """A step/level/code column a person confirmed as a category: its values
+    are labels, so SUM/AVG are blocked; grouping, counting and MIN/MAX are not."""
+    from cost_guard.guard import decide
+    from cost_guard.tracing import Tracer
+
+    shop._kinds = {"sales.qty": {"kind": "category", "reviewed": True}}
+    for agg in ("SUM", "AVG"):
+        v = decide(f"SELECT {agg}(qty) FROM sales", backend=shop, tracer=Tracer())
+        assert v.decision == "block" and "category column" in v.reason and "GROUP BY qty" in v.reason
+    for q in ("SELECT qty, COUNT(*) FROM sales GROUP BY qty", "SELECT MAX(qty) FROM sales"):
+        assert decide(q, backend=shop, tracer=Tracer()).decision == "allow"
+    # a model's UNCONFIRMED category label changes nothing
+    shop._kinds = {"sales.qty": {"kind": "category", "reviewed": False}}
+    assert decide("SELECT SUM(qty) FROM sales", backend=shop, tracer=Tracer()).decision == "allow"

@@ -168,8 +168,9 @@ _NON_ID_TYPES = ("FLOAT", "DOUBLE", "REAL", "DECIMAL", "NUMERIC")
 def _identifier_level(table: str, column: str, metadata: dict) -> tuple[str | None, str | None]:
     """(level, why) for SUM/AVG over `column`: "block", "warn" or None.
 
-    In order: a label a person confirmed decides (identifier -> block,
-    anything else -> nothing); a clear id name (id, *_id, *_key, ...) blocks;
+    In order: a label a person confirmed decides (identifier or category ->
+    block: both are labels, adding or averaging them means nothing; anything
+    else -> nothing); a clear id name (id, *_id, *_key, ...) blocks;
     a model label "identifier" not yet confirmed warns; an ambiguous ending
     (_no, _num, _number, _code) warns unless a label says quantity; near-unique
     integer values in the column registry warn. A model label alone never
@@ -178,7 +179,8 @@ def _identifier_level(table: str, column: str, metadata: dict) -> tuple[str | No
 
     label = (metadata.get("column_kinds") or {}).get(f"{table}.{column}")
     if label and label.get("reviewed"):
-        return ("block", "confirmed identifier") if label.get("kind") == "identifier" else (None, None)
+        kind = label.get("kind")
+        return ("block", f"confirmed {kind}") if kind in ("identifier", "category") else (None, None)
     if STRONG_ID_NAME.search(column):
         return "block", "identifier name"
     if label and label.get("kind") == "identifier":
@@ -205,7 +207,7 @@ def _identifier_reason(table: str, column: str, metadata: dict) -> str | None:
     return None
 
 
-IDENTIFIER_AGGREGATE = "identifier aggregate"  # finding prefix the Guard blocks on
+IDENTIFIER_AGGREGATE = "label aggregate"  # finding prefix the Guard blocks on (ids and confirmed categories)
 
 
 def no_sum_on_identifier(sql: str, metadata: dict) -> list[str]:
@@ -233,7 +235,14 @@ def no_sum_on_identifier(sql: str, metadata: dict) -> list[str]:
         if name not in columns or (qualifier and qualifier not in aliases):
             continue
         level, why = _identifier_level(table, name, metadata)
-        if level == "block":
+        if level == "block" and why == "confirmed category":
+            findings.append(
+                f"{IDENTIFIER_AGGREGATE}: {agg} aggregates category column '{table}.{name}' ({why}) — "
+                f"its values are labels (steps, levels, codes); adding or averaging them means "
+                f"nothing. Group by it and count (GROUP BY {name} with COUNT(*)), or use "
+                f"MIN/MAX({name}) for the first/last value."
+            )
+        elif level == "block":
             findings.append(
                 f"{IDENTIFIER_AGGREGATE}: {agg} aggregates identifier column '{table}.{name}' ({why}) — "
                 f"an id labels a row, it is not a quantity; count it: COUNT(DISTINCT {name}) "
