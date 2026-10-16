@@ -21,10 +21,11 @@ MAX_IN_LIST_ITEMS = 100  # judgment call: above this, a join is the better shape
 LARGE_TABLE_ROWS = 100_000
 
 
-def group_by_columns(sql: str) -> list[str]:
-    """Column names in the GROUP BY clause (unqualified, lowercased)."""
+def group_by_columns(sql: str, table: str | None = None) -> list[str]:
+    """Column names in the GROUP BY clause (lowercased); with `table`, only
+    those that can belong to it (see sql_ast.group_by_columns)."""
     tree = sql_ast.try_parse(sql)
-    return sql_ast.group_by_columns(tree) if tree is not None else []
+    return sql_ast.group_by_columns(tree, table) if tree is not None else []
 
 
 def no_select_star_on_wide_tables(sql: str, metadata: dict) -> list[str]:
@@ -133,7 +134,7 @@ def no_high_cardinality_groupby(sql: str, metadata: dict) -> list[str]:
     if not metadata.get("large"):
         return []
     findings = []
-    for col in group_by_columns(sql):
+    for col in group_by_columns(sql, metadata.get("table")):
         p = metadata.get("column_profiles", {}).get(col)
         if p is None or not p.row_count:
             continue

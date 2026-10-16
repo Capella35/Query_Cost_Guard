@@ -192,7 +192,7 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
         # (profiled once, refreshed on a schedule) — a lookup, never a scan.
         profiles = {}
         table_cols = [c.lower() for c in md.get("columns", [])]
-        for col in group_cols:
+        for col in sql_ast.group_by_columns(tree, t):
             if col not in table_cols:
                 continue
             entry = registry.lookup(t, col) if registry is not None else None

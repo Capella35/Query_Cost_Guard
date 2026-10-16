@@ -174,14 +174,27 @@ def referenced_tables(tree: exp.Expression) -> list[str]:
     return out
 
 
-def group_by_columns(tree: exp.Expression) -> list[str]:
-    """Plain column names in any GROUP BY (unqualified, lowercased).
-    Ordinals and expressions are skipped."""
+def group_by_columns(tree: exp.Expression, table: Optional[str] = None) -> list[str]:
+    """Plain column names in any GROUP BY (lowercased, qualifier dropped).
+    Ordinals and expressions are skipped.
+
+    With `table`: only the columns that can belong to it. A column qualified
+    by ANOTHER physical table's name or alias is left out (`GROUP BY u.id`
+    is not `events.id`); unqualified columns and those qualified by a
+    subquery or CTE alias are kept, since resolving them needs the schema."""
+    other: set[str] = set()
+    if table is not None:
+        mine = table_aliases(tree, table)
+        other = {t.alias_or_name.lower() for t in tree.find_all(exp.Table)
+                 if isinstance(t.this, exp.Identifier)} - mine
     cols: list[str] = []
     for g in tree.find_all(exp.Group):
         for e in g.expressions:
-            if isinstance(e, exp.Column) and e.name.lower() not in cols:
-                cols.append(e.name.lower())
+            if not isinstance(e, exp.Column) or e.name.lower() in cols:
+                continue
+            if e.table and e.table.lower() in other:
+                continue
+            cols.append(e.name.lower())
     return cols
 
 

@@ -134,3 +134,27 @@ def test_guard_does_not_act_on_filtered_or_lookup_joins(tmp_path):
     lookup = decide("SELECT o.order_id, u.country FROM orders o JOIN users u ON o.user_id = u.id",
                     backend=wh, tracer=Tracer())
     assert filtered.decision != "block" and lookup.decision != "block"
+
+
+# ---- GROUP BY columns keep their table (bug found by the BigQuery eval, B18/B19) --
+
+def test_group_by_columns_per_table():
+    tree = sql_ast.parse_one("SELECT u.id, COUNT(*) FROM users u JOIN events e "
+                             "ON e.state = u.state GROUP BY u.id, status")
+    assert sql_ast.group_by_columns(tree) == ["id", "status"]  # all tables: unchanged
+    assert sql_ast.group_by_columns(tree, "users") == ["id", "status"]
+    assert sql_ast.group_by_columns(tree, "events") == ["status"]  # u.id is not events.id
+    # derived-table qualifiers can't be resolved without a schema: kept
+    sub = sql_ast.parse_one("SELECT t.id FROM (SELECT id FROM events) t GROUP BY t.id")
+    assert sql_ast.group_by_columns(sub, "events") == ["id"]
+
+
+def test_group_by_qualified_column_is_judged_on_its_own_table(tmp_path):
+    from cost_guard.guard import decide
+    from cost_guard.tracing import Tracer
+
+    v = decide("SELECT u.id, COUNT(*) AS n FROM users u JOIN events e ON e.user_id = u.id "
+               "WHERE e.created_at >= TIMESTAMP '2023-12-01' GROUP BY u.id",
+               backend=_bq_warehouse(tmp_path), tracer=Tracer())
+    near_unique = [f for f in v.findings if "near-unique" in f]
+    assert near_unique and all("in 'users'" in f for f in near_unique), v.findings
