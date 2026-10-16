@@ -493,6 +493,8 @@ def wrapper_chain(col: exp.Column, stop: exp.Expression) -> tuple[str, ...]:
         elif isinstance(node, (exp.TsOrDsToTimestamp, exp.TsOrDsToDate)) and isinstance(
                 node.parent, exp.TimeToStr):
             pass  # BigQuery parser's implicit coercion inside FORMAT_TIMESTAMP/FORMAT_DATE
+        elif isinstance(node, exp.Extract):
+            out.append("extract:" + node.this.name.lower())  # the part: year, month, day...
         elif isinstance(node, exp.TimeToStr):
             # BigQuery FORMAT_TIMESTAMP / FORMAT_DATE, as the BigQuery parser builds them
             fmt = node.args.get("format")

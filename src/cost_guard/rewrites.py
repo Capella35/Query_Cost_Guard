@@ -22,6 +22,7 @@ equivalent rewrite exists; they stay warnings for a human to decide.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlglot import exp
@@ -124,16 +125,107 @@ def _const(e: exp.Expression) -> bool:
     )
 
 
+def _ts_type() -> str:
+    """The type of a TIMESTAMP literal in the current dialect. sqlglot's
+    generic TIMESTAMP is written as BigQuery DATETIME, which BigQuery won't
+    compare with a TIMESTAMP column; its TIMESTAMPTZ is BigQuery TIMESTAMP."""
+    return "TIMESTAMPTZ" if sql_ast.current_dialect() == "bigquery" else "TIMESTAMP"
+
+
 def _typed(x: exp.Expression) -> exp.Expression:
     """An untyped string literal gets an explicit TIMESTAMP type so date
     arithmetic on it is well-defined; typed constants are left alone."""
     if isinstance(x, exp.Literal) and x.is_string:
-        return exp.cast(x.copy(), "TIMESTAMP")
+        return exp.cast(x.copy(), _ts_type())
     return x.copy()
+
+
+def _ts(value: datetime) -> exp.Expression:
+    return exp.cast(exp.Literal.string(value.isoformat(sep=" ")), _ts_type())
+
+
+def _range(col: exp.Column, lo: datetime, hi: datetime) -> exp.Expression:
+    return exp.and_(exp.GTE(this=col.copy(), expression=_ts(lo)),
+                    exp.LT(this=col.copy(), expression=_ts(hi)))
+
+
+# FORMAT_TIMESTAMP(fmt, col) = 'text': the text pattern for each format, and
+# the range it stands for.
+_FORMAT_RANGES = {
+    "%Y": (r"\d{4}", lambda d: (d, d.replace(year=d.year + 1)), "%Y"),
+    "%Y-%m": (r"\d{4}-\d{2}",
+              lambda d: (d, (d.replace(day=28) + timedelta(days=4)).replace(day=1)), "%Y-%m"),
+    "%Y-%m-%d": (r"\d{4}-\d{2}-\d{2}", lambda d: (d, d + timedelta(days=1)), "%Y-%m-%d"),
+}
+_SHIFT_UNITS = {"DAY": "days", "HOUR": "hours", "MINUTE": "minutes", "SECOND": "seconds"}
+_FLIP = {exp.GTE: exp.GTE, exp.GT: exp.GT, exp.LT: exp.LT, exp.LTE: exp.LTE, exp.EQ: exp.EQ}
+
+
+def _literal_time(x: exp.Expression) -> Optional[datetime]:
+    """A TIMESTAMP/DATE literal (typed or bare string) as a datetime."""
+    if isinstance(x, exp.Cast) and isinstance(x.this, exp.Literal):
+        x = x.this
+    if isinstance(x, exp.Literal) and x.is_string:
+        try:
+            return datetime.fromisoformat(x.this)
+        except ValueError:
+            return None
+    return None
+
+
+def _wider_sargable(cmp: exp.Expression) -> Optional[exp.Expression]:
+    """Ranges for wrappers that defeat BigQuery's partition pruning (measured:
+    eval/RESULTS_bq_dryrun_full.md): EXTRACT(YEAR ...) = N,
+    FORMAT_TIMESTAMP('%Y'/'%Y-%m'/'%Y-%m-%d', col) = 'text', and
+    col +/- INTERVAL n DAY|HOUR|MINUTE|SECOND <op> X. Each is exact; anything
+    else (EXTRACT(MONTH ...), month arithmetic, text not in the format) -> None."""
+    for fn, x in ((cmp.this, cmp.expression), (cmp.expression, cmp.this)):
+        flipped = fn is cmp.expression
+        if isinstance(cmp, exp.EQ) and isinstance(fn, exp.Extract) and isinstance(
+                fn.expression, exp.Column):
+            if fn.this.name.upper() != "YEAR" or not (isinstance(x, exp.Literal) and not x.is_string):
+                continue
+            year = int(x.this)
+            return _range(fn.expression, datetime(year, 1, 1), datetime(year + 1, 1, 1))
+        if isinstance(cmp, exp.EQ) and isinstance(fn, exp.TimeToStr):
+            col = fn.this.this if isinstance(fn.this, (exp.TsOrDsToTimestamp, exp.TsOrDsToDate)) else fn.this
+            fmt = fn.args.get("format")
+            if not isinstance(col, exp.Column) or not isinstance(fmt, exp.Literal):
+                continue
+            spec = _FORMAT_RANGES.get(fmt.this)
+            if spec is None or not (isinstance(x, exp.Literal) and x.is_string):
+                continue
+            pattern, bounds, strp = spec
+            if not re.fullmatch(pattern, x.this):
+                return None
+            lo, hi = bounds(datetime.strptime(x.this, strp))
+            return _range(col, lo, hi)
+        if type(cmp) in _FLIP and isinstance(fn, (exp.Add, exp.Sub)) and isinstance(
+                fn.this, exp.Column) and isinstance(fn.expression, exp.Interval):
+            iv = fn.expression
+            unit = (iv.args.get("unit").name if iv.args.get("unit") is not None else "").upper()
+            when = _literal_time(x)
+            try:
+                n = int(iv.this.this) if isinstance(iv.this, exp.Literal) else None
+            except ValueError:
+                n = None
+            if unit not in _SHIFT_UNITS or when is None or n is None:
+                return None
+            delta = timedelta(**{_SHIFT_UNITS[unit]: n})
+            bound = when - delta if isinstance(fn, exp.Add) else when + delta
+            op = type(cmp)
+            if flipped:  # X <op> col + i  ->  mirror the operator
+                op = {exp.GTE: exp.LTE, exp.GT: exp.LT, exp.LT: exp.GT, exp.LTE: exp.GTE,
+                      exp.EQ: exp.EQ}[op]
+            return op(this=fn.this.copy(), expression=_ts(bound))
+    return None
 
 
 def _sargable(cmp: exp.Expression) -> Optional[exp.Expression]:
     """Range replacement for one `f(col) = X` predicate, or None."""
+    wider = _wider_sargable(cmp)
+    if wider is not None:
+        return wider
     if not isinstance(cmp, exp.EQ):
         return None
     for fn, x in ((cmp.this, cmp.expression), (cmp.expression, cmp.this)):

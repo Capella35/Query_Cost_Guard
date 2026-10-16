@@ -34,7 +34,7 @@ def test_sargable_rewrite_is_equivalent(synthetic_wh, sql):
 
 @pytest.mark.parametrize("sql", [
     "SELECT order_id FROM orders WHERE DATE_TRUNC('month', created_at) > DATE '2024-02-01'",  # not =
-    "SELECT order_id FROM orders WHERE EXTRACT(year FROM created_at) = 2024",  # not in catalog
+    "SELECT order_id FROM orders WHERE EXTRACT(month FROM created_at) = 6",  # no single range
     "SELECT order_id FROM orders WHERE created_at >= '2024-01-01'",  # already sargable
 ])
 def test_sargable_leaves_other_shapes_alone(sql):
@@ -99,3 +99,39 @@ def test_cast_date_rewrite_not_held_to_estimate_gate(synthetic_wh):
     assert v.decision == "rewrite" and v.rewrite_source == "deterministic:sargable"
     assert "prunable form" in v.reason
     assert not any("not cheaper by estimate" in f for f in v.findings)
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT order_id FROM orders WHERE EXTRACT(year FROM created_at) = 2024",
+    "SELECT order_id FROM orders WHERE EXTRACT(year FROM created_at) = 2023 AND status = 'Complete'",
+    "SELECT order_id FROM orders WHERE created_at + INTERVAL 1 DAY >= TIMESTAMP '2024-03-02'",
+    "SELECT order_id FROM orders WHERE created_at - INTERVAL 6 HOUR < TIMESTAMP '2024-03-02 12:00:00'",
+    "SELECT order_id FROM orders WHERE TIMESTAMP '2024-03-02' <= created_at + INTERVAL 2 DAY",
+])
+def test_wider_sargable_rewrites_are_equivalent(synthetic_wh, sql):
+    """EXTRACT(YEAR ...) = N and col +/- INTERVAL (fixed units) become a range
+    on the bare column; same rows on the full synthetic data."""
+    out = suggest_sargable_rewrite(sql)
+    assert out is not None and "EXTRACT" not in out.upper() and "INTERVAL" not in out.upper()
+    assert _same(synthetic_wh, sql, out)
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT order_id FROM orders WHERE created_at + INTERVAL 1 MONTH >= TIMESTAMP '2024-03-02'",  # not invertible
+    "SELECT order_id FROM orders WHERE EXTRACT(day FROM created_at) = 3",
+])
+def test_wider_sargable_leaves_inexact_shapes_alone(sql):
+    assert suggest_sargable_rewrite(sql) is None
+
+
+def test_format_timestamp_ranges_in_bigquery_sql():
+    """FORMAT_TIMESTAMP is BigQuery-only, so this checks the generated SQL (the
+    live dry runs showed 2.77 -> 0.01 MiB on order_items); the literal must
+    match the format exactly, else no rewrite."""
+    with sql_ast.using_dialect("bigquery"):
+        out = suggest_sargable_rewrite(
+            "SELECT order_id FROM order_items WHERE FORMAT_TIMESTAMP('%Y-%m', created_at) = '2023-12'")
+        assert "CAST('2023-12-01 00:00:00' AS TIMESTAMP)" in out
+        assert "CAST('2024-01-01 00:00:00' AS TIMESTAMP)" in out and "DATETIME" not in out
+        assert suggest_sargable_rewrite(
+            "SELECT 1 FROM order_items WHERE FORMAT_TIMESTAMP('%Y-%m', created_at) = '2023-6'") is None

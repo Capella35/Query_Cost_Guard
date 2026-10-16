@@ -118,9 +118,13 @@ PRUNED_ON_BQ = [
     "FORMAT_TIMESTAMP('%Y-%m-%d', created_at) = '2024-03-01'",
     "TIMESTAMP_SUB(created_at, INTERVAL 1 DAY) >= TIMESTAMP '2024-03-01'",
     "DATE_ADD(DATE(created_at), INTERVAL 1 DAY) = DATE '2024-03-02'",
+    "EXTRACT(YEAR FROM created_at) = 2024",  # measured 2026-10-16
+    "EXTRACT(DATE FROM created_at) = '2024-03-01'",
 ]
 NOT_PRUNED_ON_BQ = [
     "EXTRACT(DAY FROM created_at) = 24",
+    "EXTRACT(MONTH FROM created_at) = 6",
+    "EXTRACT(ISOYEAR FROM created_at) = 2024",
     "UNIX_SECONDS(created_at) >= 1700000000",
     "created_at + INTERVAL 1 DAY >= TIMESTAMP '2024-03-02'",
     "FORMAT_TIMESTAMP('%Y-%m', created_at) = '2024-03'",
