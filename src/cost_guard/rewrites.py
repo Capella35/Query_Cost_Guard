@@ -178,7 +178,7 @@ def suggest_sargable_rewrite(sql: str) -> Optional[str]:
                 changed = True
     if not changed:
         return None
-    out = tree.sql(dialect=sql_ast.DIALECT)
+    out = tree.sql(dialect=sql_ast.current_dialect())  # the warehouse's own SQL
     return out if sql_ast.try_parse(out) is not None else None
 
 
@@ -249,7 +249,7 @@ def suggest_pushdown_rewrite(sql: str) -> Optional[str]:
         changed = True
     if not changed:
         return None
-    out = tree.sql(dialect=sql_ast.DIALECT)
+    out = tree.sql(dialect=sql_ast.current_dialect())  # the warehouse's own SQL
     return out if sql_ast.try_parse(out) is not None else None
 
 

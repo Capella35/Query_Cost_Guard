@@ -244,3 +244,21 @@ def test_backend_reads_the_dataset_registry(tmp_path):
     assert wh.column_registry().lookup("orders", "order_id").distinct_count == 990
     assert BigQueryWarehouse("p", "ds", client=FakeClient(0),
                              registry_path=str(tmp_path / "none.duckdb")).column_registry() is None
+
+
+def test_guard_reads_bigquery_sql_in_the_bigquery_dialect():
+    """Backticked names are everyday BigQuery SQL; the DuckDB parser rejects
+    them. The Guard parses with the backend's dialect, per decision."""
+    from cost_guard import sql_ast
+
+    wh = BigQueryWarehouse("proj", client=FakeClient(0))
+    v = decide("SELECT `status`, COUNT(*) AS n FROM `proj.thelook_ecommerce.orders` "
+               "WHERE created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 7 DAY) "
+               "GROUP BY `status`", backend=wh, tracer=Tracer())
+    assert v.decision == "allow", v.reason
+    v = decide("SELECT * EXCEPT (status) FROM `proj.thelook_ecommerce.orders`",
+               backend=wh, tracer=Tracer())
+    assert any("full scan" in f for f in v.findings)  # table resolved through backticks
+    assert sql_ast.current_dialect() == "duckdb"  # restored after the decision
+    with pytest.raises(sql_ast.SQLParseError):
+        sql_ast.parse_one("SELECT `status` FROM orders")  # DuckDB by default

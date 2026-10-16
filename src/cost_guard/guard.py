@@ -83,7 +83,9 @@ def decide(
 
     customer = customer if customer is not None else load_customer()
     tracer = tracer or get_tracer()
-    with tracer.trace("guard.decide", workload_class=workload_class) as tid:
+    dialect = "bigquery" if getattr(backend, "name", None) == "bigquery" else sql_ast.DIALECT
+    with tracer.trace("guard.decide", workload_class=workload_class) as tid, \
+            sql_ast.using_dialect(dialect):
         verdict = _decide(sql, workload_class, customer, backend, tracer, tid, llm,
                            offered_rewrites)
         verdict = _maybe_bypass(verdict, customer, bypass_reason, tracer, tid)
@@ -344,7 +346,12 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
                 findings.append(f"{source} rewrite is not read-only — not offered")
                 continue
             if estimate is not None and not (source.startswith("deterministic:") and pruning_only):
-                cand_est = backend.estimate(cand)
+                try:
+                    cand_est = backend.estimate(cand)
+                except Exception as e:  # noqa: BLE001 — the warehouse rejected it: not offered
+                    findings.append(f"{source} rewrite could not be estimated — not offered "
+                                    f"({str(e).splitlines()[0][:120]})")
+                    continue
                 if cand_est.rows_processed > rows:
                     findings.append(f"{source} rewrite is not cheaper by estimate — not offered")
                     continue

@@ -6,11 +6,15 @@ without a linking predicate, is the partition column filtered (bare or
 wrapped in a function), are filters applied after a join, which subqueries
 repeat. Parsing is a parsing problem, not an LLM problem.
 
-Default dialect is DuckDB (the primary backend); pass dialect="bigquery" for
-the stretch path.
+The dialect is DuckDB unless a caller sets another for a block of work with
+using_dialect("bigquery") — the Guard does that per decision from the
+backend, so BigQuery SQL (backticked names, BigQuery functions) is read as
+BigQuery SQL. An explicit dialect= argument always wins.
 """
 from __future__ import annotations
 
+import contextvars
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Optional
@@ -20,6 +24,21 @@ from sqlglot import exp
 from sqlglot.errors import ParseError, TokenError
 
 DIALECT = "duckdb"
+_CURRENT_DIALECT: contextvars.ContextVar[str] = contextvars.ContextVar("sql_dialect", default=DIALECT)
+
+
+@contextmanager
+def using_dialect(dialect: str):
+    """Parse as `dialect` inside this block (per thread/task)."""
+    token = _CURRENT_DIALECT.set(dialect)
+    try:
+        yield
+    finally:
+        _CURRENT_DIALECT.reset(token)
+
+
+def current_dialect() -> str:
+    return _CURRENT_DIALECT.get()
 
 # Relations at or below this many rows are "provably tiny" for the cartesian
 # rule: crossing a 10-row dimension table is not a runaway.
@@ -57,22 +76,22 @@ def _parse_cached(sql: str, dialect: str) -> tuple:
     return tuple(s for s in stmts if s is not None)
 
 
-def parse_statements(sql: str, dialect: str = DIALECT) -> tuple:
+def parse_statements(sql: str, dialect: Optional[str] = None) -> tuple:
     """All statements in the input. The trees are shared (cached): read them,
     and .copy() before mutating."""
     if not sql or not sql.strip():
         raise SQLParseError("empty query")
-    return _parse_cached(sql, dialect)
+    return _parse_cached(sql, dialect or current_dialect())
 
 
-def parse_one(sql: str, dialect: str = DIALECT) -> exp.Expression:
+def parse_one(sql: str, dialect: Optional[str] = None) -> exp.Expression:
     stmts = parse_statements(sql, dialect)
     if len(stmts) != 1:
         raise SQLParseError(f"expected exactly one statement, got {len(stmts)}")
     return stmts[0]
 
 
-def try_parse(sql: str, dialect: str = DIALECT) -> Optional[exp.Expression]:
+def try_parse(sql: str, dialect: Optional[str] = None) -> Optional[exp.Expression]:
     try:
         return parse_one(sql, dialect)
     except SQLParseError:
@@ -90,7 +109,7 @@ def _func_name(f: exp.Func) -> str:
     return f.sql_name().lower()
 
 
-def read_only_violation(sql: str, dialect: str = DIALECT) -> Optional[str]:
+def read_only_violation(sql: str, dialect: Optional[str] = None) -> Optional[str]:
     """None when the query is a single read-only SELECT/WITH; otherwise the
     reason it is not. Fails closed: unparseable input is a violation."""
     try:
@@ -127,7 +146,7 @@ def read_only_violation(sql: str, dialect: str = DIALECT) -> Optional[str]:
     return None
 
 
-def is_read_only(sql: str, dialect: str = DIALECT) -> bool:
+def is_read_only(sql: str, dialect: Optional[str] = None) -> bool:
     return read_only_violation(sql, dialect) is None
 
 
@@ -285,7 +304,7 @@ def long_in_lists(tree: exp.Expression, max_items: int) -> list[tuple[str, int]]
     for node in tree.find_all(exp.In):
         n = len(node.expressions)
         if n > max_items:
-            out.append((node.this.sql(dialect=DIALECT), n))
+            out.append((node.this.sql(dialect=current_dialect()), n))
     return out
 
 
@@ -427,7 +446,9 @@ def cartesian_findings(
         ]
         if len(groups) > 1 and len(big) > 1:
             parts = [" + ".join(names[i] for i in g) for g in big]
-            kind = "explicit CROSS JOIN" if explicit_cross else "join"
+            # The BigQuery parser stores a comma join as kind CROSS too.
+            kind = ("join" if not explicit_cross else "CROSS JOIN or comma join"
+                    if current_dialect() == "bigquery" else "explicit CROSS JOIN")
             findings.append(
                 f"cartesian product: {kind} with no predicate linking "
                 f"{' and '.join(repr(p) for p in parts)}"
@@ -456,6 +477,14 @@ def wrapper_chain(col: exp.Column, stop: exp.Expression) -> tuple[str, ...]:
     while node is not None and node is not stop:
         if isinstance(node, exp.Cast):
             out.append("cast:" + node.to.sql(dialect=DIALECT).lower())
+        elif isinstance(node, (exp.TsOrDsToTimestamp, exp.TsOrDsToDate)) and isinstance(
+                node.parent, exp.TimeToStr):
+            pass  # BigQuery parser's implicit coercion inside FORMAT_TIMESTAMP/FORMAT_DATE
+        elif isinstance(node, exp.TimeToStr):
+            # BigQuery FORMAT_TIMESTAMP / FORMAT_DATE, as the BigQuery parser builds them
+            fmt = node.args.get("format")
+            kind = "format_date" if isinstance(node.this, exp.TsOrDsToDate) else "format_timestamp"
+            out.append(kind + ":" + (fmt.this if isinstance(fmt, exp.Literal) else "?"))
         elif isinstance(node, exp.Func):
             name = _func_name(node)
             if name in ("format_timestamp", "format_date"):
@@ -542,13 +571,13 @@ def filters_after_join(tree: exp.Expression) -> list[str]:
                         or (not c.table and len(rels) == 1)]
                 if hits:
                     out.append(
-                        f"filter {p.sql(dialect=DIALECT)!r} applied after the join "
+                        f"filter {p.sql(dialect=current_dialect())!r} applied after the join "
                         f"inside '{alias}' — filter before joining"
                     )
         for p in conjuncts(select.args.get("having")):
             if p.find(exp.AggFunc) is None:
                 out.append(
-                    f"HAVING {p.sql(dialect=DIALECT)!r} has no aggregate — "
+                    f"HAVING {p.sql(dialect=current_dialect())!r} has no aggregate — "
                     "move it to WHERE so rows drop before grouping"
                 )
     return list(dict.fromkeys(out))

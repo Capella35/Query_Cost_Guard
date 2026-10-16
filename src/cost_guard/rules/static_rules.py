@@ -79,6 +79,7 @@ def no_cross_join_without_condition(sql: str, metadata: dict) -> list[str]:
 BIGQUERY_PRUNES_THROUGH = frozenset({
     "cast:date", "cast:timestamp",  # CAST(col AS DATE) / AS DATETIME (parsed as TIMESTAMP)
     "date", "timestamp_trunc",      # DATE(col), DATE_TRUNC / TIMESTAMP_TRUNC
+    "date_trunc",                   # DATE_TRUNC(DATE(col), ...) as the BigQuery parser names it
     "timestamp_add", "timestamp_sub", "date_add", "date_sub",
     "format_timestamp:%Y-%m-%d",
 })
