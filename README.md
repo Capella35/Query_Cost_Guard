@@ -10,7 +10,8 @@ tighter per-query-shape runtime thresholds.
 > touches a real customer's data; BigQuery use stays inside the free tier.
 > See `customer.yaml`.
 
-Design principles, trade-offs and the decision log: [DESIGN.md](DESIGN.md).
+Design principles, trade-offs, the decision log and recommendations for future
+improvements (section 14): [DESIGN.md](DESIGN.md).
 
 ## The problem
 

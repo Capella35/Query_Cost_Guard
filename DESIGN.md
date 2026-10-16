@@ -354,21 +354,12 @@ Never stored: SQL text, literal values, result rows.
 
 ## 13. Open questions
 
-- Many users: caps are per query, so many analysts each under the cap can
-  still run up a large bill — per-user / per-team daily budgets are not
-  built. Learned thresholds are saved last-writer-wins, and every `run`
-  reads the whole query log; both need care before a multi-user service.
-
-
-- Before offering rewrites on BigQuery, the catalog must emit BigQuery SQL:
-  TIMESTAMP literals for TIMESTAMP columns, no `DATE`-vs-`TIMESTAMP`
-  comparisons.
-
-- Found by the BigQuery eval (not fixed, so its score stands): the
-  filter-after-join rule should be warehouse-aware (BigQuery pushes filters
-  down itself — B10 false warn); `sql_ast.group_by_columns` drops the table
-  qualifier, so `GROUP BY u.id` is checked against every joined table with
-  an `id` column (B18/B19, DuckDB too).
+- Many users: see section 14 (daily budgets, threshold saving, log reads).
+- Resolved: the rewrite catalog emits BigQuery SQL on BigQuery (dialect per
+  decision, real TIMESTAMP literals; 3a6ced9, b98a68c). Found by the
+  BigQuery eval and fixed after it (its first-run 24/30 stands): the
+  filter-after-join rule is off on BigQuery (a9cab30), and GROUP BY columns
+  keep their table (98a8c64).
 - Rewrite verification on BigQuery runs real queries on TEMP-table samples:
   ~30 MiB billed (BigQuery's 10 MiB-per-table minimum) and ~8–10 s. A
   long-running service now caps the wait (guard.rewrite_wait_sec: 2) and
@@ -391,3 +382,45 @@ Never stored: SQL text, literal values, result rows.
   partition/cluster suggestions.
 - When do the evals move to the new caps? That needs a recorded relabel of
   Q03, Q10, E06 and E10 (and the held-out guide's 5M cap).
+
+## 14. Recommendations for future improvements
+
+Not built; ordered by value for an e-commerce pilot on BigQuery. Each keeps
+the design rules above: deterministic decisions, no LLM on the query path,
+nothing that can block wrongly without a person's confirmation.
+
+1. **Daily budgets per user and per team.** Caps are per query, so many
+   analysts each under the cap can still run up a large bill. Approach:
+   `customer.yaml` budgets (bytes or modeled dollars per user / team per
+   day); the Guard sums today's `bytes_estimate` from the query log for the
+   caller and warns at ~80 %, blocks past 100 % (bypassable with a reason,
+   traced). Needs an indexed or rolling log (item 3) and a trusted caller
+   identity from the deployment.
+2. **Shared state for a multi-process service.** Learned thresholds are
+   saved last-writer-wins; the verification memory is per process. Approach:
+   one writer (or file locks) for the threshold store; a small shared cache
+   (or the warehouse itself) for verification results.
+3. **Query-log index.** Every `run` reads the whole log (offered rewrites);
+   cost grows with users. Approach: an index by fingerprint, or a rolling
+   window of recent rewrites kept in memory.
+4. **Most common values per column in the registry.** Join estimates
+   assume evenly spread keys and ran 57× low on a `city` join. Approach:
+   top-k values and their shares per column at registry build time; use
+   them for the skewed part of a join.
+5. **MCP server and a report-only investigator agent**, if the project is
+   to be agentic: Cost Guard's tools (check, run through the Guard, table
+   info, history, report) for AI apps, with `run` the only path to the
+   warehouse and no raw rows returned; an agent triggered only when a query
+   shape breaks its own history, writing a report, changing nothing.
+   Groundwork done: thread-safe backends, fast cached checks.
+6. **Independent evaluation.** Every query set so far was written by the
+   assistant that wrote the rules. A set of real or hand-written queries
+   (and the tricky columns for the column-kind check) from someone else,
+   pre-registered and run once.
+7. **Sort check on BigQuery.** A dry run has no plan; an AST-only warning
+   for ORDER BY without LIMIT over a large, barely filtered table. Low value
+   on on-demand pricing (no extra bytes; runtime is capped by the watchdog).
+8. **Portability check on a time-billed warehouse** (e.g. Snowflake), when a
+   pilot customer uses one: cost there is runtime × warehouse size, so the
+   Guard's estimate would be a runtime proxy.
+
