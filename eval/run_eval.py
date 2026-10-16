@@ -16,6 +16,10 @@ Metrics:
   savings are measured (median of 3 runs). This is the "rewrite equivalence
   rate" — the sampled check in the Guard is necessary, not sufficient.
 
+--suite bigquery runs the PRE-REGISTERED BigQuery set (eval/bq_queries.yaml)
+against the TheLook copies in BigQuery (--project; dataset cost_guard_thelook)
+under eval/eval_caps_bigquery.yaml. Dry runs only; run once, like holdout.
+
 --suite regression runs the 11 inline cases on the synthetic warehouse
 (also covered by tests/test_guard_regression.py). Those were written next
 to the rules: 100% there is expected, not evidence.
@@ -58,7 +62,10 @@ FULL_RUN_TIMEOUT_SEC = 60
 SUITE_FILES = {
     "thelook": ("eval_queries.yaml", "RESULTS_thelook.md", "30 TheLook queries"),
     "holdout": ("holdout_queries.yaml", "RESULTS_holdout.md", "held-out TheLook queries"),
+    "bigquery": ("bq_queries.yaml", "RESULTS_bigquery.md",
+                 "pre-registered BigQuery TheLook queries"),
 }
+RUN_ONCE = ("holdout", "bigquery")  # held-out / pre-registered: first run is the result
 
 
 def load_thelook_cases(filename: str = "eval_queries.yaml") -> list[dict]:
@@ -116,23 +123,33 @@ def full_check(wh, original: str, rewrite: str) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--suite", choices=["thelook", "holdout", "regression"], default="thelook")
+    ap.add_argument("--suite", choices=["thelook", "holdout", "bigquery", "regression"],
+                    default="thelook")
     ap.add_argument("--rerun", action="store_true",
-                    help="holdout only: run again although it has been run (recorded as a rerun)")
+                    help="holdout/bigquery: run again although it has been run (recorded as a rerun)")
+    ap.add_argument("--project", help="bigquery suite: GCP project holding the TheLook copies")
+    ap.add_argument("--dataset", default="cost_guard_thelook")
     ap.add_argument("--db", default=str(ROOT / "data" / "thelook.duckdb"))
     ap.add_argument("--llm", choices=["none", "claude"], default="none")
     args = ap.parse_args()
 
     rerun = False
-    if args.suite == "holdout" and (ROOT / "eval" / SUITE_FILES["holdout"][1]).exists():
+    if args.suite in RUN_ONCE and (ROOT / "eval" / SUITE_FILES[args.suite][1]).exists():
         if not args.rerun:
             raise SystemExit(
-                "the held-out set has already been run (eval/RESULTS_holdout.md exists). It is "
-                "meant to be run ONCE: re-running after changing the Guard turns it into a "
-                "tuning set. Pass --rerun to run anyway; the summary will say it is a rerun."
+                f"the {args.suite} set has already been run (eval/{SUITE_FILES[args.suite][1]} "
+                "exists). It is meant to be run ONCE: re-running after changing the Guard turns "
+                "it into a tuning set. Pass --rerun to run anyway; the summary will say it is a rerun."
             )
         rerun = True
-    if args.suite in SUITE_FILES:
+    if args.suite == "bigquery":
+        from cost_guard.backends.bigquery_backend import BigQueryWarehouse
+
+        if not args.project:
+            raise SystemExit("--suite bigquery needs --project")
+        wh = BigQueryWarehouse(args.project, args.dataset, maximum_bytes_billed=20 * 1024**3)
+        cases = load_thelook_cases(SUITE_FILES["bigquery"][0])
+    elif args.suite in SUITE_FILES:
         from cost_guard.backends.duckdb_backend import DuckDBWarehouse
 
         if not Path(args.db).exists():
@@ -154,7 +171,8 @@ def main() -> None:
 
     from eval_config import load_eval_customer
 
-    customer = load_eval_customer()  # caps the labels were written under
+    customer = (load_eval_customer(ROOT / "eval" / "eval_caps_bigquery.yaml")
+                if args.suite == "bigquery" else load_eval_customer())  # caps the labels were written under
     tracer = Tracer()
     results = []
     for case in cases:
@@ -182,7 +200,7 @@ def main() -> None:
             r["rewrite_source"] = v.rewrite_source
             r["rewritten_sql"] = v.rewritten_sql
             r["verification"] = v.verification
-            if args.suite in SUITE_FILES:
+            if args.suite in SUITE_FILES and args.suite != "bigquery":  # DuckDB: execute both
                 r.update(full_check(wh, case["sql"], v.rewritten_sql))
         results.append(r)
         tracer.save(ROOT / "runs" / "traces.jsonl")
@@ -247,16 +265,20 @@ def main() -> None:
     dest.write_text(json.dumps(out, indent=2, default=str))
     print(f"results -> {dest.relative_to(ROOT)}")
     if args.suite in SUITE_FILES:
-        write_summary(ts, metrics, by_pattern, results, args.suite, rerun)
+        where = (f"`{args.project}.{args.dataset}` (BigQuery dry runs; caps "
+                 "`eval/eval_caps_bigquery.yaml`)" if args.suite == "bigquery"
+                 else "`data/thelook.duckdb` (Kaggle TheLook CSVs)")
+        write_summary(ts, metrics, by_pattern, results, args.suite, rerun, where)
 
 
-def write_summary(ts, metrics, by_pattern, results, suite="thelook", rerun=False) -> None:
+def write_summary(ts, metrics, by_pattern, results, suite="thelook", rerun=False,
+                  where="`data/thelook.duckdb` (Kaggle TheLook CSVs)") -> None:
     _, out_name, title = SUITE_FILES[suite]
     lines = [
         f"# Guard eval: {title}",
         "",
         f"Generated by `eval/run_eval.py --suite {suite}` on {ts:%Y-%m-%d %H:%M} UTC against "
-        "`data/thelook.duckdb` (Kaggle TheLook CSVs), LLM: "
+        f"{where}, LLM: "
         f"`{metrics['llm']}`. Labels were set before the Guard was run.",
         "",
         "| metric | value |",

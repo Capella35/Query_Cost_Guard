@@ -1,0 +1,281 @@
+# BigQuery Guard eval: 30 TheLook queries in BigQuery SQL, PRE-REGISTERED, run ONCE.
+#
+# PROVENANCE AND LIMITS (read before quoting any number from this set)
+# - Written 2026-10-16 by the AI assistant that also wrote the Guard's rules,
+#   so it is NOT independent of them. It is held out only in the sense that no
+#   Guard verdict on these queries was seen before this file, its caps
+#   (eval/eval_caps_bigquery.yaml) and the runner were committed.
+# - Before the commit the SQL was checked with BigQuery dry runs, printing
+#   ok/error ONLY (no bytes, no Guard). Labels for the bytes cap come from the
+#   per-column sizes below (a property of the data, measured by dry runs of
+#   single columns), with at least a 2x margin from the cap.
+# - Run with: .venv/bin/python eval/run_eval.py --suite bigquery --project <gcp project>
+#   Dry runs only (nothing executes; rewrites fail closed on BigQuery). The
+#   runner refuses a second run unless --rerun is passed and marks any rerun.
+#   Do NOT change the Guard and re-run to improve this score.
+# - Known before the run (not a reason to drop a query): the Guard has no
+#   BigQuery rewrite verification, no sort check from a dry run, no NOT IN
+#   rule, and acts on join fan-out only without filters. Queries hitting those
+#   are kept; their misses are the measurement.
+#
+# CAPS: eval/eval_caps_bigquery.yaml, interactive workload — 100 MiB bytes
+# (scaled to TheLook, see that file), 5,000,000 rows for join fan-out.
+#
+# DATA REFERENCE (dry-run MiB to read each column in full; partitioned tables
+# are partitioned by DATE(created_at), 2019-2024, so one month reads ~1/60):
+#   events (table, 13 cols): all columns 367.2 — id 18.5, user_id 9.9, sequence_number 18.5, session_id 87.9, created_at 18.5, ip_address 35.2, city 25.2, state 26.6, postal_code 18.2, browser 18.4, traffic_source 19.0, uri 50.6, event_type 20.6
+#   inventory_items (table, 12 cols): all columns 77.6 — id 3.7, product_id 3.7, created_at 3.7, sold_at 1.4, cost 3.7, product_category 5.8, product_name 23.6, product_brand 5.6, product_retail_price 3.7, product_department 2.8, product_sku 15.9, product_distribution_center_id 3.7
+#   order_items (table, 11 cols): all columns 13.0 — every column <= 1.8
+#   orders (table, 9 cols): all columns 6.5 — every column <= 1.2
+#   users (view, 16 cols): all columns 18.9 — every column <= 3.8
+#   products (view, 9 cols): all columns 4.1; distribution_centers (view): ~0
+#   Rows: events 2.4M (80k distinct user_id, ~230 distinct state), users 100k,
+#   orders 126k, order_items 182k, inventory_items 491k, products 29k.
+#
+# LABELING GUIDE (fixed before writing the queries; labels follow it, not a
+# prediction of what the Guard does). Precedence: block > rewrite > warn > allow.
+#   block   - a non-read-only statement; or bytes read above the interactive
+#             cap (100 MiB); or a cartesian product of two tables with more
+#             than 1,000 rows each; or a join that multiplies rows past
+#             5,000,000 output rows (a join on a low-cardinality or
+#             many-to-many non-key column), with or without filters.
+#   rewrite - an EQUIVALENT query (same rows and columns) that bills FEWER
+#             BYTES on BigQuery and can be produced mechanically. BigQuery
+#             prunes partitions through CAST(col AS DATE), DATE(col),
+#             TIMESTAMP_TRUNC, DATE_TRUNC(DATE(col)), TIMESTAMP_ADD/SUB,
+#             DATE_ADD/SUB and FORMAT_TIMESTAMP('%Y-%m-%d', col) (measured,
+#             eval/RESULTS_bq_dryrun_full.md), so those filters are NOT
+#             rewrite cases. EXTRACT, FORMAT_TIMESTAMP('%Y-%m', ...) and
+#             col + INTERVAL defeat pruning; when an equivalent range exists,
+#             that is a rewrite case.
+#   warn    - wasteful, risky or wrong with no equivalent fix, under the caps:
+#             SELECT * on a wide table (8+ columns); no filter on the
+#             partition column of a partitioned table (orders, order_items,
+#             events, inventory_items); a meaningless aggregate (SUM of an
+#             ID); GROUP BY a unique key (every group has one row); a sort of
+#             a large result (100k+ rows) with no LIMIT; DISTINCT that cannot
+#             remove anything; an explicit IN list of more than 100 values.
+#   allow   - reasonable: under the caps, partition-filtered or a small
+#             table, none of the patterns above. A filter written after a
+#             join inside a derived table, or a CTE referenced twice, is NOT
+#             waste on BigQuery (it pushes filters down; the rewrites measured
+#             0 bytes saved), so on its own it is allow.
+# role: good = labeled allow; bad = anything else.
+# Unqualified table names resolve to the job's default dataset
+# (cost_guard_thelook); some queries name it explicitly, with backticks, as
+# BigQuery users do.
+
+queries:
+  # ---------------------------------------------------------------- allow --
+  - id: B01
+    role: good
+    pattern: clean
+    description: "Monthly completed revenue for 2023, TIMESTAMP_TRUNC in the SELECT only."
+    sql: "SELECT TIMESTAMP_TRUNC(created_at, MONTH) AS month, SUM(sale_price) AS revenue FROM `cost_guard_thelook.order_items` WHERE created_at >= TIMESTAMP '2023-01-01' AND created_at < TIMESTAMP '2024-01-01' AND status = 'Complete' GROUP BY month ORDER BY month"
+    guard_action_expected: allow
+
+  - id: B02
+    role: good
+    pattern: clean
+    description: "Daily events by type for one week, filtered with DATE(created_at) — BigQuery prunes through DATE()."
+    sql: "SELECT DATE(created_at) AS day, event_type, COUNT(*) AS n FROM events WHERE DATE(created_at) BETWEEN '2023-11-20' AND '2023-11-26' GROUP BY day, event_type"
+    guard_action_expected: allow
+
+  - id: B03
+    role: good
+    pattern: clean
+    description: "Users per country (small view, backticked column)."
+    sql: "SELECT `country`, COUNT(*) AS users FROM users GROUP BY `country` ORDER BY users DESC"
+    guard_action_expected: allow
+
+  - id: B04
+    role: good
+    pattern: clean
+    description: "Top 10 products by Q3 2023 revenue."
+    sql: "SELECT p.name, SUM(oi.sale_price) AS revenue FROM order_items AS oi JOIN products AS p ON p.id = oi.product_id WHERE oi.created_at >= TIMESTAMP '2023-07-01' AND oi.created_at < TIMESTAMP '2023-10-01' GROUP BY p.name ORDER BY revenue DESC LIMIT 10"
+    guard_action_expected: allow
+
+  - id: B05
+    role: good
+    pattern: clean
+    description: "Return rate by category over the last 90 days of 2023 (SAFE_DIVIDE, COUNTIF, TIMESTAMP_SUB on a constant)."
+    sql: "SELECT p.category, SAFE_DIVIDE(COUNTIF(oi.status = 'Returned'), COUNT(*)) AS return_rate FROM order_items oi JOIN products p ON p.id = oi.product_id WHERE oi.created_at >= TIMESTAMP_SUB(TIMESTAMP '2024-01-01', INTERVAL 90 DAY) AND oi.created_at < TIMESTAMP '2024-01-01' GROUP BY p.category"
+    guard_action_expected: allow
+
+  - id: B06
+    role: good
+    pattern: clean
+    description: "Latest order per user in one week (QUALIFY)."
+    sql: "SELECT user_id, order_id, created_at FROM orders WHERE created_at >= TIMESTAMP '2023-12-01' AND created_at < TIMESTAMP '2023-12-08' QUALIFY ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at DESC) = 1"
+    guard_action_expected: allow
+
+  - id: B07
+    role: good
+    pattern: clean
+    description: "Products per distribution center (two small views)."
+    sql: "SELECT dc.name, COUNT(*) AS products FROM products p JOIN distribution_centers dc ON dc.id = p.distribution_center_id GROUP BY dc.name"
+    guard_action_expected: allow
+
+  - id: B08
+    role: good
+    pattern: clean
+    description: "Unsold inventory by department, Q1 2023 stock."
+    sql: "SELECT product_department, COUNT(*) AS unsold FROM inventory_items WHERE created_at >= TIMESTAMP '2023-01-01' AND created_at < TIMESTAMP '2023-04-01' AND sold_at IS NULL GROUP BY product_department"
+    guard_action_expected: allow
+
+  - id: B09
+    role: good
+    pattern: prunable_wrapper
+    description: "Black Friday purchases and sessions per traffic source; TIMESTAMP_TRUNC on the partition column, which BigQuery prunes through."
+    sql: "SELECT traffic_source, COUNTIF(event_type = 'purchase') AS purchases, COUNT(DISTINCT session_id) AS sessions FROM events WHERE TIMESTAMP_TRUNC(created_at, DAY) = TIMESTAMP '2023-11-24' GROUP BY traffic_source"
+    guard_action_expected: allow
+
+  - id: B10
+    role: good
+    pattern: filter_after_join
+    description: "Filter written after the join inside a derived table; BigQuery pushes it down (0 bytes saved by the pushdown rewrite), so not waste here."
+    sql: "SELECT t.order_id, t.state FROM (SELECT o.order_id, o.created_at, u.state FROM orders o JOIN users u ON u.id = o.user_id) t WHERE t.created_at >= TIMESTAMP '2023-12-01' AND t.state = 'California'"
+    guard_action_expected: allow
+
+  - id: B11
+    role: good
+    pattern: cte_twice
+    description: "Month-over-month revenue from a CTE referenced twice."
+    sql: "WITH m AS (SELECT DATE_TRUNC(DATE(created_at), MONTH) AS month, SUM(sale_price) AS rev FROM order_items WHERE created_at >= TIMESTAMP '2023-01-01' AND created_at < TIMESTAMP '2024-01-01' GROUP BY month) SELECT cur.month, cur.rev, prev.rev AS prev_rev FROM m AS cur LEFT JOIN m AS prev ON prev.month = DATE_SUB(cur.month, INTERVAL 1 MONTH) ORDER BY cur.month"
+    guard_action_expected: allow
+
+  - id: B12
+    role: good
+    pattern: clean
+    description: "Users by age band and gender (CASE)."
+    sql: "SELECT CASE WHEN age < 25 THEN 'under 25' WHEN age < 45 THEN '25-44' ELSE '45+' END AS band, gender, COUNT(*) AS n FROM users GROUP BY band, gender"
+    guard_action_expected: allow
+
+  - id: B13
+    role: good
+    pattern: clean
+    description: "US users in four states (short IN list)."
+    sql: "SELECT state, COUNT(*) AS users FROM users WHERE country = 'United States' AND state IN ('California', 'Texas', 'New York', 'Florida') GROUP BY state"
+    guard_action_expected: allow
+
+  - id: B14
+    role: good
+    pattern: clean
+    description: "Approximate sessions per browser in December 2023."
+    sql: "SELECT browser, APPROX_COUNT_DISTINCT(session_id) AS sessions FROM events WHERE created_at >= TIMESTAMP '2023-12-01' AND created_at < TIMESTAMP '2024-01-01' GROUP BY browser"
+    guard_action_expected: allow
+
+  # ---------------------------------------------------------------- block --
+  - id: B15
+    role: bad
+    pattern: bytes_cap
+    description: "Every column of events, all partitions: ~367 MiB, over the 100 MiB cap."
+    sql: "SELECT * FROM events WHERE event_type = 'purchase'"
+    guard_action_expected: block
+
+  - id: B16
+    role: bad
+    pattern: bytes_cap
+    description: "Five wide events columns plus the filter column, all partitions: ~244 MiB."
+    sql: "SELECT session_id, uri, ip_address, city, state FROM `cost_guard_thelook.events` WHERE traffic_source = 'Email'"
+    guard_action_expected: block
+
+  - id: B17
+    role: bad
+    pattern: cartesian
+    description: "Comma join of users and products with no linking predicate (100k x 29k before filters)."
+    sql: "SELECT u.email, p.name FROM users u, products p WHERE u.country = 'Brasil' AND p.category = 'Jeans'"
+    guard_action_expected: block
+
+  - id: B18
+    role: bad
+    pattern: join_fanout
+    description: "Join users to events on state (~230 values, not a key): ~10^9 rows; ~29 MiB read."
+    sql: "SELECT u.id, COUNT(*) AS n FROM users u JOIN events e ON e.state = u.state GROUP BY u.id"
+    guard_action_expected: block
+
+  - id: B19
+    role: bad
+    pattern: join_fanout
+    description: "Same state join limited to one month of events: still ~10^7 rows (60k events x 100k users / 230)."
+    sql: "SELECT u.id, COUNT(*) AS n FROM users u JOIN events e ON e.state = u.state WHERE e.created_at >= TIMESTAMP '2023-12-01' AND e.created_at < TIMESTAMP '2024-01-01' GROUP BY u.id"
+    guard_action_expected: block
+
+  - id: B20
+    role: bad
+    pattern: non_read_only
+    description: "CREATE TABLE AS SELECT — writes."
+    sql: "CREATE OR REPLACE TABLE cost_guard_thelook.big_orders AS SELECT * FROM orders WHERE num_of_item > 3"
+    guard_action_expected: block
+
+  # -------------------------------------------------------------- rewrite --
+  - id: B21
+    role: bad
+    pattern: unprunable_wrapper
+    description: "EXTRACT(YEAR ...) on the partition column reads every partition; the 2023 range is equivalent and prunes."
+    sql: "SELECT COUNT(*) AS purchases FROM events WHERE EXTRACT(YEAR FROM created_at) = 2023 AND event_type = 'purchase'"
+    guard_action_expected: rewrite
+
+  - id: B22
+    role: bad
+    pattern: unprunable_wrapper
+    description: "FORMAT_TIMESTAMP('%Y-%m', ...) = '2023-06' reads every partition; the June range is equivalent and prunes."
+    sql: "SELECT order_id, sale_price FROM order_items WHERE FORMAT_TIMESTAMP('%Y-%m', created_at) = '2023-06'"
+    guard_action_expected: rewrite
+
+  - id: B23
+    role: bad
+    pattern: unprunable_wrapper
+    description: "Arithmetic on the partition column (col + INTERVAL) defeats pruning; created_at >= '2023-12-01' is equivalent."
+    sql: "SELECT COUNT(*) AS n FROM orders WHERE created_at + INTERVAL 1 DAY >= TIMESTAMP '2023-12-02'"
+    guard_action_expected: rewrite
+
+  # ----------------------------------------------------------------- warn --
+  - id: B24
+    role: bad
+    pattern: select_star
+    description: "SELECT * on users (16 columns) — every column billed."
+    sql: "SELECT * FROM users WHERE country = 'Japan'"
+    guard_action_expected: warn
+
+  - id: B25
+    role: bad
+    pattern: missing_partition_filter
+    description: "Order status counts over all of history, no date filter."
+    sql: "SELECT status, COUNT(*) AS n FROM orders GROUP BY status"
+    guard_action_expected: warn
+
+  - id: B26
+    role: bad
+    pattern: meaningless_aggregate
+    description: "SUM of an ID column."
+    sql: "SELECT SUM(user_id) AS total_users FROM orders WHERE created_at >= TIMESTAMP '2023-12-01'"
+    guard_action_expected: warn
+
+  - id: B27
+    role: bad
+    pattern: group_by_unique_key
+    description: "GROUP BY the events primary key: every group is one row."
+    sql: "SELECT id, COUNT(*) AS n FROM events WHERE created_at >= TIMESTAMP '2023-01-01' AND created_at < TIMESTAMP '2024-01-01' GROUP BY id"
+    guard_action_expected: warn
+
+  - id: B28
+    role: bad
+    pattern: sort_no_limit
+    description: "Sort a year of events (~500k rows) with no LIMIT."
+    sql: "SELECT id, user_id, event_type, created_at FROM events WHERE created_at >= TIMESTAMP '2023-01-01' AND created_at < TIMESTAMP '2024-01-01' ORDER BY created_at"
+    guard_action_expected: warn
+
+  - id: B29
+    role: bad
+    pattern: redundant_distinct
+    description: "DISTINCT over a GROUP BY that is already unique."
+    sql: "SELECT DISTINCT status, COUNT(*) AS n FROM orders WHERE created_at >= TIMESTAMP '2023-12-01' GROUP BY status"
+    guard_action_expected: warn
+
+  - id: B30
+    role: bad
+    pattern: long_in_list
+    description: "IN list of 120 user ids."
+    sql: "SELECT order_id, status FROM orders WHERE created_at >= TIMESTAMP '2023-12-01' AND user_id IN (1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 1015, 1016, 1017, 1018, 1019, 1020, 1021, 1022, 1023, 1024, 1025, 1026, 1027, 1028, 1029, 1030, 1031, 1032, 1033, 1034, 1035, 1036, 1037, 1038, 1039, 1040, 1041, 1042, 1043, 1044, 1045, 1046, 1047, 1048, 1049, 1050, 1051, 1052, 1053, 1054, 1055, 1056, 1057, 1058, 1059, 1060, 1061, 1062, 1063, 1064, 1065, 1066, 1067, 1068, 1069, 1070, 1071, 1072, 1073, 1074, 1075, 1076, 1077, 1078, 1079, 1080, 1081, 1082, 1083, 1084, 1085, 1086, 1087, 1088, 1089, 1090, 1091, 1092, 1093, 1094, 1095, 1096, 1097, 1098, 1099, 1100, 1101, 1102, 1103, 1104, 1105, 1106, 1107, 1108, 1109, 1110, 1111, 1112, 1113, 1114, 1115, 1116, 1117, 1118, 1119, 1120)"
+    guard_action_expected: warn

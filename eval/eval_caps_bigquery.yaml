@@ -1,0 +1,23 @@
+# Hard caps the BigQuery eval (eval/bq_queries.yaml) is labeled under — FROZEN
+# with that set's pre-registration, before its first run.
+#
+# Why not the production caps: TheLook on BigQuery is ~0.5 GB in total, so a
+# 200 GB interactive bytes cap could never trigger and the bytes path would go
+# untested. The bytes caps are SCALED to TheLook (a judgment call, not a
+# measurement): 100 MiB interactive puts a full read of the largest table
+# (events, all 13 columns: 367 MiB) over the cap, the way a full read of a
+# multi-TB fact table would exceed 200 GB, while a few columns of events with a
+# date filter stay far under it.
+#
+# Rows (join fan-out on BigQuery) and runtime keep the frozen eval caps
+# (eval_caps.yaml), so "a join that multiplies rows past 5,000,000" means the
+# same thing as in the DuckDB sets.
+workload_classes:
+  interactive:
+    max_bytes_scanned: 104857600        # 100 MiB
+    max_rows_processed: 5000000
+    max_runtime_sec: 300
+  scheduled:
+    max_bytes_scanned: 1073741824       # 1 GiB
+    max_rows_processed: 50000000
+    max_runtime_sec: 3600
