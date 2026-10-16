@@ -44,6 +44,9 @@ from cost_guard.guard import decide  # noqa: E402
 from cost_guard.tracing import Tracer  # noqa: E402
 
 MIB = 1024**2
+# Everything below this line in the results file is hand-written (what the
+# differences mean, run history) and is kept when the table is regenerated.
+NOTES_MARKER = "<!-- hand-written below: kept on rerun -->"
 
 
 def _verdict(sql, customer, backend):
@@ -94,7 +97,9 @@ def main() -> None:
     out_dir = ROOT / "eval" / "results"
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / f"bq_live_check_{ts:%Y%m%dT%H%M%S}.json").write_text(json.dumps(rows, indent=2))
-    (ROOT / "eval" / "RESULTS_bq_live_check.md").write_text(_markdown(rows, args, ts))
+    md = ROOT / "eval" / "RESULTS_bq_live_check.md"
+    notes = md.read_text().partition(NOTES_MARKER)[2] if md.exists() else ""
+    md.write_text(_markdown(rows, args, ts) + "\n" + NOTES_MARKER + (notes or "\n"))
     print("wrote eval/RESULTS_bq_live_check.md")
 
 

@@ -337,7 +337,8 @@ Never stored: SQL text, literal values, result rows.
 - BigQuery has no row estimate: a dry run reports bytes read, so a join
   fan-out (Q13, ~100M rows from ~10 MiB) only warns there. A fan-out
   estimate from the column registry (rows(L) × rows(R) / distinct keys, as
-  `plan_estimate.py` does on DuckDB) needs the registry built for BigQuery.
+  `plan_estimate.py` does on DuckDB) can now use the BigQuery registry;
+  the estimate itself is not built.
 - Count rows read instead of rows out of scans? It would make "scanned"
   honest, but it shifts every estimate and possibly verdicts.
 - Are rewrites worth offering on DuckDB, where most measure ~1× (pushdown

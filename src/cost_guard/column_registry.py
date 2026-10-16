@@ -97,7 +97,9 @@ class RegistryEntry:
 
 _RANGE_TYPES = ("TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT", "UTINYINT",
                 "USMALLINT", "UINTEGER", "UBIGINT", "FLOAT", "DOUBLE", "REAL", "DECIMAL",
-                "DATE", "TIMESTAMP")
+                "DATE", "TIMESTAMP",
+                # BigQuery (API type names; DATETIME matches DATE, FLOAT64 matches FLOAT)
+                "INT64", "NUMERIC", "BIGNUMERIC")
 
 
 def has_value_range(data_type: str) -> bool:
@@ -113,6 +115,7 @@ class BuildReport:
     oversized: list[str] = field(default_factory=list)  # size gate: not scanned
     failed: list[str] = field(default_factory=list)  # scan error or timeout
     removed_rows: int = 0  # rows for dropped tables/columns
+    bytes_processed: int = 0  # billed warehouses: bytes the profiling scans processed
 
 
 def _profile_table(con, schema: str, table: str, approximate: bool, now: str,
@@ -160,6 +163,42 @@ def _profile_table(con, schema: str, table: str, approximate: bool, now: str,
     return out
 
 
+class Oversized(Exception):
+    """Raised by a source when a table is over the size gate: reported, not scanned."""
+
+
+class _DuckDBSource:
+    """A DuckDB warehouse file, opened READ-ONLY."""
+
+    def __init__(self, db_path: str):
+        import duckdb
+
+        self.wh = duckdb.connect(db_path, read_only=True)
+
+    def catalog(self, schema: str) -> dict[str, set[str]]:
+        rows = self.wh.execute(
+            "SELECT c.table_name, c.column_name FROM information_schema.columns c "
+            "JOIN information_schema.tables t USING (table_schema, table_name) "
+            "WHERE c.table_schema = ? AND t.table_type = 'BASE TABLE' AND c.table_name <> ?",
+            [schema, REGISTRY_TABLE],  # skip a registry table left by older versions
+        ).fetchall()
+        live: dict[str, set[str]] = {}
+        for t, c in rows:
+            live.setdefault(t, set()).add(c)
+        return live
+
+    def profile(self, schema, table, cfg, now) -> list[RegistryEntry]:
+        rows = self.wh.execute("SELECT estimated_size FROM duckdb_tables() "
+                               "WHERE schema_name = ? AND table_name = ?", [schema, table]).fetchone()
+        if rows and rows[0] is not None and rows[0] > cfg["max_table_rows"]:
+            raise Oversized(f"{table} (~{rows[0]:,} rows)")
+        return _profile_table(self.wh, schema, table, cfg["use_approximate"], now,
+                              cfg["scan_timeout_sec"])
+
+    def close(self):
+        self.wh.close()
+
+
 def build_registry(
     db_path: str,
     tables: Optional[list[str]] = None,
@@ -175,15 +214,22 @@ def build_registry(
     tables: restrict to these tables (default: every base table in `schema`).
     registry_path: default default_registry_path(db_path).
     """
+    return _build(_DuckDBSource(db_path), registry_path or default_registry_path(db_path),
+                  tables, settings, mode, schema)
+
+
+def _build(source, registry_path: str, tables, settings, mode: str, schema: str) -> BuildReport:
+    """The store side, shared by every warehouse: catalog diff, refresh
+    mode, size gate, atomic per-table replace. `source` lists tables and
+    profiles one table per scan."""
     import duckdb
 
     cfg = {**DEFAULTS, **(settings or {})}
     if mode not in ("missing", "stale", "all"):
+        source.close()
         raise ValueError(f"mode must be missing|stale|all, got {mode!r}")
     report = BuildReport()
-    registry_path = registry_path or default_registry_path(db_path)
     Path(registry_path).parent.mkdir(parents=True, exist_ok=True)
-    wh = duckdb.connect(db_path, read_only=True)
     reg = duckdb.connect(registry_path)
     try:
         sql_type = {"bool": "BOOLEAN", "int": "BIGINT"}
@@ -199,15 +245,7 @@ def build_registry(
             reg.execute(f"DROP TABLE {REGISTRY_TABLE}")
         reg.execute(f"CREATE TABLE IF NOT EXISTS {REGISTRY_TABLE} ({cols_sql})")
 
-        catalog = wh.execute(
-            "SELECT c.table_name, c.column_name FROM information_schema.columns c "
-            "JOIN information_schema.tables t USING (table_schema, table_name) "
-            "WHERE c.table_schema = ? AND t.table_type = 'BASE TABLE' AND c.table_name <> ?",
-            [schema, REGISTRY_TABLE],  # skip a registry table left by older versions
-        ).fetchall()
-        live: dict[str, set[str]] = {}
-        for t, c in catalog:
-            live.setdefault(t, set()).add(c)
+        live = source.catalog(schema)
 
         # Remove rows for tables/columns that no longer exist.
         registered = reg.execute(
@@ -236,15 +274,13 @@ def build_registry(
             if not (mode == "all" or missing or (mode == "stale" and stale)):
                 report.up_to_date.append(t)
                 continue
-            rows = wh.execute("SELECT estimated_size FROM duckdb_tables() "
-                              "WHERE schema_name = ? AND table_name = ?", [schema, t]).fetchone()
-            if rows and rows[0] is not None and rows[0] > cfg["max_table_rows"]:
-                report.oversized.append(f"{t} (~{rows[0]:,} rows)")
-                continue
             now = datetime.now(timezone.utc).isoformat()
             try:
-                entries = _profile_table(wh, schema, t, cfg["use_approximate"], now,
-                                         cfg["scan_timeout_sec"])
+                entries = source.profile(schema, t, cfg, now)
+                report.bytes_processed += getattr(source, "last_bytes", 0)
+            except Oversized as e:
+                report.oversized.append(str(e))
+                continue
             except Exception as e:  # noqa: BLE001 — one bad table must not stop the run
                 report.failed.append(f"{t}: {str(e).splitlines()[0][:100]}")
                 continue
@@ -265,11 +301,121 @@ def build_registry(
             report.columns += len(entries)
         return report
     finally:
-        wh.close()
+        source.close()
         reg.close()
 
 
-def load_registry(registry_path: str) -> Optional["ColumnRegistry"]:
+def bigquery_registry_path(project: str, dataset: str) -> str:
+    """Local registry file for a BigQuery dataset (kept out of the warehouse:
+    reading a registry table there would be a billed query on every start)."""
+    root = Path(__file__).resolve().parents[2]  # repo root, as config.DEFAULT_PATH
+    return str(root / "data" / "bigquery" / f"{project}.{dataset}.registry.duckdb")
+
+
+# BigQuery column types the profiling scan skips: not countable/groupable.
+_BQ_SKIP_TYPES = {"GEOGRAPHY", "RECORD", "STRUCT", "JSON", "RANGE", "INTERVAL"}
+
+
+class _BigQuerySource:
+    """A BigQuery dataset. The catalog comes from the API (free); each
+    table's profiling scan is dry-run first, then runs under
+    maximum_bytes_billed and job_timeout_ms. Views are profiled through the
+    view (their API row count is 0, i.e. unknown)."""
+
+    def __init__(self, project: str, dataset: str, maximum_bytes_billed: int, client=None):
+        self.project, self.dataset = project, dataset
+        self.maximum_bytes_billed = maximum_bytes_billed
+        if client is None:
+            from google.cloud import bigquery
+
+            client = bigquery.Client(project=project)
+        self.client = client
+        self._tables: dict[str, object] = {}
+        self.last_bytes = 0
+
+    def _config(self, **kw):
+        from google.cloud import bigquery
+
+        return bigquery.QueryJobConfig(maximum_bytes_billed=self.maximum_bytes_billed,
+                                       use_query_cache=False, **kw)
+
+    def catalog(self, schema: str) -> dict[str, set[str]]:
+        live: dict[str, set[str]] = {}
+        for item in self.client.list_tables(f"{self.project}.{self.dataset}"):
+            t = self.client.get_table(item.reference)
+            self._tables[item.table_id] = t
+            live[item.table_id] = {f.name for f in t.schema
+                                   if f.field_type not in _BQ_SKIP_TYPES and f.mode != "REPEATED"}
+        return live
+
+    def profile(self, schema, table, cfg, now) -> list[RegistryEntry]:
+        self.last_bytes = 0
+        t = self._tables[table]
+        if t.table_type == "TABLE" and (t.num_rows or 0) > cfg["max_table_rows"]:
+            raise Oversized(f"{table} (~{t.num_rows:,} rows)")
+        cols = [(f.name, f.field_type) for f in t.schema
+                if f.field_type not in _BQ_SKIP_TYPES and f.mode != "REPEATED"]
+        if not cols:
+            return []
+        distinct = "APPROX_COUNT_DISTINCT" if cfg["use_approximate"] else "COUNT(DISTINCT"
+        exprs = ["COUNT(*)"]
+        for c, dtype in cols:
+            q = f"`{c}`"
+            exprs += [f"{distinct}({q})" + ("" if cfg["use_approximate"] else ")"), f"COUNT({q})"]
+            if has_value_range(dtype):
+                exprs += [f"CAST(MIN({q}) AS STRING)", f"CAST(MAX({q}) AS STRING)"]
+            else:
+                exprs += ["NULL", "NULL"]
+        sql = f"SELECT {', '.join(exprs)} FROM `{self.project}.{self.dataset}.{table}`"
+        dry = self.client.query(sql, job_config=self._config(dry_run=True))
+        nbytes = int(dry.total_bytes_processed or 0)
+        if nbytes > self.maximum_bytes_billed:
+            raise Oversized(f"{table} (~{nbytes:,} bytes > maximum_bytes_billed)")
+        timeout = cfg["scan_timeout_sec"]
+        job = self.client.query(sql, job_config=self._config(
+            **({"job_timeout_ms": int(timeout * 1000)} if timeout else {})))
+        row = list(job.result(timeout=timeout))[0]
+        self.last_bytes = int(getattr(job, "total_bytes_processed", None) or nbytes)
+        total = int(row[0])
+        out = []
+        for i, (c, dtype) in enumerate(cols):
+            base = 1 + 4 * i
+            non_null = int(row[base + 1] or 0)
+            out.append(RegistryEntry(
+                schema_name=schema, table_name=table, column_name=c, data_type=dtype,
+                total_rows=total,
+                distinct_count=min(int(row[base] or 0), non_null),  # HLL can overshoot
+                null_count=total - non_null,
+                is_approximate=bool(cfg["use_approximate"]),
+                profiled_at=now,
+                min_value=row[base + 2],
+                max_value=row[base + 3],
+            ))
+        return out
+
+    def close(self):
+        pass
+
+
+def build_bigquery_registry(
+    project: str,
+    dataset: str,
+    tables: Optional[list[str]] = None,
+    settings: Optional[dict] = None,
+    mode: str = "stale",
+    registry_path: Optional[str] = None,
+    maximum_bytes_billed: int = 2 * 1024**3,
+    client=None,
+) -> BuildReport:
+    """Create/refresh the LOCAL registry for a BigQuery dataset. Only reads
+    the warehouse; each profiling scan is one billed query per table, capped
+    by maximum_bytes_billed. Entries are keyed by schema = the dataset."""
+    return _build(_BigQuerySource(project, dataset, maximum_bytes_billed, client),
+                  registry_path or bigquery_registry_path(project, dataset),
+                  tables, settings, mode, dataset)
+
+
+def load_registry(registry_path: str, default_schema: str = "main") -> Optional["ColumnRegistry"]:
     """Read a local registry file; None when it hasn't been built."""
     import duckdb
 
@@ -285,7 +431,7 @@ def load_registry(registry_path: str) -> Optional["ColumnRegistry"]:
             return None
         cur = con.execute(f"SELECT * FROM {REGISTRY_TABLE}")
         names = [d[0] for d in cur.description]
-        return ColumnRegistry.from_rows(cur.fetchall(), names)
+        return ColumnRegistry.from_rows(cur.fetchall(), names, default_schema)
     finally:
         con.close()
 
@@ -293,7 +439,8 @@ def load_registry(registry_path: str) -> Optional["ColumnRegistry"]:
 class ColumnRegistry:
     """In-memory view of the registry table: (schema, table, column) -> entry."""
 
-    def __init__(self, entries: list[RegistryEntry]):
+    def __init__(self, entries: list[RegistryEntry], default_schema: str = "main"):
+        self.default_schema = default_schema  # BigQuery: the dataset
         self._by_key = {
             (e.schema_name.lower(), e.table_name.lower(), e.column_name.lower()): e
             for e in entries
@@ -305,12 +452,14 @@ class ColumnRegistry:
     def entries(self) -> list[RegistryEntry]:
         return list(self._by_key.values())
 
-    def lookup(self, table: str, column: str, schema: str = "main") -> Optional[RegistryEntry]:
+    def lookup(self, table: str, column: str, schema: Optional[str] = None) -> Optional[RegistryEntry]:
+        schema = schema or self.default_schema
         return self._by_key.get((schema.lower(), table.lower(), column.lower()))
 
     @classmethod
-    def from_rows(cls, rows: list[tuple], names: list[str]) -> "ColumnRegistry":
+    def from_rows(cls, rows: list[tuple], names: list[str],
+                  default_schema: str = "main") -> "ColumnRegistry":
         """Rows read back from the registry table, matched by column name."""
         known = {f.name for f in fields(RegistryEntry)}
         return cls([RegistryEntry(**{k: v for k, v in zip(names, r) if k in known})
-                    for r in rows])
+                     for r in rows], default_schema)

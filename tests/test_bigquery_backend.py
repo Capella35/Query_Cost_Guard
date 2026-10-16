@@ -164,3 +164,83 @@ def test_view_row_count_is_unknown_not_tiny():
               "SELECT o.order_id, u.email FROM orders AS o, users AS u WHERE o.status = 'Shipped'"):
         v = decide(q, backend=wh, tracer=Tracer())
         assert v.decision == "block" and "cartesian" in v.reason
+
+
+# ---- Column registry on BigQuery ---------------------------------------------
+
+class RegistryClient:
+    """Fake client for the registry build: a table, a view, a geography column."""
+
+    def __init__(self, dry_bytes=10 * 1024**2):
+        self.dry_bytes = dry_bytes
+        self.queries = []
+        f = lambda n, t, m="NULLABLE": SimpleNamespace(name=n, field_type=t, mode=m)  # noqa: E731
+        self.tables = {
+            "orders": SimpleNamespace(table_type="TABLE", num_rows=1000, schema=[
+                f("order_id", "INTEGER"), f("status", "STRING"), f("created_at", "TIMESTAMP")]),
+            "users": SimpleNamespace(table_type="VIEW", num_rows=0, schema=[
+                f("id", "INTEGER"), f("user_geom", "GEOGRAPHY"), f("tags", "STRING", "REPEATED")]),
+        }
+
+    def list_tables(self, ds):
+        return [SimpleNamespace(table_id=t, reference=t) for t in self.tables]
+
+    def get_table(self, ref):
+        return self.tables[ref]
+
+    def query(self, sql, job_config=None):
+        self.queries.append((sql, job_config))
+        assert job_config.maximum_bytes_billed
+        if job_config.dry_run:
+            return SimpleNamespace(total_bytes_processed=self.dry_bytes)
+        if ".orders`" in sql:
+            row = (1000, 990, 1000, "1", "1000", 5, 1000, None, None,
+                   600, 1000, "2019-01-01 00:00:00+00", "2024-01-01 00:00:00+00")
+        else:
+            row = (100000, 98000, 100000, "1", "100000")
+        return SimpleNamespace(total_bytes_processed=self.dry_bytes,
+                               result=lambda timeout=None: [row])
+
+
+def test_bigquery_registry_build_and_lookup(tmp_path):
+    from cost_guard.column_registry import build_bigquery_registry, load_registry
+
+    path = str(tmp_path / "reg.duckdb")
+    client = RegistryClient()
+    rep = build_bigquery_registry("p", "ds", registry_path=path, client=client)
+    assert sorted(rep.profiled) == ["orders", "users"] and rep.columns == 4
+    assert rep.bytes_processed == 2 * client.dry_bytes
+    # every scan was dry-run first, and nothing ran without a bytes cap
+    assert [bool(c.dry_run) for _, c in client.queries] == [True, False, True, False]
+    # geography and repeated columns are not profiled
+    assert not any("user_geom" in q or "tags" in q for q, _ in client.queries)
+    reg = load_registry(path, default_schema="ds")
+    users_id = reg.lookup("users", "id")
+    # a view is profiled through the view: its rows come from the scan, not the API's 0
+    assert users_id.total_rows == 100000 and users_id.distinct_count == 98000
+    assert reg.lookup("orders", "created_at").min_value.startswith("2019-01-01")
+    assert reg.lookup("orders", "status").min_value is None  # no range for strings
+    # stale mode: fresh entries are not re-scanned
+    again = build_bigquery_registry("p", "ds", registry_path=path, client=RegistryClient())
+    assert again.up_to_date == ["orders", "users"] and again.bytes_processed == 0
+
+
+def test_bigquery_registry_size_gate_uses_dry_run_bytes(tmp_path):
+    from cost_guard.column_registry import build_bigquery_registry
+
+    client = RegistryClient(dry_bytes=5 * 1024**3)
+    rep = build_bigquery_registry("p", "ds", registry_path=str(tmp_path / "r.duckdb"),
+                                  maximum_bytes_billed=2 * 1024**3, client=client)
+    assert rep.profiled == [] and len(rep.oversized) == 2
+    assert all(c.dry_run for _, c in client.queries)  # nothing executed
+
+
+def test_backend_reads_the_dataset_registry(tmp_path):
+    from cost_guard.column_registry import build_bigquery_registry
+
+    path = str(tmp_path / "reg.duckdb")
+    build_bigquery_registry("p", "ds", registry_path=path, client=RegistryClient())
+    wh = BigQueryWarehouse("p", "ds", client=FakeClient(0), registry_path=path)
+    assert wh.column_registry().lookup("orders", "order_id").distinct_count == 990
+    assert BigQueryWarehouse("p", "ds", client=FakeClient(0),
+                             registry_path=str(tmp_path / "none.duckdb")).column_registry() is None

@@ -6,12 +6,13 @@ executing call (execute, column_profile) carries maximum_bytes_billed, and
 execute() carries job_timeout_ms (the BigQuery watchdog: the job is
 cancelled server-side at the deadline).
 
-Status: written against the google-cloud-bigquery client API and unit-tested
-with a fake client (tests/test_bigquery_backend.py); NOT yet run against a
-live project. sampled() is not built, so compare_results fails closed on
-this backend (no rewrite is ever offered unverified). The Guard parses SQL
-with the DuckDB dialect; BigQuery-specific syntax may need dialect="bigquery"
-in sql_ast — untested.
+Status: unit-tested with a fake client (tests/test_bigquery_backend.py);
+the check path (estimate, table_metadata, column_registry) has run live
+against dry runs (scripts/bq_live_check.py); execute() has not. sampled() is
+not built, so compare_results fails closed on this backend (no rewrite is
+ever offered unverified). The Guard parses SQL with the DuckDB dialect; the
+30-query set adapted by to_bigquery() parsed without errors, other
+BigQuery-only syntax is untested.
 
 Set maximum_bytes_billed on the project BEFORE running anything (especially Q13).
 """
@@ -32,11 +33,18 @@ class BigQueryWarehouse:
         dataset: str = "thelook_ecommerce",
         maximum_bytes_billed: int = 1_099_511_627_776,
         client=None,
+        registry_path: Optional[str] = None,
     ):
+        from ..column_registry import bigquery_registry_path
+
         self.project = project
         self.dataset = dataset
         self.maximum_bytes_billed = maximum_bytes_billed
         self._client = client
+        # Local profiling lookup (scripts/build_column_registry.py --bigquery-project).
+        self.registry_path = registry_path or bigquery_registry_path(project, dataset)
+        self._registry = None
+        self._registry_loaded = False
 
     def _bq(self):
         if self._client is None:
@@ -104,9 +112,15 @@ class BigQueryWarehouse:
         }
 
     def column_registry(self):
-        # Plan: read the registry table from the dataset (built by a scheduled
-        # job). Not built: grouped columns show up in skipped_rules.
-        return None
+        """The local column registry for this dataset, read once and cached.
+        None when it has not been built (grouped columns then show up in
+        skipped_rules)."""
+        if not self._registry_loaded:
+            from ..column_registry import load_registry
+
+            self._registry = load_registry(self.registry_path, default_schema=self.dataset)
+            self._registry_loaded = True
+        return self._registry
 
     def column_profile(self, table: str, column: str) -> ColumnProfile:
         sql = (
