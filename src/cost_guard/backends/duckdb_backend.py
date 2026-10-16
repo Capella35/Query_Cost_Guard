@@ -151,6 +151,13 @@ class DuckDBWarehouse:
         self.registry_path = registry_path or default_registry_path(db_path)
         self.read_only = read_only
         self._con = None
+        # One backend may serve many users at once (a long-running service):
+        # a DuckDB connection is not safe across threads, so each thread runs
+        # SQL on its own cursor of the shared connection, and lazy setup is
+        # locked. Without this, concurrent checks crashed or read each
+        # other's plans (8 threads: 76 errors, 47 wrong verdicts in 200).
+        self._lock = threading.RLock()
+        self._local = threading.local()
         self._row_counts: dict[str, int] = {}
         self._registry = None
         self._registry_loaded = False
@@ -160,16 +167,27 @@ class DuckDBWarehouse:
     def _connect(self):
         import duckdb
 
-        if self._con is None:
-            self._con = duckdb.connect(self.db_path, read_only=self.read_only)
-        return self._con
+        with self._lock:
+            if self._con is None:
+                self._con = duckdb.connect(self.db_path, read_only=self.read_only)
+            return self._con
+
+    def _cursor(self):
+        """This thread's own cursor on the shared connection (thread-safe)."""
+        cur = getattr(self._local, "cur", None)
+        if cur is None:
+            base = self._connect()
+            with self._lock:
+                cur = base.cursor()
+            self._local.cur = cur
+        return cur
 
     def _referenced_tables(self, sql: str) -> list[str]:
         return referenced_tables(sql)
 
     def row_count(self, table: str) -> int:
         if table not in self._row_counts:
-            self._row_counts[table] = self._connect().execute(
+            self._row_counts[table] = self._cursor().execute(
                 f'SELECT COUNT(*) FROM "{_check_ident(table)}"'
             ).fetchone()[0]
         return self._row_counts[table]
@@ -181,7 +199,7 @@ class DuckDBWarehouse:
         fraction — for comparing runs of one query shape against each other
         (the anomaly rule), never for a cap: a 7-day window then reads as
         ~7 days of rows instead of the planner's flat 20%."""
-        con = self._connect()
+        con = self._cursor()
         try:
             rows = con.execute("EXPLAIN (FORMAT JSON) " + sql).fetchall()
             plans = json.loads(rows[0][1])
@@ -309,7 +327,7 @@ class DuckDBWarehouse:
         typed = f"CAST(? AS {entry.data_type})"
         query = "SELECT " + ", ".join([num(typed), num(typed)] + [num(x) for x in lows + highs])
         try:
-            vals = self._connect().execute(query, [entry.min_value, entry.max_value]).fetchone()
+            vals = self._cursor().execute(query, [entry.min_value, entry.max_value]).fetchone()
         except Exception:  # noqa: BLE001
             return None
         mn, mx = vals[0], vals[1]
@@ -371,7 +389,7 @@ class DuckDBWarehouse:
     def run_sample(self, sql: str, max_rows: int = 10_000) -> str:
         """Legacy capped run: LIMIT on an outer wrapper. Does NOT bound the
         work of an aggregate — compare_results uses sampled() instead."""
-        con = self._connect()
+        con = self._cursor()
         rows = con.execute(f"SELECT * FROM ({sql}) AS _sample LIMIT {int(max_rows)}").fetchall()
         return hashlib.sha256(repr(rows).encode()).hexdigest()
 
@@ -413,7 +431,9 @@ class DuckDBWarehouse:
         """Runtime watchdog (F4.2): run on a cursor and interrupt it past
         timeout_sec. Callers must only pass read-only queries — killing a
         write mid-flight is not safe; the Guard enforces this."""
-        cur = self._connect().cursor()
+        base = self._connect()
+        with self._lock:
+            cur = base.cursor()  # a cursor of its own, so interrupt() hits only this query
         timer = threading.Timer(timeout_sec, cur.interrupt) if timeout_sec else None
         t0 = time.perf_counter()
         if timer:
@@ -432,7 +452,7 @@ class DuckDBWarehouse:
             cur.close()
 
     def table_metadata(self, table: str) -> dict:
-        con = self._connect()
+        con = self._cursor()
         columns = [
             r[1] for r in con.execute(f"PRAGMA table_info('{_check_ident(table)}')").fetchall()
         ]
@@ -455,17 +475,18 @@ class DuckDBWarehouse:
     def column_registry(self):
         """The local column registry (column_registry.py) for this warehouse,
         read once and cached. None when it has not been built."""
-        if not self._registry_loaded:
-            from ..column_registry import load_registry
+        with self._lock:
+            if not self._registry_loaded:
+                from ..column_registry import load_registry
 
-            self._registry = load_registry(self.registry_path)
-            self._registry_loaded = True
-        return self._registry
+                self._registry = load_registry(self.registry_path)
+                self._registry_loaded = True
+            return self._registry
 
     def column_profile(self, table: str, column: str) -> ColumnProfile:
         """Live profile of one column (a full column scan). The Guard does
         NOT call this per query — it reads the column registry instead."""
-        con = self._connect()
+        con = self._cursor()
         _check_ident(table), _check_ident(column)
         n, ndv, null_frac = con.execute(
             f'SELECT COUNT(*), APPROX_COUNT_DISTINCT("{column}"), '

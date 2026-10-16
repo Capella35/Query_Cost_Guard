@@ -348,8 +348,14 @@ Never stored: SQL text, literal values, result rows.
 | 2026-10-16 | Column kinds by model measured, not yet wired into the Guard | 73/73 and 20/20 vs a 65/73 and 8/20 name baseline, but the prompt hinted 4 hard columns (both false-id traps); the false-id side needs a clean prompt and an independent set first |
 | 2026-10-16 | Column kinds wired in frugally: triage first, a model only for edge cases, labels are proposals; ambiguous id-like names warn instead of block | Owner's direction for the e-commerce pilot: no risk, little LLM cost. TheLook: 72/73 columns settled without a model; a model or an ambiguous name can only warn, a person's confirmation blocks |
 | 2026-10-16 | SUM/AVG over a confirmed CATEGORY is blocked too; events.sequence_number confirmed as category | Owner's decision: sequence_number restarts at 1 in every session (a step label, half of a session+step key), so adding or averaging it is meaningless; grouping, counting and MIN/MAX (session length) stay allowed. Only a person's confirmation blocks |
+| 2026-10-16 | DuckDB backend thread-safe: one cursor per thread, locked lazy setup | A shared backend (any long-running service, e.g. an MCP server) gave 76 errors and 47 wrong verdicts in 200 checks from 8 threads; after: 0 and 0 at 8 and 32 threads. BigQuery was already safe (0/0) |
 
 ## 13. Open questions
+
+- Many users: caps are per query, so many analysts each under the cap can
+  still run up a large bill — per-user / per-team daily budgets are not
+  built. Learned thresholds are saved last-writer-wins, and every `run`
+  reads the whole query log; both need care before a multi-user service.
 
 
 - Before offering rewrites on BigQuery, the catalog must emit BigQuery SQL:
