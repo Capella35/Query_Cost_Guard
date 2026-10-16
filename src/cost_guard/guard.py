@@ -319,6 +319,17 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
             **base,
         )
 
+    from .rules.static_rules import IDENTIFIER_AGGREGATE
+
+    id_aggs = [f for f in findings if f.startswith(IDENTIFIER_AGGREGATE)]
+    if id_aggs:
+        return GuardVerdict(
+            decision="block",
+            reason="meaningless result — " + "; ".join(id_aggs),
+            findings=findings,
+            **base,
+        )
+
     if findings and offered_rewrites and fingerprint_query(sql) in offered_rewrites:
         with tracer.span(tid, "rewrite.already_offered"):
             pass

@@ -69,7 +69,13 @@ Guard (before execution) → watchdog execution → query log → Investigator (
    lowered). Above the workload class's hard cap from `customer.yaml`, the
    query is blocked.
 3. The static rules run on the parsed AST. A cartesian product (relations no
-   predicate links, unless provably tiny) is blocked; other findings warn.
+   predicate links, unless provably tiny) is blocked. So is SUM/AVG over a
+   column named as an identifier (`id`, `*_id`, `*_key`, `*_code`, …): an id
+   labels a row and is counted, not added; the reason carries the query with
+   `COUNT(DISTINCT …)` instead (a suggestion — it answers a different
+   question, so it is not an automatic rewrite). Found only by near-unique
+   values in the registry, it may be a real amount and only warns. Other
+   findings warn.
    Column cardinality for the GROUP BY rule is a lookup in the column
    registry (profiled once, refreshed on a schedule), not a scan.
 4. Findings the deterministic catalog can fix — a repeated subquery, a

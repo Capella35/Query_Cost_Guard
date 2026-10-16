@@ -247,6 +247,25 @@ def summed_columns(tree: exp.Expression) -> list[tuple[str, exp.Column]]:
     return out
 
 
+def count_instead(tree: exp.Expression, column: exp.Column) -> str:
+    """The query with every SUM/AVG over `column` (same name and qualifier)
+    replaced by COUNT(DISTINCT column) — a suggestion to show the analyst,
+    NOT an equivalent rewrite (it answers a different question)."""
+    name, qual = column.name.lower(), (column.table or "").lower()
+
+    def swap(node):
+        if isinstance(node, (exp.Sum, exp.Avg)):
+            arg = node.this
+            while isinstance(arg, (exp.Paren, exp.Cast)):
+                arg = arg.this
+            if (isinstance(arg, exp.Column) and arg.name.lower() == name
+                    and (arg.table or "").lower() == qual):
+                return exp.Count(this=exp.Distinct(expressions=[arg.copy()]))
+        return node
+
+    return tree.copy().transform(swap).sql(dialect=current_dialect())
+
+
 def table_aliases(tree: exp.Expression, table: str) -> set[str]:
     """Names a physical table is referred to by in the query (alias or name)."""
     return {

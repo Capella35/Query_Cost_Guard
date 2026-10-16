@@ -1,4 +1,6 @@
-"""no_sum_on_identifier: SUM/AVG over an identifier column warns."""
+"""no_sum_on_identifier: SUM/AVG over an identifier column. An id named as
+one (id, *_id, *_key, ...) is BLOCKED with a COUNT suggestion; one found only
+by near-unique values in the registry (could be a real amount) warns."""
 import duckdb
 import pytest
 
@@ -17,18 +19,26 @@ def _ids(v):
     "SELECT o.status, AVG(o.user_id) FROM orders o WHERE o.created_at >= '2024-01-01' GROUP BY 1",
     "SELECT SUM(CAST(order_id AS DOUBLE)) FROM orders WHERE created_at >= '2024-01-01'",
 ])
-def test_identifier_aggregates_warn(synthetic_wh, sql):
+def test_identifier_aggregates_are_blocked_with_a_count(synthetic_wh, sql):
     v = decide(sql, backend=synthetic_wh, tracer=Tracer())
-    assert v.decision == "warn"
+    assert v.decision == "block" and "meaningless result" in v.reason
     assert _ids(v) and "COUNT(DISTINCT" in _ids(v)[0]
+    suggested = v.reason.split("Suggested query: ", 1)[1]
+    assert "SUM(" not in suggested.upper() and "AVG(" not in suggested.upper()
+    synthetic_wh._connect().execute(suggested).fetchall()  # the suggestion runs
 
 
-def test_window_sum_on_identifier_warns(synthetic_wh):
-    # Window aggregates used to be falsely blocked by an over-estimate; the
-    # column-registry plan correction (plan_estimate.py) fixes that.
+def test_window_sum_on_identifier_is_blocked(synthetic_wh):
     v = decide("SELECT status, SUM(user_id) OVER (PARTITION BY status) FROM orders "
                "WHERE created_at >= '2024-01-01'", backend=synthetic_wh, tracer=Tracer())
-    assert v.decision == "warn" and _ids(v)
+    assert v.decision == "block" and _ids(v)
+
+
+def test_only_the_identifier_aggregate_is_replaced(synthetic_wh):
+    v = decide("SELECT status, SUM(user_id) AS u, SUM(amount_cents) AS revenue FROM orders "
+               "WHERE created_at >= '2024-01-01' GROUP BY status", backend=synthetic_wh, tracer=Tracer())
+    suggested = v.reason.split("Suggested query: ", 1)[1]
+    assert "COUNT(DISTINCT user_id) AS u" in suggested and "SUM(amount_cents) AS revenue" in suggested
 
 
 @pytest.mark.parametrize("sql", [
@@ -60,6 +70,8 @@ def test_near_unique_integer_needs_the_registry(ticket_db, monkeypatch):
     build_registry(ticket_db)
     found = _ids(decide(q, backend=DuckDBWarehouse(ticket_db), tracer=Tracer()))
     assert len(found) == 1 and "sales.ticket" in found[0] and "near-unique" in found[0]
+    # Found by values only (it could be a real amount): a warning, not a block.
+    assert decide(q, backend=DuckDBWarehouse(ticket_db), tracer=Tracer()).decision == "warn"
     # A stale registry entry is not trusted: back to name-only.
     monkeypatch.setattr(RegistryEntry, "age_days", lambda self, now=None: 90.0)
     assert _ids(decide(q, backend=DuckDBWarehouse(ticket_db), tracer=Tracer())) == []

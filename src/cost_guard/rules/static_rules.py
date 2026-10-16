@@ -183,14 +183,19 @@ def _identifier_reason(table: str, column: str, metadata: dict) -> str | None:
     return None
 
 
+IDENTIFIER_AGGREGATE = "identifier aggregate"  # finding prefix the Guard blocks on
+
+
 def no_sum_on_identifier(sql: str, metadata: dict) -> list[str]:
     """No SUM/AVG over an identifier column.
 
     SUM(customer_id) runs, returns a number, and charts fine — and means
-    nothing. Nothing fails loudly, so the Guard says it. A column counts as
-    an identifier by name (`id`, `*_id`, `*_key`, `*_code`, ...) or, when
-    the column registry has a fresh entry, by near-unique integer values.
-    Identifiers are for COUNT(DISTINCT ...), joins and lookups.
+    nothing: an id labels a row, it is not a quantity. Ids are COUNTed.
+    By NAME (`id`, `*_id`, `*_key`, `*_code`, ...) the column is surely an
+    identifier: the finding starts with IDENTIFIER_AGGREGATE and the Guard
+    BLOCKS, suggesting the query with COUNT(DISTINCT ...) instead. By the
+    column registry alone (near-unique integer values) it may be a real
+    amount (e.g. order totals in cents), so that only warns.
     """
     table = (metadata.get("table") or "").lower()
     columns = {c.lower() for c in metadata.get("columns", [])}
@@ -205,7 +210,14 @@ def no_sum_on_identifier(sql: str, metadata: dict) -> list[str]:
         if name not in columns or (qualifier and qualifier not in aliases):
             continue
         why = _identifier_reason(table, name, metadata)
-        if why:
+        if why == "identifier name":
+            findings.append(
+                f"{IDENTIFIER_AGGREGATE}: {agg} aggregates identifier column '{table}.{name}' — "
+                f"an id labels a row, it is not a quantity; count it: COUNT(DISTINCT {name}) "
+                f"(how many different ones) or COUNT({name}) (rows that have one). "
+                f"Suggested query: {sql_ast.count_instead(tree, col)}"
+            )
+        elif why:
             findings.append(
                 f"{agg} aggregates identifier column '{table}.{name}' ({why}) — "
                 f"the result is a number with no meaning; did you mean "
