@@ -34,7 +34,9 @@ def _llm(args, backend):
 
 
 def main(argv: list[str] | None = None) -> int:
-    from .config import caps_for, load_customer
+    from .config import caps_for, load_customer, load_dotenv
+
+    load_dotenv()  # .env settings (e.g. COST_GUARD_LOG_KEY), shell variables win
 
     parser = argparse.ArgumentParser(prog="cost_guard", description="Cost Guard + Investigator CLI")
     parser.add_argument("--customer", help="path to customer.yaml (default: repo root)")

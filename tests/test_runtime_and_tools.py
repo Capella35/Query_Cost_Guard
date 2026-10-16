@@ -205,3 +205,19 @@ def test_run_query_offers_one_rewrite_round(synthetic_wh, tmp_path):
     # The original query's own shape was never an offered rewrite: still offered.
     third = run_query(HAVING, synthetic_wh, log_path=log, tracer=Tracer(), llm=PaddingLLM())
     assert third.verdict.decision == "rewrite"
+
+
+def test_load_dotenv_sets_only_missing_nonempty_and_never_overrides(tmp_path, monkeypatch):
+    from cost_guard.config import load_dotenv
+
+    env = tmp_path / ".env"
+    env.write_text("# comment\nCG_A=one\nCG_B=\nexport CG_C=\"three\"\nCG_D=from_file\nnot a line\n")
+    monkeypatch.delenv("CG_A", raising=False)
+    monkeypatch.delenv("CG_B", raising=False)
+    monkeypatch.delenv("CG_C", raising=False)
+    monkeypatch.setenv("CG_D", "from_shell")
+    assert sorted(load_dotenv(env)) == ["CG_A", "CG_C"]
+    import os
+    assert os.environ["CG_A"] == "one" and os.environ["CG_C"] == "three"
+    assert "CG_B" not in os.environ and os.environ["CG_D"] == "from_shell"
+    assert load_dotenv(tmp_path / "missing.env") == []

@@ -111,6 +111,9 @@ class ClaudeLLM:
         if client is None:
             import anthropic
 
+            from .config import load_dotenv
+
+            load_dotenv()  # ANTHROPIC_API_KEY from the repo's .env, if not already set
             client = anthropic.Anthropic()
         self.client = client
         self.model = model

@@ -350,10 +350,11 @@ PYTHONPATH=src .venv/bin/python -m cost_guard check "SELECT * FROM users, orders
 `data/` is gitignored. Cost on this path is modeled from EXPLAIN row
 estimates and measured runtime; every dollar figure stays labeled as modeled.
 
-**LLM components (optional):** set `ANTHROPIC_API_KEY` (or log in with `ant
-auth login`), then `eval/run_eval.py --llm claude` and
-`eval/run_judge_eval.py --llm claude`. Model: `claude-opus-5-5`. Both runs
-spend real API credit.
+**LLM components (optional):** put `ANTHROPIC_API_KEY` in `.env` (copy
+`.env.example`; `.env` is gitignored and read by `cost_guard.config.load_dotenv`,
+a shell variable wins), then `eval/run_column_kinds.py`,
+`eval/run_eval.py --llm claude` and `eval/run_judge_eval.py --llm claude`.
+Model: `claude-opus-5-5`. These runs spend real API credit.
 
 **BigQuery:** set a bytes-billed cap and a timeout on the project **before
 running anything**, then: `scripts/bq_dryrun_compare.py --project $GCP_PROJECT
