@@ -389,6 +389,15 @@ Not built; ordered by value for an e-commerce pilot on BigQuery. Each keeps
 the design rules above: deterministic decisions, no LLM on the query path,
 nothing that can block wrongly without a person's confirmation.
 
+0. **Shadow mode over the customer's query history — the first step of a
+   pilot.** Read the last N days from `INFORMATION_SCHEMA.JOBS` (read-only),
+   run each query through the Guard with dry runs only (free, nothing
+   executes, no model), and report what it would have blocked, warned or
+   rewritten, with bytes and modeled dollars and the top query shapes. Not
+   built yet: this project's own history (61 jobs in 30 days, 1 user, all
+   made by its tooling — registry scans, copies, verification sessions) has
+   no analyst workload to measure, so a run here would show nothing; it
+   needs a real customer's history.
 1. **Daily budgets per user and per team.** Caps are per query, so many
    analysts each under the cap can still run up a large bill. Approach:
    `customer.yaml` budgets (bytes or modeled dollars per user / team per
