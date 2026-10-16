@@ -349,6 +349,7 @@ Never stored: SQL text, literal values, result rows.
 | 2026-10-16 | Column kinds wired in frugally: triage first, a model only for edge cases, labels are proposals; ambiguous id-like names warn instead of block | Owner's direction for the e-commerce pilot: no risk, little LLM cost. TheLook: 72/73 columns settled without a model; a model or an ambiguous name can only warn, a person's confirmation blocks |
 | 2026-10-16 | SUM/AVG over a confirmed CATEGORY is blocked too; events.sequence_number confirmed as category | Owner's decision: sequence_number restarts at 1 in every session (a step label, half of a session+step key), so adding or averaging it is meaningless; grouping, counting and MIN/MAX (session length) stay allowed. Only a person's confirmation blocks |
 | 2026-10-16 | DuckDB backend thread-safe: one cursor per thread, locked lazy setup | A shared backend (any long-running service, e.g. an MCP server) gave 76 errors and 47 wrong verdicts in 200 checks from 8 threads; after: 0 and 0 at 8 and 32 threads. BigQuery was already safe (0/0) |
+| 2026-10-16 | BigQuery check: table metadata and a column's full size cached 10 min; dry run, metadata and the join check's dry run overlap | Measured, warm, median of 8: single table 831 → 590 ms, dated join 3,101 → 613 ms (5×), same verdicts. A check now costs about one dry run. A schema change shows up within 10 minutes |
 
 ## 13. Open questions
 

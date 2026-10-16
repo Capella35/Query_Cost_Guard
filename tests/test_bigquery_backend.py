@@ -366,3 +366,70 @@ def test_bigquery_rewrite_must_bill_fewer_bytes():
     v = decide(q, backend=wh, tracer=Tracer())
     assert v.decision != "rewrite"
     assert any("bills no fewer bytes" in f for f in v.findings), v.findings
+
+
+# ---- Speed: caching and overlapping warehouse calls ----------------------------
+
+class SlowClient(FakeClient):
+    """Every call takes `delay` seconds, like a network round trip; calls counted."""
+
+    def __init__(self, delay=0.0, **kw):
+        super().__init__(nbytes=10 * 1024**2, **kw)
+        self.delay, self.n_query, self.n_get_table = delay, 0, 0
+
+    def query(self, sql, job_config=None):
+        import time
+        self.n_query += 1
+        time.sleep(self.delay)
+        return super().query(sql, job_config)
+
+    def get_table(self, ref):
+        import time
+        self.n_get_table += 1
+        time.sleep(self.delay)
+        return super().get_table(ref)
+
+
+def test_table_metadata_is_cached_and_returned_as_a_copy():
+    client = SlowClient()
+    wh = BigQueryWarehouse("proj", client=client)
+    md = wh.table_metadata("orders")
+    md["columns"].append("mutated")  # the Guard annotates the dict it gets
+    again = wh.table_metadata("orders")
+    assert client.n_get_table == 1 and "mutated" not in again["columns"]
+
+
+def test_cache_expires(monkeypatch):
+    import cost_guard.backends.bigquery_backend as bq
+
+    monkeypatch.setattr(bq, "METADATA_TTL_SEC", 0)
+    client = SlowClient()
+    wh = BigQueryWarehouse("proj", client=client)
+    wh.table_metadata("orders"), wh.table_metadata("orders")
+    assert client.n_get_table == 2
+
+
+def test_partition_fraction_caches_the_whole_column_size():
+    from sqlglot import exp
+
+    client = SlowClient()
+    wh = BigQueryWarehouse("proj", client=client)
+    cond = [exp.condition("created_at >= '2024-01-01'")]
+    wh.partition_fraction("orders", "created_at", cond)
+    wh.partition_fraction("orders", "created_at", cond)
+    assert client.n_query == 3  # 2 filtered dry runs + 1 whole-column dry run, cached
+
+
+def test_check_overlaps_the_dry_run_and_metadata_calls():
+    """A two-table check makes 3 slow calls (dry run + 2 metadata); run one
+    after another that is 3 x delay, overlapped about 1 x delay."""
+    import time
+
+    delay = 0.3
+    wh = BigQueryWarehouse("proj", client=SlowClient(delay), registry_path="/nonexistent")
+    t0 = time.perf_counter()
+    v = decide("SELECT o.order_id FROM orders o JOIN users u ON u.id = o.user_id "
+               "WHERE o.created_at >= '2024-01-01'", backend=wh, tracer=Tracer())
+    elapsed = time.perf_counter() - t0
+    assert v.decision in ("allow", "warn")
+    assert elapsed < 2 * delay, f"{elapsed:.2f}s: calls ran one after another"

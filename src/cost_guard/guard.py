@@ -18,11 +18,18 @@ module, including which rules did not run and why.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Collection, Literal, Optional
 
 from . import sql_ast
 from .thresholds import fingerprint_query
+
+# Warehouse calls that don't depend on each other run at the same time: the
+# query's dry run, each table's metadata, and the join check's dry run. On
+# BigQuery each is a network round trip (~0.2-0.9 s); one after another they
+# added up (eval: a dated join took 3.8 s before caching and overlap).
+_POOL = ThreadPoolExecutor(max_workers=16, thread_name_prefix="cost-guard")
 
 Decision = Literal["allow", "warn", "rewrite", "block"]
 
@@ -139,19 +146,19 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
             **base,
         )
     tree = sql_ast.parse_one(sql)
+    # Started now, waited for below: the dry run / EXPLAIN runs while the
+    # table metadata is fetched (in parallel too) and the rules are prepared.
+    dialect = sql_ast.current_dialect()
 
-    with tracer.span(tid, "estimate") as span:
-        estimate = backend.estimate(sql) if backend is not None else None
-        if estimate is not None:
-            span["attrs"].update(source=estimate.source, rows=estimate.rows_processed)
-    rows = estimate.rows_processed if estimate else 0
-    base.update(
-        estimated_rows=rows if estimate else None,
-        estimated_bytes=estimate.estimated_bytes_scanned if estimate else None,
-        estimate_source=estimate.source if estimate else None,
-    )
+    def _in_dialect(fn, *args):
+        with sql_ast.using_dialect(dialect):  # context variables don't follow threads
+            return fn(*args)
+
+    est_future = _POOL.submit(_in_dialect, backend.estimate, sql) if backend is not None else None
 
     tables = sql_ast.referenced_tables(tree)
+    md_futures = ({t: _POOL.submit(_in_dialect, backend.table_metadata, t) for t in tables}
+                  if backend is not None else {})
     group_cols = sql_ast.group_by_columns(tree)
     table_md: dict[str, dict] = {}
     no_md: dict[str, str] = {}
@@ -170,7 +177,7 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
             no_md[t] = "no backend"
             continue
         try:
-            md = dict(backend.table_metadata(t))
+            md = dict(md_futures[t].result())
         except Exception as e:  # noqa: BLE001
             no_md[t] = f"metadata unavailable ({str(e).splitlines()[0][:60]})"
             continue
@@ -217,6 +224,28 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
         md["registry_max_age_days"] = max_age_days
         table_md[t] = md
     table_rows = {t: md.get("num_rows") for t, md in table_md.items()}
+
+    # BigQuery: the join check needs its own dry run (the share of partitions a
+    # date filter reads); it doesn't need the main estimate, so start it now.
+    join_future = None
+    if backend is not None and hasattr(backend, "partition_fraction") and caps.get("max_rows_processed"):
+        from .join_estimate import join_estimates
+
+        join_future = _POOL.submit(
+            _in_dialect, join_estimates, tree, backend.column_registry(), max_age_days,
+            {t: md.get("partition_column") for t, md in table_md.items()},
+            getattr(backend, "partition_fraction", None))
+
+    with tracer.span(tid, "estimate") as span:  # time here = waiting, the call overlapped
+        estimate = est_future.result() if est_future is not None else None
+        if estimate is not None:
+            span["attrs"].update(source=estimate.source, rows=estimate.rows_processed)
+    rows = estimate.rows_processed if estimate else 0
+    base.update(
+        estimated_rows=rows if estimate else None,
+        estimated_bytes=estimate.estimated_bytes_scanned if estimate else None,
+        estimate_source=estimate.source if estimate else None,
+    )
 
     findings: list[str] = []
     skipped: list[str] = []
@@ -290,10 +319,10 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
 
         with tracer.span(tid, "join_estimate") as span:
             try:
-                ests = join_estimates(
+                ests = (join_future.result() if join_future is not None else join_estimates(
                     tree, backend.column_registry(), max_age_days,
                     partition_columns={t: md.get("partition_column") for t, md in table_md.items()},
-                    partition_fraction=getattr(backend, "partition_fraction", None))
+                    partition_fraction=getattr(backend, "partition_fraction", None)))
             except Exception as e:  # noqa: BLE001 — no estimate = no join check
                 ests, span["attrs"]["error"] = [], str(e)[:200]
             span["attrs"]["estimates"] = [

@@ -18,7 +18,9 @@ Set maximum_bytes_billed on the project BEFORE running anything (especially Q13)
 """
 from __future__ import annotations
 
+import copy
 import re
+import threading
 import time
 from contextlib import contextmanager
 from typing import Optional
@@ -30,6 +32,10 @@ from .base import ColumnProfile, ExecutionResult, PlanEstimate, SampleRun
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SAMPLE_SETUP_TIMEOUT_SEC = 120
+# Table layouts and a column's full size rarely change: cached this long, so a
+# check makes one dry run instead of a metadata call per table plus extra dry
+# runs (measured: ~200-300 ms per table, ~1.8 s for a column's full size).
+METADATA_TTL_SEC = 600
 
 
 class _BigQuerySample:
@@ -81,6 +87,8 @@ class BigQueryWarehouse:
         self.registry_path = registry_path or bigquery_registry_path(project, dataset)
         self._registry = None
         self._registry_loaded = False
+        self._cache: dict = {}  # key -> (expires_at, value); see _cached
+        self._cache_lock = threading.Lock()
 
     def _bq(self):
         if self._client is None:
@@ -119,7 +127,8 @@ class BigQueryWarehouse:
         src = f"`{self.project}.{self.dataset}.{table}`"
         try:
             part = self.estimate(f"SELECT `{column}` FROM {src} WHERE {where}").estimated_bytes_scanned
-            whole = self.estimate(f"SELECT `{column}` FROM {src}").estimated_bytes_scanned
+            whole = self._cached(("column_bytes", table, column), lambda: self.estimate(
+                f"SELECT `{column}` FROM {src}").estimated_bytes_scanned)
         except Exception:  # noqa: BLE001 — unknown fraction: the estimate stays "filtered"
             return None
         return part / whole if whole else None
@@ -195,7 +204,24 @@ class BigQueryWarehouse:
                 return ExecutionResult("killed", dur, detail=f"watchdog: {msg}")
             return ExecutionResult("error", dur, detail=msg)
 
+    def _cached(self, key, compute):
+        """`compute()` once per METADATA_TTL_SEC per key; thread-safe. A
+        failure is not cached."""
+        now = time.monotonic()
+        with self._cache_lock:
+            hit = self._cache.get(key)
+            if hit is not None and hit[0] > now:
+                return hit[1]
+        value = compute()
+        with self._cache_lock:
+            self._cache[key] = (now + METADATA_TTL_SEC, value)
+        return value
+
     def table_metadata(self, table: str) -> dict:
+        # A copy: callers annotate the dict they get (the Guard does).
+        return copy.deepcopy(self._cached(("table", table), lambda: self._table_metadata(table)))
+
+    def _table_metadata(self, table: str) -> dict:
         t = self._bq().get_table(f"{self.project}.{self.dataset}.{table}")
         # A view (or external table) reports num_rows 0: unknown, not empty.
         # Passed through as 0 it made users/products "provably tiny" and
