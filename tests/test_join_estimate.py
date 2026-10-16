@@ -1,0 +1,136 @@
+"""Join output estimate from the SQL and the column registry (join_estimate.py),
+and the Guard's fan-out block on BigQuery, where a dry run has no row counts."""
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from cost_guard import sql_ast
+from cost_guard.column_registry import ColumnRegistry, RegistryEntry
+from cost_guard.join_estimate import join_estimates
+
+NOW = datetime.now(timezone.utc).isoformat()
+TABLES = {  # table: (rows, {column: ndv})
+    "events": (2_400_000, {"user_id": 80_000, "session_id": 680_000, "id": 2_400_000,
+                           "created_at": 2_000_000}),
+    "users": (100_000, {"id": 100_000, "country": 15}),
+    "orders": (125_000, {"order_id": 125_000, "user_id": 80_000}),
+}
+
+
+def _registry(profiled_at=NOW, schema="ds"):
+    return ColumnRegistry([
+        RegistryEntry(schema, t, c, "INTEGER", rows, ndv, 0, True, profiled_at)
+        for t, (rows, cols) in TABLES.items() for c, ndv in cols.items()
+    ], default_schema=schema)
+
+
+def _est(sql, reg=None):
+    return join_estimates(sql_ast.parse_one(sql), reg or _registry(), 35)
+
+
+def test_self_join_fans_out():
+    [e] = _est("SELECT a.user_id, COUNT(*) FROM events a JOIN events b ON a.user_id = b.user_id "
+               "GROUP BY a.user_id")
+    assert e.rows == 2_400_000 * 2_400_000 // 80_000 and e.fanout == pytest.approx(30.0)
+    assert not e.filtered and e.keys == ["a.user_id = b.user_id"]
+
+
+def test_lookup_join_does_not_fan_out():
+    [e] = _est("SELECT o.order_id, u.country FROM orders o JOIN users u ON o.user_id = u.id")
+    assert e.rows == 125_000 and e.fanout == pytest.approx(1.0)
+
+
+def test_where_equality_and_using_are_join_keys():
+    [w] = _est("SELECT 1 FROM orders o, users u WHERE o.user_id = u.id")
+    assert w.rows == 125_000 and not w.filtered
+    [u] = _est("SELECT 1 FROM events a JOIN events b USING (session_id)")
+    assert u.rows == 2_400_000 * 2_400_000 // 680_000
+
+
+def test_non_key_predicates_mark_the_estimate_filtered():
+    for q in ("SELECT 1 FROM events a JOIN events b ON a.user_id = b.user_id "
+              "WHERE a.created_at >= TIMESTAMP '2024-01-01'",
+              # an equality on an expression is not a key (Q28's shape)
+              "SELECT 1 FROM events a JOIN events b ON a.session_id = b.session_id "
+              "AND b.id = a.id + 1"):
+        [e] = _est(q)
+        assert e.filtered
+
+
+def test_left_join_keeps_at_least_the_preserved_side():
+    reg = ColumnRegistry([RegistryEntry("ds", "a", "k", "INTEGER", 1000, 1000, 0, True, NOW),
+                          RegistryEntry("ds", "b", "k", "INTEGER", 10, 10, 0, True, NOW)], "ds")
+    [inner] = _est("SELECT 1 FROM a JOIN b ON a.k = b.k", reg)
+    [left] = _est("SELECT 1 FROM a LEFT JOIN b ON a.k = b.k", reg)
+    assert inner.rows == 10 and left.rows == 1000
+
+
+@pytest.mark.parametrize("sql", [
+    # a subquery or CTE input: its rows are unknown
+    "SELECT 1 FROM (SELECT user_id FROM events) a JOIN users u ON a.user_id = u.id",
+    "WITH a AS (SELECT user_id FROM events) SELECT 1 FROM a JOIN users u ON a.user_id = u.id",
+    # unqualified column: can't tell which relation it belongs to
+    "SELECT 1 FROM events a JOIN users u ON user_id = u.id",
+    # a table or column the registry doesn't have
+    "SELECT 1 FROM events a JOIN sessions s ON a.session_id = s.id",
+    "SELECT 1 FROM events a JOIN users u ON a.event_type = u.id",
+    # no link at all: the cartesian rule's case
+    "SELECT 1 FROM events a CROSS JOIN users u",
+])
+def test_unknown_inputs_give_no_estimate(sql):
+    assert _est(sql) == []
+
+
+def test_stale_registry_gives_no_estimate():
+    old = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    assert _est("SELECT 1 FROM events a JOIN events b ON a.user_id = b.user_id",
+                _registry(profiled_at=old)) == []
+
+
+# ---- Guard on BigQuery --------------------------------------------------------
+
+def _bq_warehouse(tmp_path):
+    pytest.importorskip("google.cloud.bigquery")
+    from types import SimpleNamespace
+
+    from cost_guard.backends.bigquery_backend import BigQueryWarehouse
+
+    class Client:
+        def query(self, sql, job_config=None):
+            return SimpleNamespace(total_bytes_processed=10 * 1024**2)
+
+        def get_table(self, ref):
+            name = ref.rsplit(".", 1)[-1]
+            rows, cols = TABLES[name]
+            return SimpleNamespace(
+                table_type="TABLE", num_rows=rows, num_bytes=0,
+                schema=[SimpleNamespace(name=c) for c in cols],
+                time_partitioning=SimpleNamespace(field="created_at") if name == "events" else None,
+                range_partitioning=None, clustering_fields=None)
+
+    wh = BigQueryWarehouse("p", "ds", client=Client(), registry_path=str(tmp_path / "none"))
+    wh._registry, wh._registry_loaded = _registry(), True
+    return wh
+
+
+def test_guard_blocks_unfiltered_fanout_on_bigquery(tmp_path):
+    from cost_guard.guard import decide
+    from cost_guard.tracing import Tracer
+
+    v = decide("SELECT a.user_id, COUNT(*) AS pairs FROM events a JOIN events b "
+               "ON a.user_id = b.user_id GROUP BY a.user_id",
+               backend=_bq_warehouse(tmp_path), tracer=Tracer())
+    assert v.decision == "block" and "join fan-out" in v.reason and "72,000,000" in v.reason
+
+
+def test_guard_does_not_act_on_filtered_or_lookup_joins(tmp_path):
+    from cost_guard.guard import decide
+    from cost_guard.tracing import Tracer
+
+    wh = _bq_warehouse(tmp_path)
+    filtered = decide("SELECT a.user_id FROM events a JOIN events b ON a.user_id = b.user_id "
+                      "WHERE a.created_at >= TIMESTAMP '2024-01-01' "
+                      "AND b.created_at >= TIMESTAMP '2024-01-01'", backend=wh, tracer=Tracer())
+    lookup = decide("SELECT o.order_id, u.country FROM orders o JOIN users u ON o.user_id = u.id",
+                    backend=wh, tracer=Tracer())
+    assert filtered.decision != "block" and lookup.decision != "block"

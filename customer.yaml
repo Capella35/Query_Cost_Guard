@@ -9,7 +9,9 @@ customer:
 # Hard caps per workload class. These NEVER adapt — learned thresholds must sit below them.
 # max_rows_processed is the DuckDB-path cost proxy (no bytes from EXPLAIN): the
 # Guard compares the plan's peak estimated row count (scans and join fan-out)
-# against it. max_bytes_scanned is the BigQuery-path cap (dry-run bytes).
+# against it. On BigQuery it applies to the join fan-out estimate only
+# (join_estimate.py; a dry run has no row counts). max_bytes_scanned is the
+# BigQuery-path cap (dry-run bytes).
 workload_classes:
   interactive:                  # dashboards, ad-hoc exploration
     max_bytes_scanned: 214748364800     # 200 GB

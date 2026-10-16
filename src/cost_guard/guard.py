@@ -276,6 +276,35 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
             **base,
         )
 
+    if estimate is not None and estimate.source == "dry_run" and max_rows:
+        # A dry run reports bytes read, not rows: a join that multiplies rows
+        # is invisible to it. Estimate join output from the registry instead.
+        from .join_estimate import FANOUT_MIN_RATIO, join_estimates
+
+        with tracer.span(tid, "join_estimate") as span:
+            try:
+                ests = join_estimates(tree, backend.column_registry(), max_age_days)
+            except Exception as e:  # noqa: BLE001 — no estimate = no join check
+                ests, span["attrs"]["error"] = [], str(e)[:200]
+            span["attrs"]["estimates"] = [
+                dict(rows=e.rows, fanout=round(e.fanout, 2), filtered=e.filtered, keys=e.keys)
+                for e in ests]
+        fanouts = [e for e in ests if not e.filtered and e.fanout >= FANOUT_MIN_RATIO
+                   and e.rows > max_rows]
+        if fanouts:
+            worst = max(fanouts, key=lambda e: e.rows)
+            return GuardVerdict(
+                decision="block",
+                reason=(
+                    f"join fan-out: estimated ~{worst.rows:,} rows from joining "
+                    f"{' + '.join(worst.tables)} on {', '.join(worst.keys)} "
+                    f"(x{worst.fanout:.1f} the largest input; column registry) exceeds the "
+                    f"{workload_class} hard cap of {max_rows:,} rows — hard caps never adapt"
+                ),
+                findings=findings,
+                **base,
+            )
+
     if any(f.lower().startswith("cartesian") for f in findings):
         return GuardVerdict(
             decision="block",

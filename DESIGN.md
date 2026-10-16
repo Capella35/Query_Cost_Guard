@@ -89,6 +89,16 @@ proxy is rows processed = max(rows out of scans, largest intermediate). On
 BigQuery it is dry-run bytes. Each cap applies only where its unit exists; a
 DuckDB deployment never checks the bytes cap.
 
+**Join fan-out on BigQuery** (`join_estimate.py`). A dry run counts bytes
+read, so a join that multiplies rows looks cheap (Q13: ~10 MiB read, ~100M
+rows produced). The Guard estimates join output from the registry:
+rows(L) × rows(R) / max(distinct keys), per SELECT scope of tables joined on
+column equalities. It blocks over the rows cap only when the join fans out
+(≥2× its largest input, so lookup joins never count) and nothing else
+filters the inputs. Filtered estimates use whole-table rows and can run far
+high (Q28: 8.6M estimated, 85k real), so they are only traced. Unknown
+inputs (subqueries, CTEs, missing registry entries) give no estimate.
+
 **Estimate corrections** (`plan_estimate.py`) use the column registry where
 the planner guesses: GROUP BY output bounded by distinct counts (lowers
 only); a scan whose filter the planner dropped counts every row; a remaining
@@ -326,6 +336,8 @@ Never stored: SQL text, literal values, result rows.
 | 2026-10-14 | Drift-aware runtime baselines for the anomaly rule; held-out seeds pre-registered first | Flat median/p95 flagged growth and early creep (~50% FP); trend + own-residual + 1.5× gives 1.1% FP on held-out seeds |
 | 2026-10-14 | Billing linked; full-history copies (no partition expiry) | Confirm the sandbox result on real dates: 0 of 9 again, allowlist unchanged; unprunable wrappers bill ~877× a pruned day filter on full `events` |
 | 2026-10-15 | One rewrite round per query: an offered rewrite, when run, is not rewritten again | Catalog fixes already stop after one round; the LLM proposer rewrote its own output in a test |
+| 2026-10-16 | BigQuery is the main warehouse; DuckDB stays for offline tests | Exact, free dry-run bytes; the pilot's warehouse; only BigQuery measured the rewrites (0 of 9 save bytes) |
+| 2026-10-16 | Join fan-out on BigQuery estimated from the registry; blocks only unfiltered joins at ≥2× the largest input | A dry run sees bytes read, not rows produced (Q13); filtered estimates ran 100× high on Q28 (tuning set) |
 
 ## 13. Open questions
 
@@ -334,11 +346,10 @@ Never stored: SQL text, literal values, result rows.
   TIMESTAMP literals for TIMESTAMP columns, no `DATE`-vs-`TIMESTAMP`
   comparisons.
 
-- BigQuery has no row estimate: a dry run reports bytes read, so a join
-  fan-out (Q13, ~100M rows from ~10 MiB) only warns there. A fan-out
-  estimate from the column registry (rows(L) × rows(R) / distinct keys, as
-  `plan_estimate.py` does on DuckDB) can now use the BigQuery registry;
-  the estimate itself is not built.
+- The BigQuery join fan-out estimate acts only on unfiltered joins. A
+  filtered fan-out (or one whose join condition uses an expression) is only
+  traced; the watchdog's timeout is the backstop. Applying filter
+  selectivity from the registry's min/max could lift that.
 - Count rows read instead of rows out of scans? It would make "scanned"
   honest, but it shifts every estimate and possibly verdicts.
 - Are rewrites worth offering on DuckDB, where most measure ~1× (pushdown
