@@ -61,6 +61,12 @@
 #             waste on BigQuery (it pushes filters down; the rewrites measured
 #             0 bytes saved), so on its own it is allow.
 # role: good = labeled allow; bad = anything else.
+#
+# LABEL CHANGES (2026-10-16, after the first run, approved by the owner,
+# recorded under `label_change`): B21 rewrite -> allow, role bad -> good (label
+# error: BigQuery prunes through EXTRACT(YEAR), measured after the run); B26
+# warn -> block (new policy: SUM/AVG over an identifier is blocked). Scores
+# are reported under both labels.
 # Unqualified table names resolve to the job's default dataset
 # (cost_guard_thelook); some queries name it explicitly, with backticks, as
 # BigQuery users do.
@@ -210,11 +216,17 @@ queries:
 
   # -------------------------------------------------------------- rewrite --
   - id: B21
-    role: bad
+    role: good
     pattern: unprunable_wrapper
     description: "EXTRACT(YEAR ...) on the partition column reads every partition; the 2023 range is equivalent and prunes."
     sql: "SELECT COUNT(*) AS purchases FROM events WHERE EXTRACT(YEAR FROM created_at) = 2023 AND event_type = 'purchase'"
-    guard_action_expected: rewrite
+    guard_action_expected: allow
+    label_change:
+      from: rewrite
+      to: allow
+      from_role: bad
+      date: 2026-10-16
+      reason: "label error found after the run: the guide treated EXTRACT as defeating pruning, generalized from a measurement of EXTRACT(DAY); measured afterwards, BigQuery prunes through EXTRACT(YEAR) (eval/RESULTS_bigquery.md notes), so by the guide's own rule this is a partition-filtered, clean query; approved relabel"
 
   - id: B22
     role: bad
@@ -250,7 +262,12 @@ queries:
     pattern: meaningless_aggregate
     description: "SUM of an ID column."
     sql: "SELECT SUM(user_id) AS total_users FROM orders WHERE created_at >= TIMESTAMP '2023-12-01'"
-    guard_action_expected: warn
+    guard_action_expected: block
+    label_change:
+      from: warn
+      to: block
+      date: 2026-10-16
+      reason: "policy change by the project owner after the run: SUM/AVG over an identifier is blocked (ids are counted, never added); approved relabel"
 
   - id: B27
     role: bad

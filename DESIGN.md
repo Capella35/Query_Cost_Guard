@@ -344,7 +344,7 @@ Never stored: SQL text, literal values, result rows.
 | 2026-10-15 | One rewrite round per query: an offered rewrite, when run, is not rewritten again | Catalog fixes already stop after one round; the LLM proposer rewrote its own output in a test |
 | 2026-10-16 | BigQuery is the main warehouse; DuckDB stays for offline tests | Exact, free dry-run bytes; the pilot's warehouse; only BigQuery measured the rewrites (0 of 9 save bytes) |
 | 2026-10-16 | Join fan-out on BigQuery estimated from the registry; blocks only unfiltered joins at ≥2× the largest input | A dry run sees bytes read, not rows produced (Q13); filtered estimates ran 100× high on Q28 (tuning set) |
-| 2026-10-16 | SUM/AVG over a named identifier is blocked, with a COUNT(DISTINCT) suggestion (was a warn) | Owner's policy: ids are counted, never added. Not an automatic rewrite (a different answer); registry-only identifiers still warn (could be real amounts). Eval labels H11 (held-out) and B26 (BigQuery) were written as warn under the old policy |
+| 2026-10-16 | SUM/AVG over a named identifier is blocked, with a COUNT(DISTINCT) suggestion (was a warn) | Owner's policy: ids are counted, never added. Not an automatic rewrite (a different answer); registry-only identifiers still warn (could be real amounts). Eval labels H11 (held-out) and B26 (BigQuery) relabeled warn → block with approval, recorded under `label_change`; both scores reported |
 
 ## 13. Open questions
 

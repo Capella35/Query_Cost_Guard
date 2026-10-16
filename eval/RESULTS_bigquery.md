@@ -81,3 +81,18 @@ Five of the six were listed as known gaps in the set's header before the run. Th
 
 - **The bytes caps at real scale.** TheLook is ~0.5 GB, so the caps are scaled to 100 MiB (`eval/eval_caps_bigquery.yaml`); B15/B16 show the bytes path works live, not that 100 MiB or 200 GB is the right policy.
 - **Independence.** The queries and labels were written by the same assistant that wrote the rules.
+
+## Label changes after this run (2026-10-16, approved by the owner)
+
+Recorded per query under `label_change`; these scores are **the verdicts of this run** re-scored (`eval/run_eval.py --rescore eval/results/bigquery_20261016_050942.json`), nothing re-run. B21 was a labeling error (BigQuery prunes `EXTRACT(YEAR)`, measured after the run); B26 follows the identifier policy change. **The original-label score, 24/30, remains the held-out headline.**
+
+| | original labels | current labels |
+|---|---|---|
+| exact | 24/30 | 23/30 |
+| bad flagged | 15/16 | 14/15 |
+| good flagged | 1/14 | 2/15 |
+| good blocked | 0/14 | 0/15 |
+| blocks missed | 1/6 | 2/7 |
+
+- **B21**: rewrite -> allow (got warn)
+- **B26**: warn -> block (got warn)

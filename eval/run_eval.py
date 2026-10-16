@@ -132,7 +132,13 @@ def main() -> None:
     ap.add_argument("--dataset", default="cost_guard_thelook")
     ap.add_argument("--db", default=str(ROOT / "data" / "thelook.duckdb"))
     ap.add_argument("--llm", choices=["none", "claude"], default="none")
+    ap.add_argument("--rescore", metavar="RESULTS_JSON",
+                    help="re-score a STORED run's verdicts against the current labels "
+                         "(after recorded label changes); runs no query and no Guard")
     args = ap.parse_args()
+    if args.rescore:
+        print(json.dumps(rescore(Path(args.rescore), args.suite), indent=2))
+        return
 
     rerun = False
     if args.suite in RUN_ONCE and (ROOT / "eval" / SUITE_FILES[args.suite][1]).exists():
@@ -270,6 +276,40 @@ def main() -> None:
                  "`eval/eval_caps_bigquery.yaml`)" if args.suite == "bigquery"
                  else "`data/thelook.duckdb` (Kaggle TheLook CSVs)")
         write_summary(ts, metrics, by_pattern, results, args.suite, rerun, where)
+
+
+def _scores(verdicts: dict, cases: list[dict], label_key: str, role_of) -> dict:
+    n = len(cases)
+    bad = [c for c in cases if role_of(c) == "bad"]
+    good = [c for c in cases if role_of(c) == "good"]
+    blocks = [c for c in cases if c[label_key] == "block"]
+    return {
+        "exact": f"{sum(verdicts[c['id']] == c[label_key] for c in cases)}/{n}",
+        "bad_flagged": f"{sum(verdicts[c['id']] in FLAGGED for c in bad)}/{len(bad)}",
+        "good_flagged": f"{sum(verdicts[c['id']] != 'allow' for c in good)}/{len(good)}",
+        "good_blocked": f"{sum(verdicts[c['id']] == 'block' for c in good)}/{len(good)}",
+        "blocks_missed": f"{sum(verdicts[c['id']] != 'block' for c in blocks)}/{len(blocks)}",
+    }
+
+
+def rescore(results_json: Path, suite: str) -> dict:
+    """A stored run re-scored under the original and the current labels —
+    the verdicts are the ones that run produced; nothing is executed."""
+    run = json.loads(results_json.read_text())
+    verdicts = {r["id"]: r["got"] for r in run["cases"]}
+    cases = load_thelook_cases(SUITE_FILES[suite][0])
+    changed = [c for c in cases if c["label_change"]]
+
+    def original_role(c):
+        return (c["label_change"] or {}).get("from_role", c["role"])
+
+    return {
+        "run": results_json.name,
+        "original_labels": _scores(verdicts, cases, "expected_original", original_role),
+        "current_labels": _scores(verdicts, cases, "expected", lambda c: c["role"]),
+        "changed": {c["id"]: f"{c['expected_original']} -> {c['expected']} (got {verdicts[c['id']]})"
+                    for c in changed},
+    }
 
 
 def write_summary(ts, metrics, by_pattern, results, suite="thelook", rerun=False,

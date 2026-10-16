@@ -33,6 +33,10 @@
 #   allow   - a reasonable query: filtered or small, bounded output, sensible
 #             aggregation.
 # role: good = labeled allow; bad = anything else.
+#
+# LABEL CHANGES (2026-10-16, after the run, approved by the owner, recorded
+# under `label_change`): H11 warn -> block (new policy: SUM/AVG over an
+# identifier is blocked). Scores are reported under both labels.
 
 queries:
   - id: H01
@@ -110,7 +114,12 @@ queries:
     pattern: sum_of_identifier
     description: "Summing order IDs per status."
     sql: "SELECT status, SUM(order_id) AS total FROM orders WHERE created_at >= TIMESTAMP '2023-01-01' GROUP BY status"
-    guard_action_expected: warn
+    guard_action_expected: block
+    label_change:
+      from: warn
+      to: block
+      date: 2026-10-16
+      reason: "policy change by the project owner after the held-out run: SUM/AVG over an identifier is blocked (ids are counted, never added); approved relabel. The held-out run used the old label"
 
   - id: H12
     role: good

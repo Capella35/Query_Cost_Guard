@@ -60,3 +60,18 @@ This is a **tuning** number, not a held-out one. The first and only held-out run
 - **B21's label is wrong by the set's own guide.** It assumed `EXTRACT(YEAR …)` defeats pruning (generalized from a measurement of `EXTRACT(DAY …)`); measured afterwards, BigQuery prunes through it, so under the guide B21 is `allow` — which the Guard now returns. The label has **not** been changed: a relabel needs the owner's approval and would be recorded under `label_change`, with both scores reported.
 - **B28** (sort without LIMIT) remains a known gap: a dry run has no plan, and the sort check was deliberately deferred.
 - **B22, B23**: rewrites verified on BigQuery samples and offered; "full-data equivalent = None" because the full-data re-check only exists for DuckDB.
+
+## Label changes after this run (2026-10-16, approved by the owner)
+
+Recorded per query under `label_change`; these scores are **the verdicts of this run** re-scored (`eval/run_eval.py --rescore eval/results/bigquery_20261016_053722.json`), nothing re-run. Same changes as for the first run. A tuning number either way.
+
+| | original labels | current labels |
+|---|---|---|
+| exact | 28/30 | 28/30 |
+| bad flagged | 14/16 | 14/15 |
+| good flagged | 0/14 | 0/15 |
+| good blocked | 0/14 | 0/15 |
+| blocks missed | 0/6 | 1/7 |
+
+- **B21**: rewrite -> allow (got allow)
+- **B26**: warn -> block (got warn)

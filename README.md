@@ -198,7 +198,9 @@ catalog emits BigQuery types.
 
 **Held-out set** (`eval/holdout_queries.yaml`, 30 queries): queries and
 labels committed 2026-10-14 **before any Guard run** on them, with the
-labeling guide in the file header. **Run once on 2026-10-14: 29/30**
+labeling guide in the file header. **Run once on 2026-10-14: 29/30** (28/30
+under the current labels: H11 relabeled warn → block after a later policy
+change, SUM/AVG over an identifier is now blocked)
 ([`eval/RESULTS_holdout.md`](eval/RESULTS_holdout.md)) — catch rate 16/16,
 1 false positive of 14 (H28, a false *warn*: a near-unique GROUP BY inside a
 CTE the outer query re-aggregates; no false blocks), 3/3 rewrites equivalent
@@ -214,7 +216,8 @@ results, not independent of the author.
 queries, labeling guide and caps committed **before any Guard run** on them
 (`4a2fc50`); caps scaled to TheLook's ~0.5 GB (100 MiB interactive bytes,
 `eval/eval_caps_bigquery.yaml`). **Run once on 2026-10-16, dry runs only:
-24/30** ([`eval/RESULTS_bigquery.md`](eval/RESULTS_bigquery.md)) — 0 good
+24/30** (23/30 under the current labels: B21 rewrite → allow, a labeling
+error; B26 warn → block, the identifier policy) ([`eval/RESULTS_bigquery.md`](eval/RESULTS_bigquery.md)) — 0 good
 queries blocked, 1 of 14 warned (B10: the filter-after-join rule fires
 although BigQuery pushes filters down itself), bad queries flagged 15/16, but
 **14/16 for the right reasons**: B19 was flagged only by a bug the run
