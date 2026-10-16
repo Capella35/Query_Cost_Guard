@@ -19,9 +19,10 @@ module, including which rules did not run and why.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal, Optional
+from typing import Collection, Literal, Optional
 
 from . import sql_ast
+from .thresholds import fingerprint_query
 
 Decision = Literal["allow", "warn", "rewrite", "block"]
 
@@ -63,12 +64,19 @@ def decide(
     tracer=None,
     llm=None,
     bypass_reason: Optional[str] = None,
+    offered_rewrites: Optional[Collection[str]] = None,
 ) -> GuardVerdict:
     """Guard pipeline: read-only check -> cost estimate -> static rules
     (per referenced table, with column profiles) -> hard caps for the
     workload class -> verdict -> (optional) LLM rewrite + explanation.
 
     customer: parsed customer.yaml; loaded from the repo root when None.
+    offered_rewrites: fingerprints of rewrites the Guard offered earlier (the
+    query log's rewrite_fingerprint). A query with one of those shapes IS an
+    offered rewrite being run, so it gets no second rewrite: one round per
+    query. The catalog fixers already stop after one round (a fixed query no
+    longer trips the rule); this bounds the LLM proposer, which could keep
+    offering "improvements" to its own output.
     """
     from .config import load_customer
     from .tracing import get_tracer
@@ -76,7 +84,8 @@ def decide(
     customer = customer if customer is not None else load_customer()
     tracer = tracer or get_tracer()
     with tracer.trace("guard.decide", workload_class=workload_class) as tid:
-        verdict = _decide(sql, workload_class, customer, backend, tracer, tid, llm)
+        verdict = _decide(sql, workload_class, customer, backend, tracer, tid, llm,
+                           offered_rewrites)
         verdict = _maybe_bypass(verdict, customer, bypass_reason, tracer, tid)
         if llm is not None and verdict.decision in ("warn", "block") and verdict.findings:
             with tracer.span(tid, "llm.explain_flag") as span:
@@ -106,7 +115,8 @@ def _maybe_bypass(verdict, customer, bypass_reason, tracer, tid) -> GuardVerdict
     return verdict
 
 
-def _decide(sql, workload_class, customer, backend, tracer, tid, llm) -> GuardVerdict:
+def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
+            offered_rewrites=None) -> GuardVerdict:
     from .column_registry import registry_settings
     from .config import caps_for, partition_column
     from .rewrites import PRUNING_ONLY_FIXERS, deterministic_rewrite
@@ -274,7 +284,12 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm) -> GuardVe
             **base,
         )
 
-    if findings and backend is not None:
+    if findings and offered_rewrites and fingerprint_query(sql) in offered_rewrites:
+        with tracer.span(tid, "rewrite.already_offered"):
+            pass
+        findings.append("this query is a rewrite the Guard already offered — "
+                        "no second rewrite (one round per query)")
+    elif findings and backend is not None:
         # Deterministic fixers first (chained); then the LLM proposer if
         # configured. Either way an unverified rewrite is never offered.
         candidates = []

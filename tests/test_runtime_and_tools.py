@@ -150,3 +150,58 @@ def test_judge_sees_aggregates_only():
     assert "payroll" not in payload and "secret_column" not in payload
     assert "evidence" not in payload
     assert "baseline_p95_sec: 0.4" in payload
+
+
+# ---- Resubmitted rewrites: one round per query ------------------------------
+
+CTE = ("SELECT * FROM (SELECT user_id, COUNT(*) AS c FROM orders GROUP BY user_id) a "
+       "JOIN (SELECT user_id, COUNT(*) AS c FROM orders GROUP BY user_id) b "
+       "USING (user_id) ORDER BY user_id LIMIT 50")
+PUSH = ("SELECT t.order_id, t.country FROM (SELECT o.order_id, o.created_at, u.country "
+        "FROM orders o JOIN users u ON u.id = o.user_id) t "
+        "WHERE t.created_at >= '2024-06-01' AND t.country = 'US'")
+
+
+@pytest.mark.parametrize("sql, fixer", [(WRAPPED, "sargable"), (PUSH, "pushdown"), (CTE, "cte")])
+def test_catalog_rewrite_is_not_rewritten_again(synthetic_wh, sql, fixer):
+    """Pins today's behavior with no log at all: a catalog fix removes the
+    pattern it fixed, so its output never earns a second rewrite."""
+    v = decide(sql, backend=synthetic_wh, tracer=Tracer())
+    assert v.decision == "rewrite" and fixer in v.rewrite_source
+    again = decide(v.rewritten_sql, backend=synthetic_wh, tracer=Tracer())
+    assert again.decision in ("allow", "warn") and again.rewritten_sql is None
+
+
+class PaddingLLM(FakeLLM):
+    """Proposes an equivalent query that keeps the flagged HAVING, so every
+    resubmission is still flagged and gets a fresh "improvement"."""
+
+    def __init__(self):
+        super().__init__(None)
+
+    def propose_rewrite(self, sql, findings):
+        return RewriteProposal(sql, sql.replace("GROUP BY", "AND 1 = 1 GROUP BY", 1), "fake")
+
+
+def test_llm_would_rewrite_its_own_rewrite_without_the_log(synthetic_wh):
+    first = decide(HAVING, backend=synthetic_wh, tracer=Tracer(), llm=PaddingLLM())
+    assert first.decision == "rewrite"
+    second = decide(first.rewritten_sql, backend=synthetic_wh, tracer=Tracer(), llm=PaddingLLM())
+    assert second.decision == "rewrite"  # the loop the offered-rewrite check exists for
+    stopped = decide(first.rewritten_sql, backend=synthetic_wh, tracer=Tracer(), llm=PaddingLLM(),
+                     offered_rewrites={fingerprint_query(first.rewritten_sql)})
+    assert stopped.decision == "warn" and stopped.rewritten_sql is None
+    assert any("already offered" in f for f in stopped.findings)
+
+
+def test_run_query_offers_one_rewrite_round(synthetic_wh, tmp_path):
+    log = tmp_path / "log.jsonl"
+    first = run_query(HAVING, synthetic_wh, log_path=log, tracer=Tracer(), llm=PaddingLLM())
+    assert first.verdict.decision == "rewrite"
+    second = run_query(first.verdict.rewritten_sql, synthetic_wh, log_path=log, tracer=Tracer(),
+                       llm=PaddingLLM())
+    assert second.verdict.decision == "warn" and second.execution.status == "completed"
+    assert [r["decision"] for r in read_log(log)] == ["rewrite", "warn"]
+    # The original query's own shape was never an offered rewrite: still offered.
+    third = run_query(HAVING, synthetic_wh, log_path=log, tracer=Tracer(), llm=PaddingLLM())
+    assert third.verdict.decision == "rewrite"

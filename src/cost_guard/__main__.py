@@ -70,8 +70,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "run":
         from .runtime import run_query
 
-        out = run_query(args.sql, _backend(args, customer), args.workload, customer=customer,
-                        user=args.user, bypass_reason=args.bypass_reason)
+        backend = _backend(args, customer)
+        out = run_query(args.sql, backend, args.workload, customer=customer,
+                        user=args.user, bypass_reason=args.bypass_reason, llm=_llm(args, backend))
         print(json.dumps({
             "decision": out.verdict.decision,
             "reason": out.verdict.reason,

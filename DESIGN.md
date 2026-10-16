@@ -150,6 +150,14 @@ column; filter after a join → pushed into the derived table. No entry for
 `SELECT *` or a missing date filter: any fix changes the result, so those
 warn and a human chooses.
 
+**One round per query.** A catalog fix removes the pattern it fixed, so its
+output passes the Guard as allow or warn (tested for all three fixers). The
+LLM proposer has no such stop: given its own output, it can offer another
+"improvement" every time. So `run_query` passes the shapes of rewrites
+already offered (`rewrite_fingerprint` in the log) to `decide()`, and a
+query with one of those shapes gets a warn with no second rewrite. `check`
+keeps no log, so it stays stateless.
+
 **Acceptance:** a candidate is offered only if it is read-only and differs
 from the original, and `compare_results` matches on sampled inputs (fixed
 seed, at most `sample_rows` per table, timeout, canonical hash). Most
@@ -317,6 +325,7 @@ Never stored: SQL text, literal values, result rows.
 | 2026-10-14 | Anomaly rule gets a two-way range estimate; caps stay raise-only | Raise-only hid the separation (×2); two-way restores it (×104) without letting a cap see an underestimate |
 | 2026-10-14 | Drift-aware runtime baselines for the anomaly rule; held-out seeds pre-registered first | Flat median/p95 flagged growth and early creep (~50% FP); trend + own-residual + 1.5× gives 1.1% FP on held-out seeds |
 | 2026-10-14 | Billing linked; full-history copies (no partition expiry) | Confirm the sandbox result on real dates: 0 of 9 again, allowlist unchanged; unprunable wrappers bill ~877× a pruned day filter on full `events` |
+| 2026-10-15 | One rewrite round per query: an offered rewrite, when run, is not rewritten again | Catalog fixes already stop after one round; the LLM proposer rewrote its own output in a test |
 
 ## 13. Open questions
 

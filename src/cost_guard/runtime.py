@@ -109,15 +109,22 @@ def run_query(
     tracer=None,
     user: Optional[str] = None,
     bypass_reason: Optional[str] = None,
+    llm=None,
 ) -> RunOutcome:
     """Guard the query, run it under the watchdog unless blocked, log it,
-    and feed the duration to the threshold updater's shadow/probation."""
+    and feed the duration to the threshold updater's shadow/probation.
+
+    Rewrites already offered (rewrite_fingerprint in the log) are passed to
+    the Guard so a run rewrite is not rewritten again. The log is read whole
+    each call — fine for a POC log, an index for a real one."""
     from .config import caps_for, load_customer
 
     customer = customer if customer is not None else load_customer()
     fp = fingerprint_query(sql)
+    offered = ({r["rewrite_fingerprint"] for r in read_log(log_path) if r.get("rewrite_fingerprint")}
+               if log_path is not None else None)
     verdict = decide(sql, workload_class, customer=customer, backend=backend, tracer=tracer,
-                     bypass_reason=bypass_reason)
+                     llm=llm, bypass_reason=bypass_reason, offered_rewrites=offered)
     hard_cap = float(caps_for(customer, workload_class).get("max_runtime_sec") or 0) or None
     timeout = hard_cap
     if updater is not None and hard_cap is not None:
