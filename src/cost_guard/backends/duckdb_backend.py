@@ -35,6 +35,71 @@ from .base import ColumnProfile, ExecutionResult, PlanEstimate, SampleRun
 
 _IDENT = re.compile(r"[A-Za-z_][\w]*")
 
+# --- Date/time filters as DuckDB PRINTS them in EXPLAIN (machine text, not
+# user SQL — user SQL goes through the parser). DuckDB normalizes
+# EXTRACT(YEAR FROM c), date_part('year', c) and year(c) to "year"(c), with
+# the keyword in double quotes, and may quote identifiers too.
+_Q = r'"?'  # optional double quote around a keyword or identifier
+_COL = rf'{_Q}([A-Za-z_]\w*){_Q}'
+_OPS = r"(>=|<=|=|>|<)"
+_YEAR_CMP = re.compile(
+    rf"^\(?\s*(?:{_Q}year{_Q}\(\s*{_COL}\s*\)|date_part\(\s*'year'\s*,\s*{_COL}\s*\))"
+    rf"\s*{_OPS}\s*(\d{{4}})\s*\)?$", re.IGNORECASE)
+_DATE_LIT = r"'(\d{4}-\d{2}-\d{2})'(?:::DATE)?"
+_DATE_CAST = rf"(?:CAST\(\s*{_COL}\s+AS\s+DATE\s*\)|{_COL}::DATE)"
+_DATE_CMP = re.compile(rf"^\(?\s*{_DATE_CAST}\s*{_OPS}\s*{_DATE_LIT}\s*\)?$", re.IGNORECASE)
+_DATE_BETWEEN = re.compile(
+    rf"^\(?\s*{_DATE_CAST}\s+BETWEEN\s+{_DATE_LIT}\s+AND\s+{_DATE_LIT}\s*\)?$", re.IGNORECASE)
+
+
+def temporal_range(conjunct: str) -> Optional[tuple[str, Optional[str], Optional[str]]]:
+    """(column, low, high) as half-open DATE bounds 'YYYY-MM-DD' (low <= col <
+    high, either may be None) for one plan-filter conjunct that compares a
+    date part of a column: year(col) <op> N, CAST(col AS DATE) / col::DATE
+    <op> 'date', or BETWEEN two dates. None for anything else (month(col) = 6
+    has no single range)."""
+    from datetime import date, timedelta
+
+    m = _YEAR_CMP.match(conjunct.strip())
+    if m:
+        col, op, y = (m.group(1) or m.group(2)), m.group(3), int(m.group(4))
+        start = lambda yy: f"{yy:04d}-01-01"  # noqa: E731
+        return col, *{"=": (start(y), start(y + 1)), ">=": (start(y), None),
+                      ">": (start(y + 1), None), "<": (None, start(y)),
+                      "<=": (None, start(y + 1))}[op]
+    m = _DATE_BETWEEN.match(conjunct.strip())
+    if m:
+        col = m.group(1) or m.group(2)
+        hi = date.fromisoformat(m.group(4)) + timedelta(days=1)
+        return col, m.group(3), hi.isoformat()
+    m = _DATE_CMP.match(conjunct.strip())
+    if m:
+        col, op, d = (m.group(1) or m.group(2)), m.group(3), date.fromisoformat(m.group(4))
+        nxt = (d + timedelta(days=1)).isoformat()
+        return col, *{"=": (d.isoformat(), nxt), ">=": (d.isoformat(), None), ">": (nxt, None),
+                      "<": (None, d.isoformat()), "<=": (None, nxt)}[op]
+    return None
+
+
+def _split_conjuncts(filters: str) -> list[str]:
+    """Top-level AND parts of a plan filter string (parentheses respected)."""
+    parts, depth, start, i, up = [], 0, 0, 0, filters.upper()
+    while i < len(filters):
+        ch = filters[i]
+        if ch == "'":  # skip string literals
+            i = filters.index("'", i + 1) if "'" in filters[i + 1:] else len(filters)
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif depth == 0 and up.startswith(" AND ", i):
+            parts.append(filters[start:i])
+            start = i + 5
+            i += 4
+        i += 1
+    parts.append(filters[start:])
+    return [p.strip() for p in parts if p.strip()]
+
 
 def referenced_tables(sql: str) -> list[str]:
     """Physical tables the query reads, from the AST (CTE names excluded)."""
@@ -198,6 +263,9 @@ class DuckDBWarehouse:
 
         if registry is None:
             return None
+        filters = self._date_parts_as_ranges(registry, schema, table, filters)
+        if filters is None:
+            return None
         try:
             tree = sqlglot.parse_one(filters, read="duckdb")
         except Exception:  # noqa: BLE001
@@ -251,6 +319,32 @@ class DuckDBWarehouse:
         if entry.total_rows:
             fraction *= 1 - entry.null_count / entry.total_rows
         return fraction, col
+
+    def _date_parts_as_ranges(self, registry, schema: str, table: str,
+                              filters: str) -> Optional[str]:
+        """Plan filter text with each date-part comparison on a date/time
+        column (temporal_range) restated as a range on the bare column, typed
+        as the column (from the registry), so the range logic can read it.
+        Unchanged when there is none; None when such a comparison names a
+        column the registry doesn't type as date/time."""
+        conjuncts = _split_conjuncts(filters)
+        out, changed = [], False
+        for c in conjuncts:
+            found = temporal_range(c)
+            if found is None:
+                out.append(c)
+                continue
+            col, lo, hi = found
+            entry = registry.lookup(table, col, schema)
+            dtype = entry.data_type.upper() if entry is not None else ""
+            if not dtype.startswith(("DATE", "TIMESTAMP")):
+                return None
+            if lo:
+                out.append(f"{col}>='{lo}'::{dtype}")
+            if hi:
+                out.append(f"{col}<'{hi}'::{dtype}")
+            changed = True
+        return " AND ".join(out) if changed else filters
 
     def _fallback_estimate(self, sql: str, e: Exception) -> PlanEstimate:
         """EXPLAIN failed: sum of referenced table sizes, labeled as such."""

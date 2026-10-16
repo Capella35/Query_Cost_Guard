@@ -1,6 +1,8 @@
 """EXPLAIN estimates corrected with column-registry distinct counts."""
 import duckdb
 
+import pytest
+
 from cost_guard.backends.duckdb_backend import DuckDBWarehouse
 from cost_guard.column_registry import ColumnRegistry, RegistryEntry, build_registry
 from cost_guard.guard import decide
@@ -172,3 +174,55 @@ def test_two_way_range_estimate_is_opt_in(thelook_wh):
     wide = thelook_wh.estimate(two_years, two_way_ranges=True).rows_processed
     assert wide / two_way.rows_processed > 50
     assert wide / raise_only < 3  # what the raise-only estimate shows
+
+
+# ---- Date parts as DuckDB prints them in EXPLAIN ----------------------------------
+
+@pytest.mark.parametrize("conjunct, expected", [
+    # EXTRACT(YEAR ...), date_part('year', ...) and year(...) all print as "year"(col)
+    ('("year"(created_at) = 2023)', ("created_at", "2023-01-01", "2024-01-01")),
+    ('"year"("created_at")>=2022', ("created_at", "2022-01-01", None)),
+    ('("year"(created_at) > 2022)', ("created_at", "2023-01-01", None)),
+    ('("year"(created_at) <= 2020)', ("created_at", None, "2021-01-01")),
+    ("(date_part('year', created_at) < 2021)", ("created_at", None, "2021-01-01")),
+    ("(CAST(created_at AS DATE) BETWEEN '2023-01-01'::DATE AND '2023-01-31'::DATE)",
+     ("created_at", "2023-01-01", "2023-02-01")),
+    ("(created_at::DATE = '2023-03-01')", ("created_at", "2023-03-01", "2023-03-02")),
+    ("(CAST(\"created_at\" AS DATE) > '2023-03-01'::DATE)", ("created_at", "2023-03-02", None)),
+    # no single range, or not a date part
+    ('("month"(created_at) = 6)', None),
+    ('("year"(created_at) = 2023 OR status = \'x\')', None),
+    ("created_at>='2023-01-01 08:00:00+00'::TIMESTAMP WITH TIME ZONE", None),
+])
+def test_temporal_range_reads_plan_text(conjunct, expected):
+    from cost_guard.backends.duckdb_backend import temporal_range
+
+    assert temporal_range(conjunct) == expected
+
+
+def test_split_conjuncts_respects_strings_and_parentheses():
+    from cost_guard.backends.duckdb_backend import _split_conjuncts
+
+    assert _split_conjuncts("(\"year\"(created_at) = 2023) AND (status = 'A AND B') "
+                            "AND (x BETWEEN 1 AND 2)") == [
+        '("year"(created_at) = 2023)', "(status = 'A AND B')", "(x BETWEEN 1 AND 2)"]
+
+
+def test_year_and_date_cast_filters_get_a_range_estimate(thelook_wh):
+    """Before, these plan filters were not recognized as ranges, so the
+    two-way estimate kept the planner's flat guess (486k on events)."""
+    for q, real_low, real_high in [
+        ("SELECT COUNT(*) FROM events WHERE CAST(created_at AS DATE) "
+         "BETWEEN DATE '2023-01-01' AND DATE '2023-01-31'", 20_000, 120_000),
+        ("SELECT COUNT(*) FROM events WHERE EXTRACT(YEAR FROM created_at) = 2023", 300_000, 1_200_000),
+    ]:
+        est = thelook_wh.estimate(q, two_way_ranges=True)
+        assert any("range filter on created_at" in c for c in est.corrections), est.corrections
+        assert real_low < est.rows_processed < real_high
+
+
+def test_year_of_a_non_date_column_is_not_a_range(thelook_wh):
+    """The regex finds a date part, but the registry types user_id as an
+    integer: no range."""
+    reg = thelook_wh.column_registry()
+    assert thelook_wh._range_fraction(reg, "main", "events", '("year"(user_id) = 2023)') is None
