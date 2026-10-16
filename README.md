@@ -5,8 +5,9 @@ before they run, and an **Investigator** learns from query history to propose
 tighter per-query-shape runtime thresholds.
 
 > **Mock customer.** The pilot "customer" is fictional. Its warehouse is the public
-> TheLook e-commerce dataset running **locally in DuckDB** (BigQuery is the stretch
-> goal). Nothing here touches a real customer's data or spends real money.
+> TheLook e-commerce dataset, in **BigQuery** (copies in our own project, dry
+> runs only — free) and **locally in DuckDB** for offline tests. Nothing here
+> touches a real customer's data; BigQuery use stays inside the free tier.
 > See `customer.yaml`.
 
 Design principles, trade-offs and the decision log: [DESIGN.md](DESIGN.md).
@@ -203,6 +204,21 @@ tuning run; the runner refuses one without `--rerun`. Limit: written by the
 same AI assistant that wrote the Guard's rules, so it is held out from the
 results, not independent of the author.
 
+**BigQuery set** (`eval/bq_queries.yaml`, 30 queries in BigQuery SQL):
+queries, labeling guide and caps committed **before any Guard run** on them
+(`4a2fc50`); caps scaled to TheLook's ~0.5 GB (100 MiB interactive bytes,
+`eval/eval_caps_bigquery.yaml`). **Run once on 2026-10-16, dry runs only:
+24/30** ([`eval/RESULTS_bigquery.md`](eval/RESULTS_bigquery.md)) — 0 good
+queries blocked, 1 of 14 warned (B10: the filter-after-join rule fires
+although BigQuery pushes filters down itself), bad queries flagged 15/16, but
+**14/16 for the right reasons**: B19 was flagged only by a bug the run
+exposed (GROUP BY `u.id` checked as `events.id` — `group_by_columns` drops the
+table). The other misses were listed as known gaps before the run: no
+rewrite for EXTRACT / `FORMAT_TIMESTAMP('%Y-%m')` / `col + INTERVAL` filters
+(B21–B23, flagged as warn instead), no sort check from a dry run (B28), join
+fan-out acted on only without filters (B19). Same limit as the held-out set:
+written by the assistant that wrote the rules.
+
 **Threshold gates + judge** (`eval/run_judge_eval.py`,
 [`eval/RESULTS_judge.md`](eval/RESULTS_judge.md)): 20 labeled proposals.
 Deterministic gates reject 6/6 gate-type bad proposals (loosened to p99, tiny
@@ -326,10 +342,11 @@ auth login`), then `eval/run_eval.py --llm claude` and
 `eval/run_judge_eval.py --llm claude`. Model: `claude-opus-5-5`. Both runs
 spend real API credit.
 
-**BigQuery stretch goal:** `cp .env.example .env`, set `GCP_PROJECT`, set a
-bytes-billed cap and a timeout on the project **before running anything**, then
-`python scripts/verify_schema.py --project $GCP_PROJECT` and
-`scripts/make_partitioned_copies.py`.
+**BigQuery:** set a bytes-billed cap and a timeout on the project **before
+running anything**, then: `scripts/bq_dryrun_compare.py --project $GCP_PROJECT
+--create-copies` (partitioned TheLook copies, a few GB once),
+`scripts/build_column_registry.py --bigquery-project $GCP_PROJECT` (~0.5 GB),
+`scripts/bq_live_check.py --project $GCP_PROJECT` (dry runs, free).
 
 ## Demo (5 minutes, zero setup)
 

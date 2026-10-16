@@ -242,7 +242,8 @@ analysts' way. Each group of tests answers one question about that.
    eval, the held-out set and the regression cases check allow / warn /
    rewrite / block, and count the kinds of mistake separately: a wrongly
    blocked query stops someone's work; a wrong warning costs a glance.
-   *Status:* good on the project's own queries (held-out 29/30); unknown on
+   *Status:* good on the project's own queries (held-out 29/30 on DuckDB;
+   pre-registered BigQuery set 24/30, no good query blocked); unknown on
    queries written by someone else.
 2. **When it offers a cheaper version, is it the same answer, and really
    cheaper?** Rewrite verification and the BigQuery dry runs. Same answer:
@@ -346,6 +347,11 @@ Never stored: SQL text, literal values, result rows.
   TIMESTAMP literals for TIMESTAMP columns, no `DATE`-vs-`TIMESTAMP`
   comparisons.
 
+- Found by the BigQuery eval (not fixed, so its score stands): the
+  filter-after-join rule should be warehouse-aware (BigQuery pushes filters
+  down itself — B10 false warn); `sql_ast.group_by_columns` drops the table
+  qualifier, so `GROUP BY u.id` is checked against every joined table with
+  an `id` column (B18/B19, DuckDB too).
 - The BigQuery join fan-out estimate acts only on unfiltered joins. A
   filtered fan-out (or one whose join condition uses an expression) is only
   traced; the watchdog's timeout is the backstop. Applying filter
