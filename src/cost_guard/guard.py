@@ -210,6 +210,10 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
                                   " — run scripts/build_column_registry.py")
         md["column_profiles"] = profiles
         md["registry"] = registry
+        try:
+            md["column_kinds"] = backend.column_kinds() if hasattr(backend, "column_kinds") else {}
+        except Exception:  # noqa: BLE001 — no labels: the name rules decide
+            md["column_kinds"] = {}
         md["registry_max_age_days"] = max_age_days
         table_md[t] = md
     table_rows = {t: md.get("num_rows") for t, md in table_md.items()}

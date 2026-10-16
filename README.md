@@ -73,9 +73,11 @@ Guard (before execution) → watchdog execution → query log → Investigator (
    column named as an identifier (`id`, `*_id`, `*_key`, `*_code`, …): an id
    labels a row and is counted, not added; the reason carries the query with
    `COUNT(DISTINCT …)` instead (a suggestion — it answers a different
-   question, so it is not an automatic rewrite). Found only by near-unique
-   values in the registry, it may be a real amount and only warns. Other
-   findings warn.
+   question, so it is not an automatic rewrite). Ambiguous names (`*_no`,
+   `*_num`, `*_code`), near-unique registry values and a model's unconfirmed
+   label only warn: each may be a real count or amount. A column kind a person
+   confirmed (`scripts/classify_columns.py --confirm`) blocks or clears.
+   Other findings warn.
    Column cardinality for the GROUP BY rule is a lookup in the column
    registry (profiled once, refreshed on a schedule), not a scan.
 4. Findings the deterministic catalog can fix — a repeated subquery, a
@@ -241,6 +243,14 @@ called ids, 5 ids missed); `claude-opus-5-5` 73/73 and 20/20, two calls.
 of the baseline's false ids), so it shows the model catches ids without an
 id-like name (4/4 unhinted), not that it avoids calling a quantity an id.
 Not wired into the Guard.
+
+**Column kinds in use, frugally** (`scripts/classify_columns.py`): a
+deterministic triage settles every column it can (non-numeric, clear id
+name, clear unit word); only the rest go to a model, offline, in one call
+with a column limit, cached until the column is new or its type changes. On
+TheLook: 72 of 73 columns settled without a model, 1 call for
+`events.sequence_number` (labeled quantity, a proposal until confirmed). A
+model label never blocks on its own.
 
 **Threshold gates + judge** (`eval/run_judge_eval.py`,
 [`eval/RESULTS_judge.md`](eval/RESULTS_judge.md)): 20 labeled proposals.

@@ -443,6 +443,15 @@ class DuckDBWarehouse:
             "columns": columns,
         }
 
+    def column_kinds(self) -> dict:
+        """Column-kind labels (column_kinds.py) next to the registry, read once:
+        {"table.column": {kind, reviewed, ...}}; {} when none were made."""
+        if getattr(self, "_kinds", None) is None:
+            from ..column_kinds import kinds_path, load_kinds
+
+            self._kinds = load_kinds(kinds_path(self.registry_path))
+        return self._kinds
+
     def column_registry(self):
         """The local column registry (column_registry.py) for this warehouse,
         read once and cached. None when it has not been built."""

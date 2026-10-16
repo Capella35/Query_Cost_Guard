@@ -15,7 +15,6 @@ import re
 
 from .. import sql_ast
 from ..column_registry import HIGH_CARDINALITY_RATIO  # noqa: F401 — distinct/rows above = near-unique
-from ..column_registry import IDENTIFIER_NAME  # one definition: ids are objects, not numbers
 
 WIDE_COLUMN_THRESHOLD = 8
 MAX_IN_LIST_ITEMS = 100  # judgment call: above this, a join is the better shape
@@ -166,11 +165,34 @@ IDENTIFIER_MIN_ROWS = 1_000  # below this, "every value distinct" proves nothing
 _NON_ID_TYPES = ("FLOAT", "DOUBLE", "REAL", "DECIMAL", "NUMERIC")
 
 
+def _identifier_level(table: str, column: str, metadata: dict) -> tuple[str | None, str | None]:
+    """(level, why) for SUM/AVG over `column`: "block", "warn" or None.
+
+    In order: a label a person confirmed decides (identifier -> block,
+    anything else -> nothing); a clear id name (id, *_id, *_key, ...) blocks;
+    a model label "identifier" not yet confirmed warns; an ambiguous ending
+    (_no, _num, _number, _code) warns unless a label says quantity; near-unique
+    integer values in the column registry warn. A model label alone never
+    blocks (column_kinds.py)."""
+    from ..column_kinds import AMBIGUOUS_ID_NAME, STRONG_ID_NAME
+
+    label = (metadata.get("column_kinds") or {}).get(f"{table}.{column}")
+    if label and label.get("reviewed"):
+        return ("block", "confirmed identifier") if label.get("kind") == "identifier" else (None, None)
+    if STRONG_ID_NAME.search(column):
+        return "block", "identifier name"
+    if label and label.get("kind") == "identifier":
+        return "warn", f"labeled identifier by {label.get('source', 'a model')}, not yet confirmed"
+    if label and label.get("kind") == "quantity":
+        return None, None
+    if AMBIGUOUS_ID_NAME.search(column):
+        return "warn", "name ends like an identifier (_no/_num/_code) but may be a count"
+    why = _identifier_reason(table, column, metadata)
+    return ("warn", why) if why else (None, None)
+
+
 def _identifier_reason(table: str, column: str, metadata: dict) -> str | None:
-    """Why `column` looks like an identifier, or None. Name pattern always;
-    near-unique integer values when a fresh column-registry entry exists."""
-    if IDENTIFIER_NAME.search(column):
-        return "identifier name"
+    """Near-unique integer values per a fresh column-registry entry, or None."""
     registry = metadata.get("registry")
     entry = registry.lookup(table, column) if registry is not None else None
     if entry is None or entry.age_days() > metadata.get("registry_max_age_days", 35):
@@ -191,11 +213,12 @@ def no_sum_on_identifier(sql: str, metadata: dict) -> list[str]:
 
     SUM(customer_id) runs, returns a number, and charts fine — and means
     nothing: an id labels a row, it is not a quantity. Ids are COUNTed.
-    By NAME (`id`, `*_id`, `*_key`, `*_code`, ...) the column is surely an
-    identifier: the finding starts with IDENTIFIER_AGGREGATE and the Guard
-    BLOCKS, suggesting the query with COUNT(DISTINCT ...) instead. By the
-    column registry alone (near-unique integer values) it may be a real
-    amount (e.g. order totals in cents), so that only warns.
+    A clear id name (`id`, `*_id`, `*_key`, ...) or a kind a person
+    confirmed BLOCKS: the finding starts with IDENTIFIER_AGGREGATE and
+    carries the query with COUNT(DISTINCT ...) instead. Ambiguous names
+    (`*_no`, `*_num`, `*_code`), a model's unconfirmed label and near-unique
+    registry values only WARN — each may be a real count or amount, and a
+    false block stops work. See _identifier_level.
     """
     table = (metadata.get("table") or "").lower()
     columns = {c.lower() for c in metadata.get("columns", [])}
@@ -209,19 +232,19 @@ def no_sum_on_identifier(sql: str, metadata: dict) -> list[str]:
         qualifier = (col.table or "").lower()
         if name not in columns or (qualifier and qualifier not in aliases):
             continue
-        why = _identifier_reason(table, name, metadata)
-        if why == "identifier name":
+        level, why = _identifier_level(table, name, metadata)
+        if level == "block":
             findings.append(
-                f"{IDENTIFIER_AGGREGATE}: {agg} aggregates identifier column '{table}.{name}' — "
+                f"{IDENTIFIER_AGGREGATE}: {agg} aggregates identifier column '{table}.{name}' ({why}) — "
                 f"an id labels a row, it is not a quantity; count it: COUNT(DISTINCT {name}) "
                 f"(how many different ones) or COUNT({name}) (rows that have one). "
                 f"Suggested query: {sql_ast.count_instead(tree, col)}"
             )
-        elif why:
+        elif level == "warn":
             findings.append(
-                f"{agg} aggregates identifier column '{table}.{name}' ({why}) — "
-                f"the result is a number with no meaning; did you mean "
-                f"COUNT(DISTINCT {name})?"
+                f"{agg} may aggregate an identifier column '{table}.{name}' ({why}) — "
+                f"if it is an id, count it instead: COUNT(DISTINCT {name}). Confirm the "
+                f"column's kind (scripts/classify_columns.py --confirm) to block or clear this"
             )
     return findings
 
