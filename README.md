@@ -232,6 +232,16 @@ written by the assistant that wrote the rules. **After fixes made in response
 label turned out wrong (BigQuery prunes `EXTRACT(YEAR)`, measured after the
 run) and is not changed without approval; B28 (sort check) remains.
 
+**Column kinds** (`eval/column_kinds.yaml`, pre-registered; model labels
+what each column means from names, types and counts — never values;
+[`eval/RESULTS_column_kinds.md`](eval/RESULTS_column_kinds.md)): name-pattern
+baseline 65/73 on TheLook and 8/20 on 20 invented hard columns (2 quantities
+called ids, 5 ids missed); `claude-opus-5-5` 73/73 and 20/20, two calls.
+**Caveat:** the prompt named 4 of the hard columns as examples (including both
+of the baseline's false ids), so it shows the model catches ids without an
+id-like name (4/4 unhinted), not that it avoids calling a quantity an id.
+Not wired into the Guard.
+
 **Threshold gates + judge** (`eval/run_judge_eval.py`,
 [`eval/RESULTS_judge.md`](eval/RESULTS_judge.md)): 20 labeled proposals.
 Deterministic gates reject 6/6 gate-type bad proposals (loosened to p99, tiny
