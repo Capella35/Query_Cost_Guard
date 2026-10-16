@@ -1,0 +1,173 @@
+# Column-kind eval: what each column MEANS. PRE-REGISTERED before any model call.
+#
+# Why: the Guard blocks SUM/AVG over an identifier (ids are counted, never
+# added) and decides "identifier" by NAME today (id, *_id, *_key, *_code,
+# *_no, *_num, ...). Names miss ids without such an ending (customer, ticket,
+# account_number) and can flag quantities that happen to end that way
+# (items_no = "number of items"), which would block a legitimate SUM. An LLM
+# could classify columns once, offline, from name + type + counts (never data
+# values), into a label a human reviews and the Guard then reads.
+#
+# Written 2026-10-16 by the AI assistant that also writes the Guard, before
+# any model call; the "hard" set is invented (realistic names and counts, not
+# a real warehouse) to target the gaps above. Run once:
+#   .venv/bin/python eval/run_column_kinds.py
+#
+# KINDS (labeling guide, fixed before labeling)
+#   identifier - names ONE specific entity or record: keys, foreign keys,
+#                session ids, SKUs, emails, IP addresses, phone numbers.
+#                Counted, joined, matched; never added or averaged.
+#   quantity   - a number where arithmetic or an average means something:
+#                prices, costs, amounts, ages, counts, durations, positions
+#                in a sequence, coordinates.
+#   date       - a date or time, however stored (TIMESTAMP, a 'YYYY-MM-DD'
+#                string, a yyyymmdd integer).
+#   category   - a label from a limited set, used to group: status, type,
+#                gender, country, state, city, brand, department, a small
+#                dimension's name.
+#   text       - free-form or naming text not meant for grouping: person
+#                names, product names, street addresses, URIs, subjects.
+# `also_ok` lists a second acceptable kind where the guide genuinely allows
+# two (e.g. a postal code is a location label AND names one area).
+#
+# METRICS (fixed now)
+#   primary, per method, on NUMERIC columns (where SUM/AVG runs at all):
+#     false_ids  = quantity columns called identifier -> would block a valid SUM
+#     missed_ids = identifier columns not called identifier -> SUM goes through
+#   secondary: kind accuracy over all columns (kind or also_ok counts).
+# BASELINE (today's logic): identifier if the name matches the Guard's
+#   IDENTIFIER_NAME; else date if the type is DATE/TIMESTAMP; else quantity if
+#   numeric; else category if distinct <= 50% of rows, otherwise text.
+# ADOPTION RULE (fixed now): the model's labels may replace the name pattern
+#   for the SUM/AVG block only if, on BOTH sets, false_ids == 0 and
+#   missed_ids <= the baseline's. Otherwise they are not adopted.
+#
+# The model sees, per table: every column's name, type, row count, distinct
+# count and NULL share. Never values, never min/max.
+
+thelook:  # all 73 columns of the BigQuery TheLook copies (counts from the column registry)
+  distribution_centers:
+    rows: 10
+    columns:
+      - {name: id, type: INTEGER, distinct: 10, null_share: 0.0, kind: identifier}
+      - {name: latitude, type: FLOAT, distinct: 10, null_share: 0.0, kind: quantity}
+      - {name: longitude, type: FLOAT, distinct: 10, null_share: 0.0, kind: quantity}
+      - {name: name, type: STRING, distinct: 10, null_share: 0.0, kind: category, also_ok: text}
+  events:
+    rows: 2425610
+    columns:
+      - {name: browser, type: STRING, distinct: 5, null_share: 0.0, kind: category}
+      - {name: city, type: STRING, distinct: 8779, null_share: 0.0, kind: category}
+      - {name: created_at, type: TIMESTAMP, distinct: 2226193, null_share: 0.0, kind: date}
+      - {name: event_type, type: STRING, distinct: 6, null_share: 0.0, kind: category}
+      - {name: id, type: INTEGER, distinct: 2425610, null_share: 0.0, kind: identifier}
+      - {name: ip_address, type: STRING, distinct: 680866, null_share: 0.0, kind: identifier}
+      - {name: postal_code, type: STRING, distinct: 17312, null_share: 0.0, kind: category, also_ok: identifier}
+      - {name: sequence_number, type: INTEGER, distinct: 13, null_share: 0.0, kind: quantity}
+      - {name: session_id, type: STRING, distinct: 682166, null_share: 0.0, kind: identifier}
+      - {name: state, type: STRING, distinct: 231, null_share: 0.0, kind: category}
+      - {name: traffic_source, type: STRING, distinct: 5, null_share: 0.0, kind: category}
+      - {name: uri, type: STRING, distinct: 35518, null_share: 0.0, kind: text}
+      - {name: user_id, type: INTEGER, distinct: 79570, null_share: 0.464, kind: identifier}
+  inventory_items:
+    rows: 490650
+    columns:
+      - {name: cost, type: FLOAT, distinct: 26278, null_share: 0.0, kind: quantity}
+      - {name: created_at, type: TIMESTAMP, distinct: 476609, null_share: 0.0, kind: date}
+      - {name: id, type: INTEGER, distinct: 487232, null_share: 0.0, kind: identifier}
+      - {name: product_brand, type: STRING, distinct: 2754, null_share: 0.0, kind: category}
+      - {name: product_category, type: STRING, distinct: 26, null_share: 0.0, kind: category}
+      - {name: product_department, type: STRING, distinct: 2, null_share: 0.0, kind: category}
+      - {name: product_distribution_center_id, type: INTEGER, distinct: 10, null_share: 0.0, kind: identifier}
+      - {name: product_id, type: INTEGER, distinct: 29245, null_share: 0.0, kind: identifier}
+      - {name: product_name, type: STRING, distinct: 27083, null_share: 0.0, kind: text}
+      - {name: product_retail_price, type: FLOAT, distinct: 4190, null_share: 0.0, kind: quantity}
+      - {name: product_sku, type: STRING, distinct: 28937, null_share: 0.0, kind: identifier}
+      - {name: sold_at, type: TIMESTAMP, distinct: 181481, null_share: 0.63, kind: date}
+  order_items:
+    rows: 181553
+    columns:
+      - {name: created_at, type: TIMESTAMP, distinct: 181481, null_share: 0.0, kind: date}
+      - {name: delivered_at, type: TIMESTAMP, distinct: 44399, null_share: 0.646, kind: date}
+      - {name: id, type: INTEGER, distinct: 181501, null_share: 0.0, kind: identifier}
+      - {name: inventory_item_id, type: INTEGER, distinct: 180242, null_share: 0.0, kind: identifier}
+      - {name: order_id, type: INTEGER, distinct: 125133, null_share: 0.0, kind: identifier}
+      - {name: product_id, type: INTEGER, distinct: 29245, null_share: 0.0, kind: identifier}
+      - {name: returned_at, type: TIMESTAMP, distinct: 12779, null_share: 0.898, kind: date}
+      - {name: sale_price, type: FLOAT, distinct: 4190, null_share: 0.0, kind: quantity}
+      - {name: shipped_at, type: TIMESTAMP, distinct: 82958, null_share: 0.347, kind: date}
+      - {name: status, type: STRING, distinct: 5, null_share: 0.0, kind: category}
+      - {name: user_id, type: INTEGER, distinct: 79570, null_share: 0.0, kind: identifier}
+  orders:
+    rows: 125584
+    columns:
+      - {name: created_at, type: TIMESTAMP, distinct: 125369, null_share: 0.0, kind: date}
+      - {name: delivered_at, type: TIMESTAMP, distinct: 44399, null_share: 0.646, kind: date}
+      - {name: gender, type: STRING, distinct: 2, null_share: 0.0, kind: category}
+      - {name: num_of_item, type: INTEGER, distinct: 4, null_share: 0.0, kind: quantity}
+      - {name: order_id, type: INTEGER, distinct: 125133, null_share: 0.0, kind: identifier}
+      - {name: returned_at, type: TIMESTAMP, distinct: 12772, null_share: 0.898, kind: date}
+      - {name: shipped_at, type: TIMESTAMP, distinct: 81854, null_share: 0.348, kind: date}
+      - {name: status, type: STRING, distinct: 5, null_share: 0.0, kind: category}
+      - {name: user_id, type: INTEGER, distinct: 79570, null_share: 0.0, kind: identifier}
+  products:
+    rows: 29120
+    columns:
+      - {name: brand, type: STRING, distinct: 2757, null_share: 0.001, kind: category}
+      - {name: category, type: STRING, distinct: 26, null_share: 0.0, kind: category}
+      - {name: cost, type: FLOAT, distinct: 26335, null_share: 0.0, kind: quantity}
+      - {name: department, type: STRING, distinct: 2, null_share: 0.0, kind: category}
+      - {name: distribution_center_id, type: INTEGER, distinct: 10, null_share: 0.0, kind: identifier}
+      - {name: id, type: INTEGER, distinct: 29120, null_share: 0.0, kind: identifier}
+      - {name: name, type: STRING, distinct: 27129, null_share: 0.0, kind: text}
+      - {name: retail_price, type: FLOAT, distinct: 4195, null_share: 0.0, kind: quantity}
+      - {name: sku, type: STRING, distinct: 29025, null_share: 0.0, kind: identifier}
+  users:
+    rows: 100000
+    columns:
+      - {name: age, type: INTEGER, distinct: 59, null_share: 0.0, kind: quantity}
+      - {name: city, type: STRING, distinct: 7915, null_share: 0.0, kind: category}
+      - {name: country, type: STRING, distinct: 15, null_share: 0.0, kind: category}
+      - {name: created_at, type: TIMESTAMP, distinct: 97651, null_share: 0.0, kind: date}
+      - {name: email, type: STRING, distinct: 84192, null_share: 0.0, kind: identifier}
+      - {name: first_name, type: STRING, distinct: 690, null_share: 0.0, kind: text}
+      - {name: gender, type: STRING, distinct: 2, null_share: 0.0, kind: category}
+      - {name: id, type: INTEGER, distinct: 99651, null_share: 0.0, kind: identifier}
+      - {name: last_name, type: STRING, distinct: 1000, null_share: 0.0, kind: text}
+      - {name: latitude, type: FLOAT, distinct: 16451, null_share: 0.0, kind: quantity}
+      - {name: longitude, type: FLOAT, distinct: 16386, null_share: 0.0, kind: quantity}
+      - {name: postal_code, type: STRING, distinct: 15707, null_share: 0.0, kind: category, also_ok: identifier}
+      - {name: state, type: STRING, distinct: 230, null_share: 0.0, kind: category}
+      - {name: street_address, type: STRING, distinct: 100000, null_share: 0.0, kind: text}
+      - {name: traffic_source, type: STRING, distinct: 5, null_share: 0.0, kind: category}
+
+hard:  # invented columns targeting the name pattern's gaps (written before any model call)
+  invoices:
+    rows: 500000
+    columns:
+      - {name: invoice, type: INTEGER, distinct: 500000, null_share: 0.0, kind: identifier}
+      - {name: customer, type: INTEGER, distinct: 40000, null_share: 0.0, kind: identifier}
+      - {name: amount_cents, type: INTEGER, distinct: 480000, null_share: 0.0, kind: quantity}
+      - {name: tax_cents, type: INTEGER, distinct: 30000, null_share: 0.0, kind: quantity}
+      - {name: items_no, type: INTEGER, distinct: 20, null_share: 0.0, kind: quantity}
+      - {name: zip, type: INTEGER, distinct: 9000, null_share: 0.01, kind: category, also_ok: identifier}
+      - {name: phone, type: STRING, distinct: 300000, null_share: 0.05, kind: identifier}
+      - {name: currency, type: STRING, distinct: 12, null_share: 0.0, kind: category}
+      - {name: issue_date, type: STRING, distinct: 1500, null_share: 0.0, kind: date}
+      - {name: paid_ymd, type: INTEGER, distinct: 1400, null_share: 0.2, kind: date}
+  tickets:
+    rows: 200000
+    columns:
+      - {name: ticket, type: INTEGER, distinct: 200000, null_share: 0.0, kind: identifier}
+      - {name: agent, type: INTEGER, distinct: 300, null_share: 0.02, kind: identifier}
+      - {name: priority, type: INTEGER, distinct: 4, null_share: 0.0, kind: category, also_ok: quantity}
+      - {name: minutes_open, type: INTEGER, distinct: 20000, null_share: 0.0, kind: quantity}
+      - {name: visits_num, type: INTEGER, distinct: 200, null_share: 0.0, kind: quantity}
+      - {name: subject, type: STRING, distinct: 180000, null_share: 0.0, kind: text}
+  accounts:
+    rows: 50000
+    columns:
+      - {name: account_number, type: STRING, distinct: 50000, null_share: 0.0, kind: identifier}
+      - {name: owner, type: INTEGER, distinct: 45000, null_share: 0.0, kind: identifier}
+      - {name: balance, type: FLOAT, distinct: 49000, null_share: 0.0, kind: quantity}
+      - {name: employee_count, type: INTEGER, distinct: 500, null_share: 0.1, kind: quantity}

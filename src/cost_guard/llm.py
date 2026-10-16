@@ -8,6 +8,10 @@ Where the LLM earns its place, and where it is fenced in:
   check, never a wrong answer.
 - explain_flag (F3.3): plain-language explanation of a warn/block, written
   AFTER the deterministic verdict. It cannot change the verdict.
+- classify_columns: what each column means (identifier, quantity, date,
+  category, text), offline, from names, types and counts — never values.
+  For a human to review; measured before the Guard uses it
+  (eval/run_column_kinds.py).
 - judge (F3.2): reviews threshold proposals that already passed the
   deterministic gates. It sees aggregates only (counts, percentiles, rule
   names) — never SQL text, never the fingerprint. It may reject or hold,
@@ -39,6 +43,17 @@ class RewriteOut(BaseModel):
 
 class ExplanationOut(BaseModel):
     explanation: str
+
+
+class ColumnKindOut(BaseModel):
+    table: str
+    column: str
+    kind: Literal["identifier", "quantity", "date", "category", "text"]
+    reason: str
+
+
+class ColumnKindsOut(BaseModel):
+    columns: list[ColumnKindOut]
 
 
 class JudgmentOut(BaseModel):
@@ -159,6 +174,17 @@ class ClaudeLLM:
         if out is None:
             return "Query flagged by static rules: " + "; ".join(findings)
         return out.explanation
+
+    def classify_columns(self, tables: dict) -> dict[tuple[str, str], dict]:
+        """(table, column) -> {kind, reason}, from names, types and counts only
+        (column_kinds.describe_tables) — never data values. Offline, once per
+        column; the result is for a human to review, not read per query."""
+        from .column_kinds import CLASSIFY_SYSTEM, describe_tables
+
+        out = self._parse(CLASSIFY_SYSTEM, describe_tables(tables), ColumnKindsOut)
+        if out is None:
+            return {}
+        return {(c.table, c.column): {"kind": c.kind, "reason": c.reason} for c in out.columns}
 
     def judge(self, proposal) -> str:
         """approve | reject | hold, from aggregates only."""
