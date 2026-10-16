@@ -352,6 +352,11 @@ Never stored: SQL text, literal values, result rows.
   down itself — B10 false warn); `sql_ast.group_by_columns` drops the table
   qualifier, so `GROUP BY u.id` is checked against every joined table with
   an `id` column (B18/B19, DuckDB too).
+- Rewrite verification on BigQuery runs real queries on TEMP-table samples:
+  ~30 MiB billed (BigQuery's 10 MiB-per-table minimum, four small jobs) and
+  ~8–10 s per verified rewrite. On TheLook that costs more than the rewrite
+  saves; at real scale it does not. Too slow to sit inline in an
+  interactive check: run it in the background and attach the rewrite after?
 - The BigQuery join fan-out estimate acts only on unfiltered joins. A
   filtered fan-out (or one whose join condition uses an expression) is only
   traced; the watchdog's timeout is the backstop. Applying filter

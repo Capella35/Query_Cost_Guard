@@ -282,3 +282,74 @@ def test_filter_after_join_is_not_flagged_on_bigquery():
     assert filter_before_join(having, {"engine": "bigquery"})
     v = decide(q, backend=BigQueryWarehouse("proj", client=FakeClient(0)), tracer=Tracer())
     assert not any("applied after the join" in f for f in v.findings)
+
+
+# ---- Sampled verification in a BigQuery session --------------------------------
+
+class _Row(tuple):
+    """Like google.cloud.bigquery.Row: indexable, with values()."""
+
+    def values(self):
+        return tuple(self)
+
+
+class SessionClient:
+    """Fake client: records every job; a session is created by the setup job."""
+
+    def __init__(self, fail_run=False):
+        self.jobs, self.fail_run = [], fail_run
+        self.tables = {"orders": ("TABLE", 1_000_000), "users": ("VIEW", 0)}
+
+    def get_table(self, ref):
+        kind, n = self.tables[ref.rsplit(".", 1)[-1]]
+        return SimpleNamespace(table_type=kind, num_rows=n)
+
+    def query(self, sql, job_config=None):
+        self.jobs.append((sql, job_config))
+        assert job_config.maximum_bytes_billed and job_config.default_dataset is None
+        if job_config.create_session:
+            return SimpleNamespace(result=lambda timeout=None: [],
+                                   session_info=SimpleNamespace(session_id="s1"))
+        assert job_config.connection_properties[0].value == "s1"
+        if sql.startswith("SELECT (SELECT COUNT"):
+            rows = [(60_000,)]
+        elif "ABORT_SESSION" in sql:
+            rows = []
+        elif self.fail_run:
+            raise RuntimeError("boom")
+        else:
+            rows = [{"n": 3}]
+        return SimpleNamespace(result=lambda timeout=None: [
+            _Row(tuple(r.values()) if isinstance(r, dict) else r) for r in rows])
+
+
+def test_sampled_builds_session_temp_tables_and_strips_qualifiers():
+    client = SessionClient()
+    wh = BigQueryWarehouse("p", "ds", client=client, registry_path="/nonexistent")
+    with wh.sampled(["orders", "users"], 50_000) as s:
+        run = s.run("SELECT COUNT(*) AS n FROM `p.ds.orders` o JOIN ds.users u ON u.id = o.user_id",
+                    ordered=False)
+    setup = client.jobs[0][0]
+    assert "CREATE TEMP TABLE `orders` AS SELECT * FROM `p.ds.orders` TABLESAMPLE SYSTEM (5.0000 PERCENT)" in setup
+    assert "CREATE TEMP TABLE `users` AS SELECT * FROM `p.ds.users` LIMIT 50000" in setup  # a view
+    query = client.jobs[2][0]
+    assert "`p.ds.orders`" not in query and "ds.users" not in query  # reads the samples
+    assert s.input_rows_sampled == 60_000 and s.input_rows_full == 1_000_000
+    assert run.row_count == 1
+    assert "ABORT_SESSION" in client.jobs[-1][0]
+
+
+def test_sampled_session_is_aborted_when_a_run_fails():
+    client = SessionClient(fail_run=True)
+    wh = BigQueryWarehouse("p", "ds", client=client, registry_path="/nonexistent")
+    with pytest.raises(RuntimeError):
+        with wh.sampled(["orders"], 50_000) as s:
+            s.run("SELECT 1 FROM orders", ordered=False)
+    assert "ABORT_SESSION" in client.jobs[-1][0]
+
+
+def test_sampled_rejects_unsafe_table_names():
+    wh = BigQueryWarehouse("p", "ds", client=SessionClient(), registry_path="/nonexistent")
+    with pytest.raises(ValueError):
+        with wh.sampled(["orders`; DROP TABLE x; --"], 10):
+            pass

@@ -8,9 +8,9 @@ cancelled server-side at the deadline).
 
 Status: unit-tested with a fake client (tests/test_bigquery_backend.py);
 the check path (estimate, table_metadata, column_registry) has run live
-against dry runs (scripts/bq_live_check.py); execute() has not. sampled() is
-not built, so compare_results fails closed on this backend (no rewrite is
-ever offered unverified). The Guard parses SQL with the DuckDB dialect; the
+against dry runs (scripts/bq_live_check.py); execute() has not. sampled()
+verifies rewrites on TEMP-table samples in a BigQuery session (real, small,
+capped queries). The Guard parses SQL with the DuckDB dialect; the
 30-query set adapted by to_bigquery() parsed without errors, other
 BigQuery-only syntax is untested.
 
@@ -18,10 +18,46 @@ Set maximum_bytes_billed on the project BEFORE running anything (especially Q13)
 """
 from __future__ import annotations
 
+import re
 import time
+from contextlib import contextmanager
 from typing import Optional
 
-from .base import ColumnProfile, ExecutionResult, PlanEstimate
+from sqlglot import exp
+
+from ..results import result_hash
+from .base import ColumnProfile, ExecutionResult, PlanEstimate, SampleRun
+
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+SAMPLE_SETUP_TIMEOUT_SEC = 120
+
+
+class _BigQuerySample:
+    """Sampled copies of input tables as TEMP tables in a BigQuery session.
+    Queries run inside the session with table names stripped of their
+    project/dataset, so they read the samples."""
+
+    def __init__(self, wh, session_id: str, tables: list[str], sampled: int, full: int):
+        self._wh, self._session, self._tables = wh, session_id, set(tables)
+        self.input_rows_sampled, self.input_rows_full = sampled, full
+
+    def run(self, sql: str, ordered: bool, float_tolerance: float = 1e-6,
+            timeout_sec: Optional[float] = None) -> SampleRun:
+        from .. import sql_ast
+
+        tree = sql_ast.parse_one(sql, "bigquery").copy()
+        for t in tree.find_all(exp.Table):
+            if t.name.lower() in self._tables:
+                t.set("catalog", None)
+                t.set("db", None)
+        kw = {"job_timeout_ms": int(timeout_sec * 1000)} if timeout_sec else {}
+        t0 = time.perf_counter()
+        job = self._wh._bq().query(tree.sql(dialect="bigquery"),
+                                   job_config=self._wh._session_config(self._session, **kw))
+        rows = [tuple(r.values()) for r in job.result(timeout=timeout_sec)]
+        return SampleRun(result_hash=result_hash(rows, ordered=ordered, float_tolerance=float_tolerance),
+                         row_count=len(rows), elapsed_sec=time.perf_counter() - t0)
+
 
 
 class BigQueryWarehouse:
@@ -76,10 +112,59 @@ class BigQueryWarehouse:
     def run_sample(self, sql: str, max_rows: int = 10_000) -> str:
         raise NotImplementedError("use sampled(); not built for BigQuery yet")
 
+    def _session_config(self, session_id: Optional[str] = None, **kw):
+        from google.cloud import bigquery
+
+        if session_id is None:
+            kw["create_session"] = True
+        else:
+            kw["connection_properties"] = [bigquery.ConnectionProperty("session_id", session_id)]
+        # No default dataset: bare names must resolve to the session's TEMP tables.
+        return bigquery.QueryJobConfig(maximum_bytes_billed=self.maximum_bytes_billed,
+                                       use_query_cache=False, **kw)
+
+    @contextmanager
     def sampled(self, tables: list[str], rows_per_table: int):
-        # Plan: CREATE TEMP TABLE t AS SELECT * FROM t TABLESAMPLE SYSTEM (n PERCENT)
-        # inside a script session, with maximum_bytes_billed on every job.
-        raise NotImplementedError("sampled verification not built for BigQuery — fails closed")
+        """TEMP-table samples of each input table in one BigQuery session;
+        both sides of a comparison read the SAME copies. Tables are sampled
+        with TABLESAMPLE SYSTEM (billed for the sampled blocks only, about
+        rows_per_table rows); views and small tables are copied with LIMIT
+        (any shared copy works for an equivalence check). Every job carries
+        maximum_bytes_billed; the session is aborted afterwards."""
+        client = self._bq()
+        registry = self.column_registry()
+        stmts, full = [], 0
+        for t in tables:
+            if not _IDENT.match(t):
+                raise ValueError(f"unsafe table name {t!r}")
+            meta = client.get_table(f"{self.project}.{self.dataset}.{t}")
+            n = int(meta.num_rows) if getattr(meta, "table_type", "TABLE") == "TABLE" else None
+            if n is None and registry is not None:
+                e = next((e for e in registry.entries() if e.table_name.lower() == t.lower()), None)
+                n = int(e.total_rows) if e is not None else None
+            full += n or 0
+            src = f"`{self.project}.{self.dataset}.{t}`"
+            if getattr(meta, "table_type", "TABLE") == "TABLE" and n and n > rows_per_table:
+                pct = min(100.0, 100.0 * rows_per_table / n)
+                body = f"SELECT * FROM {src} TABLESAMPLE SYSTEM ({pct:.4f} PERCENT)"
+            else:
+                body = f"SELECT * FROM {src} LIMIT {int(rows_per_table)}"
+            stmts.append(f"CREATE TEMP TABLE `{t}` AS {body};")
+        setup = client.query("\n".join(stmts), job_config=self._session_config(
+            job_timeout_ms=SAMPLE_SETUP_TIMEOUT_SEC * 1000))
+        setup.result(timeout=SAMPLE_SETUP_TIMEOUT_SEC)
+        session = setup.session_info.session_id
+        try:
+            counts = " + ".join(f"(SELECT COUNT(*) FROM `{t}`)" for t in tables) or "0"
+            sampled = list(client.query(f"SELECT {counts}",
+                                        job_config=self._session_config(session)).result())[0][0]
+            yield _BigQuerySample(self, session, [t.lower() for t in tables], int(sampled), full)
+        finally:
+            try:
+                client.query("CALL BQ.ABORT_SESSION()",
+                             job_config=self._session_config(session)).result()
+            except Exception:  # noqa: BLE001 — an unclosed session expires on its own
+                pass
 
     def execute(self, sql: str, timeout_sec: Optional[float] = None) -> ExecutionResult:
         kw = {"job_timeout_ms": int(timeout_sec * 1000)} if timeout_sec else {}
