@@ -262,3 +262,19 @@ def test_guard_reads_bigquery_sql_in_the_bigquery_dialect():
     assert sql_ast.current_dialect() == "duckdb"  # restored after the decision
     with pytest.raises(sql_ast.SQLParseError):
         sql_ast.parse_one("SELECT `status` FROM orders")  # DuckDB by default
+
+
+def test_filter_after_join_is_not_flagged_on_bigquery():
+    """BigQuery pushes the filter down itself (pushdown rewrites billed the same
+    bytes); the BigQuery eval's B10 was a false warn from this rule. HAVING
+    without an aggregate is still flagged."""
+    from cost_guard.rules.static_rules import filter_before_join
+
+    q = ("SELECT t.order_id FROM (SELECT o.order_id, o.created_at, u.state FROM orders o "
+         "JOIN users u ON u.id = o.user_id) t WHERE t.state = 'California'")
+    assert filter_before_join(q, {"engine": "duckdb"})
+    assert filter_before_join(q, {"engine": "bigquery"}) == []
+    having = "SELECT status, COUNT(*) FROM orders GROUP BY status HAVING status <> 'x'"
+    assert filter_before_join(having, {"engine": "bigquery"})
+    v = decide(q, backend=BigQueryWarehouse("proj", client=FakeClient(0)), tracer=Tracer())
+    assert not any("applied after the join" in f for f in v.findings)

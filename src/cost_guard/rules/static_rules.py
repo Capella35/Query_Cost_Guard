@@ -110,8 +110,17 @@ def no_function_on_partition_column(sql: str, metadata: dict) -> list[str]:
 
 
 def filter_before_join(sql: str, metadata: dict) -> list[str]:
-    """Filters belong before joins (and before grouping), not after."""
-    return sql_ast.filters_after_join(sql_ast.parse_one(sql))
+    """Filters belong before joins (and before grouping), not after.
+
+    Warehouse-aware: BigQuery pushes a filter written after a join inside a
+    derived table down itself — the pushdown rewrite billed the same bytes
+    on Q05, Q08 and H16 (eval/RESULTS_bq_dryrun_full.md), and the BigQuery
+    eval's B10 was a false warn from it. So on BigQuery only the HAVING
+    check remains (not measured there)."""
+    findings = sql_ast.filters_after_join(sql_ast.parse_one(sql))
+    if metadata.get("engine") == "bigquery":
+        findings = [f for f in findings if f.startswith("HAVING")]
+    return findings
 
 
 def repeated_subquery_to_cte(sql: str, metadata: dict) -> list[str]:

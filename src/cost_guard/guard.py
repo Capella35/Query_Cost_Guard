@@ -228,7 +228,8 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
 
     for rule in ALL_RULES:
         if rule in QUERY_RULES:
-            run(rule, {"table": None, "table_rows": table_rows}, rule.__name__)
+            run(rule, {"table": None, "table_rows": table_rows,
+                       "engine": getattr(backend, "name", None)}, rule.__name__)
             continue
         for t, md in table_md.items():
             run(rule, {**md, "table_rows": table_rows}, f"{rule.__name__} on '{t}'")
