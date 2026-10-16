@@ -320,6 +320,8 @@ def write_summary(ts, metrics, by_pattern, results, suite="thelook", rerun=False
     if rerun:
         lines.insert(2, "**RERUN** — this set had been run before; this result is NOT a "
                         "first, held-out measurement.\n")
+    if rerun:  # never overwrite the first, held-out result
+        out_name = out_name.replace(".md", "_rerun.md")
     (ROOT / "eval" / out_name).write_text("\n".join(lines) + "\n")
     print(f"summary -> eval/{out_name}")
 

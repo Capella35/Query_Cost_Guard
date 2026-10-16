@@ -217,7 +217,11 @@ table). The other misses were listed as known gaps before the run: no
 rewrite for EXTRACT / `FORMAT_TIMESTAMP('%Y-%m')` / `col + INTERVAL` filters
 (B21–B23, flagged as warn instead), no sort check from a dry run (B28), join
 fan-out acted on only without filters (B19). Same limit as the held-out set:
-written by the assistant that wrote the rules.
+written by the assistant that wrote the rules. **After fixes made in response
+(tuning, not held out): 28/30** on a marked rerun
+([`eval/RESULTS_bigquery_rerun.md`](eval/RESULTS_bigquery_rerun.md)); B21's
+label turned out wrong (BigQuery prunes `EXTRACT(YEAR)`, measured after the
+run) and is not changed without approval; B28 (sort check) remains.
 
 **Threshold gates + judge** (`eval/run_judge_eval.py`,
 [`eval/RESULTS_judge.md`](eval/RESULTS_judge.md)): 20 labeled proposals.
