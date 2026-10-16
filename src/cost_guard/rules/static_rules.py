@@ -15,6 +15,7 @@ import re
 
 from .. import sql_ast
 from ..column_registry import HIGH_CARDINALITY_RATIO  # noqa: F401 — distinct/rows above = near-unique
+from ..column_registry import IDENTIFIER_NAME  # one definition: ids are objects, not numbers
 
 WIDE_COLUMN_THRESHOLD = 8
 MAX_IN_LIST_ITEMS = 100  # judgment call: above this, a join is the better shape
@@ -160,7 +161,6 @@ def no_high_cardinality_groupby(sql: str, metadata: dict) -> list[str]:
     return findings
 
 
-IDENTIFIER_NAME = re.compile(r"^id$|(_id|_key|_pk|_uid|_guid|_no|_num|_code)$", re.IGNORECASE)
 IDENTIFIER_DISTINCT_RATIO = 0.95  # distinct / non-NULL rows at or above = near-unique
 IDENTIFIER_MIN_ROWS = 1_000  # below this, "every value distinct" proves nothing
 _NON_ID_TYPES = ("FLOAT", "DOUBLE", "REAL", "DECIMAL", "NUMERIC")

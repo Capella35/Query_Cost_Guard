@@ -32,6 +32,7 @@ max_age_days are treated by the Guard as unverified (rule skipped, visibly).
 """
 from __future__ import annotations
 
+import re
 import threading
 from pathlib import Path
 from dataclasses import asdict, dataclass, field, fields
@@ -78,6 +79,11 @@ class RegistryEntry:
     max_value: Optional[str] = None
 
     @property
+    def is_identifier(self) -> bool:
+        """An id/key/code column: an object, not a number (see IDENTIFIER_NAME)."""
+        return is_identifier_name(self.column_name)
+
+    @property
     def distinct_ratio(self) -> float:
         return self.distinct_count / self.total_rows if self.total_rows else 0.0
 
@@ -102,8 +108,21 @@ _RANGE_TYPES = ("TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT", "UTINYINT
                 "INT64", "NUMERIC", "BIGNUMERIC")
 
 
-def has_value_range(data_type: str) -> bool:
-    """Numeric and date/time types: where a min/max range means something."""
+# Identifier columns (ids, keys, codes) are OBJECTS, not numbers, whatever
+# their storage type: their values label things, so a min/max range, a sum or
+# an average means nothing. They keep distinct counts (joins, GROUP BY).
+IDENTIFIER_NAME = re.compile(r"^id$|(_id|_key|_pk|_uid|_guid|_no|_num|_code)$", re.IGNORECASE)
+
+
+def is_identifier_name(column: str) -> bool:
+    return IDENTIFIER_NAME.search(column) is not None
+
+
+def has_value_range(data_type: str, column: Optional[str] = None) -> bool:
+    """Numeric and date/time types — except identifier columns, which are
+    objects: where a min/max range means something."""
+    if column is not None and is_identifier_name(column):
+        return False
     return data_type.upper().startswith(_RANGE_TYPES)
 
 
@@ -133,7 +152,7 @@ def _profile_table(con, schema: str, table: str, approximate: bool, now: str,
     for c, dtype in cols:
         q = '"' + c.replace('"', '""') + '"'
         exprs += [f"{distinct}({q})" + ("" if approximate else ")"), f"COUNT({q})"]
-        if has_value_range(dtype):
+        if has_value_range(dtype, c):
             exprs += [f"CAST(MIN({q}) AS VARCHAR)", f"CAST(MAX({q}) AS VARCHAR)"]
         else:
             exprs += ["NULL", "NULL"]
@@ -362,7 +381,7 @@ class _BigQuerySource:
         for c, dtype in cols:
             q = f"`{c}`"
             exprs += [f"{distinct}({q})" + ("" if cfg["use_approximate"] else ")"), f"COUNT({q})"]
-            if has_value_range(dtype):
+            if has_value_range(dtype, c):
                 exprs += [f"CAST(MIN({q}) AS STRING)", f"CAST(MAX({q}) AS STRING)"]
             else:
                 exprs += ["NULL", "NULL"]

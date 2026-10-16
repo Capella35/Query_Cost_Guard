@@ -299,6 +299,8 @@ class DuckDBWarehouse:
         if (entry is None or entry.min_value is None or entry.max_value is None
                 or entry.age_days() > self.registry_max_age_days):
             return None
+        if entry.is_identifier:  # an object: its min/max (older registries) is no range
+            return None
         temporal = entry.data_type.upper().startswith(("DATE", "TIMESTAMP"))
 
         def num(sql_expr: str) -> str:

@@ -221,8 +221,58 @@ def test_year_and_date_cast_filters_get_a_range_estimate(thelook_wh):
         assert real_low < est.rows_processed < real_high
 
 
-def test_year_of_a_non_date_column_is_not_a_range(thelook_wh):
-    """The regex finds a date part, but the registry types user_id as an
-    integer: no range."""
-    reg = thelook_wh.column_registry()
-    assert thelook_wh._range_fraction(reg, "main", "events", '("year"(user_id) = 2023)') is None
+def _registry_for(entries):
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    return ColumnRegistry([RegistryEntry("main", t, c, dtype, 1000, 900, 0, True, now, lo, hi)
+                           for t, c, dtype, lo, hi in entries])
+
+
+def test_date_column_missing_from_the_registry_gets_no_range(thelook_wh):
+    """A date column added after the registry was last built: the plan text
+    is a perfectly good date part, but nothing confirms the column's type or
+    range, so the planner's estimate stands."""
+    reg = _registry_for([("events", "user_id", "BIGINT", None, None)])  # no created_at yet
+    assert thelook_wh._range_fraction(reg, "main", "events", '("year"(created_at) = 2023)') is None
+
+
+def test_dates_stored_as_text_get_no_range(thelook_wh):
+    """Dates kept in a VARCHAR column: DuckDB accepts CAST(col AS DATE) and
+    prints it in the plan, but the registry types the column as text — its
+    min/max are strings, not a time range."""
+    reg = _registry_for([("events", "event_day", "VARCHAR", "2019-01-01", "2024-01-31")])
+    f = "(CAST(event_day AS DATE) BETWEEN '2023-01-01'::DATE AND '2023-01-31'::DATE)"
+    assert thelook_wh._range_fraction(reg, "main", "events", f) is None
+    # the same filter on a column the registry types as a date is a range
+    reg = _registry_for([("events", "event_day", "DATE", "2019-01-01", "2024-01-31")])
+    assert thelook_wh._range_fraction(reg, "main", "events", f) is not None
+
+
+# ---- Identifier columns are objects, not numbers -----------------------------------
+
+def test_registry_stores_no_value_range_for_identifiers(tmp_path):
+    db = str(tmp_path / "w.duckdb")
+    con = duckdb.connect(db)
+    con.execute("CREATE TABLE t AS SELECT range AS id, range % 50 AS user_id, "
+                "range AS amount, TIMESTAMP '2024-01-01' + INTERVAL (range) MINUTE AS created_at "
+                "FROM range(2000)")
+    con.close()
+    build_registry(db, registry_path=str(tmp_path / "r.duckdb"))
+    from cost_guard.column_registry import load_registry
+
+    reg = load_registry(str(tmp_path / "r.duckdb"))
+    for c in ("id", "user_id"):  # objects: distinct counts yes, min/max no
+        e = reg.lookup("t", c)
+        assert e.is_identifier and e.min_value is None and e.distinct_count > 0
+    assert reg.lookup("t", "amount").min_value == "0"  # a real number keeps its range
+    assert reg.lookup("t", "created_at").min_value is not None
+
+
+def test_range_filter_on_an_identifier_is_not_a_value_range(thelook_wh):
+    """user_id < 500 says nothing about how many rows match, even when an older
+    registry still holds a min/max for it."""
+    reg = _registry_for([("orders", "user_id", "BIGINT", "1", "100000"),
+                         ("orders", "num_of_item", "BIGINT", "1", "4")])
+    assert thelook_wh._range_fraction(reg, "main", "orders", "user_id<500") is None
+    assert thelook_wh._range_fraction(reg, "main", "orders", "num_of_item<=2") is not None
