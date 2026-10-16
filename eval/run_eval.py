@@ -18,7 +18,8 @@ Metrics:
 
 --suite bigquery runs the PRE-REGISTERED BigQuery set (eval/bq_queries.yaml)
 against the TheLook copies in BigQuery (--project; dataset cost_guard_thelook)
-under eval/eval_caps_bigquery.yaml. Dry runs only; run once, like holdout.
+under eval/eval_caps_bigquery.yaml. Dry runs, plus small capped sample queries
+when a rewrite is verified; run once, like holdout.
 
 --suite regression runs the 11 inline cases on the synthetic warehouse
 (also covered by tests/test_guard_regression.py). Those were written next

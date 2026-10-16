@@ -349,7 +349,21 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
             if sql_ast.read_only_violation(cand):
                 findings.append(f"{source} rewrite is not read-only — not offered")
                 continue
-            if estimate is not None and not (source.startswith("deterministic:") and pruning_only):
+            if estimate is not None and estimate.source == "dry_run":
+                # BigQuery: dry-run bytes are exact, so a rewrite must bill FEWER
+                # bytes — "not costlier" would offer ones that save nothing
+                # (CTE/pushdown rewrites measured 0 bytes saved there).
+                try:
+                    cand_bytes = backend.estimate(cand).estimated_bytes_scanned or 0
+                except Exception as e:  # noqa: BLE001 — the warehouse rejected it: not offered
+                    findings.append(f"{source} rewrite could not be estimated — not offered "
+                                    f"({str(e).splitlines()[0][:120]})")
+                    continue
+                if cand_bytes >= (base["estimated_bytes"] or 0):
+                    findings.append(f"{source} rewrite bills no fewer bytes "
+                                    f"({cand_bytes:,}) — not offered")
+                    continue
+            elif estimate is not None and not (source.startswith("deterministic:") and pruning_only):
                 try:
                     cand_est = backend.estimate(cand)
                 except Exception as e:  # noqa: BLE001 — the warehouse rejected it: not offered
@@ -365,7 +379,9 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
                 return GuardVerdict(
                     decision="rewrite",
                     reason=("verified rewrite available ("
-                            + ("same filter in a prunable form" if source.startswith("deterministic:")
+                            + ("fewer bytes by dry run" if estimate is not None
+                               and estimate.source == "dry_run"
+                               else "same filter in a prunable form" if source.startswith("deterministic:")
                                and pruning_only else "not costlier by estimate")
                             + "): " + "; ".join(findings)),
                     rewritten_sql=cand,

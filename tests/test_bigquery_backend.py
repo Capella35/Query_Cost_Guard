@@ -353,3 +353,16 @@ def test_sampled_rejects_unsafe_table_names():
     with pytest.raises(ValueError):
         with wh.sampled(["orders`; DROP TABLE x; --"], 10):
             pass
+
+
+def test_bigquery_rewrite_must_bill_fewer_bytes():
+    """On BigQuery "not costlier" offered rewrites that save nothing (Q09's CTE
+    rewrite after verification was built); a rewrite must bill fewer bytes."""
+    wh = BigQueryWarehouse("proj", client=FakeClient(nbytes=1024**2))  # same bytes for any SQL
+    wh.sampled = None  # verification must not even be reached
+    q = ("SELECT * FROM (SELECT user_id, COUNT(*) AS c FROM orders WHERE created_at >= '2024-01-01' "
+         "GROUP BY user_id) a JOIN (SELECT user_id, COUNT(*) AS c FROM orders "
+         "WHERE created_at >= '2024-01-01' GROUP BY user_id) b USING (user_id)")
+    v = decide(q, backend=wh, tracer=Tracer())
+    assert v.decision != "rewrite"
+    assert any("bills no fewer bytes" in f for f in v.findings), v.findings
