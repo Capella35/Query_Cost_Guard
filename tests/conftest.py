@@ -29,3 +29,13 @@ def thelook_wh():
     from cost_guard.backends.duckdb_backend import DuckDBWarehouse
 
     return DuckDBWarehouse(str(db))
+
+
+@pytest.fixture(autouse=True)
+def _fresh_verification_memory():
+    """Verification results are remembered per process (guard._verify); each
+    test starts without them, so no test sees another's outcome."""
+    from cost_guard.guard import clear_verification_memory
+
+    clear_verification_memory()
+    yield

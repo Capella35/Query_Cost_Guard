@@ -350,6 +350,7 @@ Never stored: SQL text, literal values, result rows.
 | 2026-10-16 | SUM/AVG over a confirmed CATEGORY is blocked too; events.sequence_number confirmed as category | Owner's decision: sequence_number restarts at 1 in every session (a step label, half of a session+step key), so adding or averaging it is meaningless; grouping, counting and MIN/MAX (session length) stay allowed. Only a person's confirmation blocks |
 | 2026-10-16 | DuckDB backend thread-safe: one cursor per thread, locked lazy setup | A shared backend (any long-running service, e.g. an MCP server) gave 76 errors and 47 wrong verdicts in 200 checks from 8 threads; after: 0 and 0 at 8 and 32 threads. BigQuery was already safe (0/0) |
 | 2026-10-16 | BigQuery check: table metadata and a column's full size cached 10 min; dry run, metadata and the join check's dry run overlap | Measured, warm, median of 8: single table 831 → 590 ms, dated join 3,101 → 613 ms (5×), same verdicts. A check now costs about one dry run. A schema change shows up within 10 minutes |
+| 2026-10-16 | Rewrite verification: 2 s limit for long-running services, results remembered (passed and failed) in memory for 24 h; dry runs of identical SQL reused for 10 min | Live, one process: first check of a rewritable query 4.0 s (answer without the rewrite, verification continues), the same query again 0.01 s with the verified rewrite. Failed verifications are not re-run (cost). Nothing written to disk; the CLI and evals wait, so their results stay deterministic |
 
 ## 13. Open questions
 
@@ -369,10 +370,10 @@ Never stored: SQL text, literal values, result rows.
   qualifier, so `GROUP BY u.id` is checked against every joined table with
   an `id` column (B18/B19, DuckDB too).
 - Rewrite verification on BigQuery runs real queries on TEMP-table samples:
-  ~30 MiB billed (BigQuery's 10 MiB-per-table minimum, four small jobs) and
-  ~8–10 s per verified rewrite. On TheLook that costs more than the rewrite
-  saves; at real scale it does not. Too slow to sit inline in an
-  interactive check: run it in the background and attach the rewrite after?
+  ~30 MiB billed (BigQuery's 10 MiB-per-table minimum) and ~8–10 s. A
+  long-running service now caps the wait (guard.rewrite_wait_sec: 2) and
+  remembers results in memory; the one-shot CLI still waits. Open: the
+  memory is per process — several service processes each verify once.
 - The BigQuery join fan-out estimate applies filters on the partition
   column (as a dry-run share of partitions read) and stays out of decisions
   when any other filter is present; the watchdog's timeout is the backstop.

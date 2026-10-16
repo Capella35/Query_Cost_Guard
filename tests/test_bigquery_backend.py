@@ -414,10 +414,9 @@ def test_partition_fraction_caches_the_whole_column_size():
 
     client = SlowClient()
     wh = BigQueryWarehouse("proj", client=client)
-    cond = [exp.condition("created_at >= '2024-01-01'")]
-    wh.partition_fraction("orders", "created_at", cond)
-    wh.partition_fraction("orders", "created_at", cond)
-    assert client.n_query == 3  # 2 filtered dry runs + 1 whole-column dry run, cached
+    wh.partition_fraction("orders", "created_at", [exp.condition("created_at >= '2024-01-01'")])
+    wh.partition_fraction("orders", "created_at", [exp.condition("created_at >= '2024-02-01'")])
+    assert client.n_query == 3  # 2 different filtered dry runs + 1 whole-column dry run, cached
 
 
 def test_check_overlaps_the_dry_run_and_metadata_calls():
@@ -433,3 +432,12 @@ def test_check_overlaps_the_dry_run_and_metadata_calls():
     elapsed = time.perf_counter() - t0
     assert v.decision in ("allow", "warn")
     assert elapsed < 2 * delay, f"{elapsed:.2f}s: calls ran one after another"
+
+
+def test_same_sql_reuses_its_dry_run():
+    client = SlowClient()
+    wh = BigQueryWarehouse("proj", client=client)
+    a = wh.estimate("SELECT order_id FROM orders WHERE created_at >= '2024-01-01'")
+    b = wh.estimate("SELECT order_id  FROM orders\nWHERE created_at >= '2024-01-01'")  # whitespace only
+    wh.estimate("SELECT order_id FROM orders WHERE created_at >= '2024-02-01'")  # different SQL
+    assert a.estimated_bytes_scanned == b.estimated_bytes_scanned and client.n_query == 2

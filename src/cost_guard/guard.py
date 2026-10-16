@@ -18,7 +18,11 @@ module, including which rules did not run and why.
 """
 from __future__ import annotations
 
+import hashlib
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from typing import Collection, Literal, Optional
 
@@ -30,6 +34,66 @@ from .thresholds import fingerprint_query
 # BigQuery each is a network round trip (~0.2-0.9 s); one after another they
 # added up (eval: a dated join took 3.8 s before caching and overlap).
 _POOL = ThreadPoolExecutor(max_workers=16, thread_name_prefix="cost-guard")
+
+# Rewrite verification runs real (small) queries — ~8-10 s on BigQuery. A
+# long-running service can cap how long a check waits for it
+# (decide(rewrite_wait_sec=...), customer.yaml guard.rewrite_wait_sec): past
+# the limit the check answers without the rewrite and verification finishes
+# in the background. Results — passed AND failed — are remembered in this
+# process only (keyed by a hash of query + rewrite; nothing on disk), so the
+# same query checked again gets its verified rewrite at once and a failed one
+# is not re-run. A one-shot CLI process has no "later": it waits.
+VERIFY_MEMORY_TTL_SEC = 24 * 3600
+VERIFY_MEMORY_MAX = 10_000
+_VERIFY_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="cost-guard-verify")
+_verify_lock = threading.Lock()
+_verified: dict = {}  # key -> (expires_at, ComparisonOutcome)
+_pending: dict = {}  # key -> Future
+
+
+def clear_verification_memory() -> None:
+    with _verify_lock:
+        _verified.clear()
+        _pending.clear()
+
+
+def _backend_key(backend) -> tuple:
+    return tuple(str(getattr(backend, a, "")) for a in ("name", "project", "dataset", "db_path"))
+
+
+def _verify(sql: str, cand: str, backend, wait_sec: Optional[float]):
+    """(outcome, how): how is "verified" (now), "remembered" (earlier), or
+    "pending" (outcome None: still running past wait_sec)."""
+    from .tools.compare_results import compare_results
+
+    norm = lambda q: " ".join(q.split())  # noqa: E731
+    key = (_backend_key(backend), hashlib.sha256(f"{norm(sql)}\0{norm(cand)}".encode()).hexdigest())
+    dialect = sql_ast.current_dialect()
+
+    def run():
+        try:
+            with sql_ast.using_dialect(dialect):
+                res = compare_results(sql, cand, backend=backend)
+            with _verify_lock:
+                if len(_verified) >= VERIFY_MEMORY_MAX:  # drop the entry closest to expiry
+                    _verified.pop(min(_verified, key=lambda k: _verified[k][0]))
+                _verified[key] = (time.monotonic() + VERIFY_MEMORY_TTL_SEC, res)
+            return res
+        finally:
+            with _verify_lock:
+                _pending.pop(key, None)
+
+    with _verify_lock:
+        hit = _verified.get(key)
+        if hit is not None and hit[0] > time.monotonic():
+            return hit[1], "remembered"
+        fut = _pending.get(key)
+        if fut is None:
+            fut = _pending[key] = _VERIFY_POOL.submit(run)
+    try:
+        return fut.result(timeout=wait_sec), "verified"
+    except FutureTimeout:
+        return None, "pending"
 
 Decision = Literal["allow", "warn", "rewrite", "block"]
 
@@ -72,6 +136,7 @@ def decide(
     llm=None,
     bypass_reason: Optional[str] = None,
     offered_rewrites: Optional[Collection[str]] = None,
+    rewrite_wait_sec: Optional[float] = None,
 ) -> GuardVerdict:
     """Guard pipeline: read-only check -> cost estimate -> static rules
     (per referenced table, with column profiles) -> hard caps for the
@@ -84,6 +149,9 @@ def decide(
     query. The catalog fixers already stop after one round (a fixed query no
     longer trips the rule); this bounds the LLM proposer, which could keep
     offering "improvements" to its own output.
+    rewrite_wait_sec: how long to wait for a rewrite's verification; None
+    (default) waits until it is done. For long-running services, see
+    _verify (customer.yaml guard.rewrite_wait_sec).
     """
     from .config import load_customer
     from .tracing import get_tracer
@@ -94,7 +162,7 @@ def decide(
     with tracer.trace("guard.decide", workload_class=workload_class) as tid, \
             sql_ast.using_dialect(dialect):
         verdict = _decide(sql, workload_class, customer, backend, tracer, tid, llm,
-                           offered_rewrites)
+                           offered_rewrites, rewrite_wait_sec)
         verdict = _maybe_bypass(verdict, customer, bypass_reason, tracer, tid)
         if llm is not None and verdict.decision in ("warn", "block") and verdict.findings:
             with tracer.span(tid, "llm.explain_flag") as span:
@@ -125,12 +193,11 @@ def _maybe_bypass(verdict, customer, bypass_reason, tracer, tid) -> GuardVerdict
 
 
 def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
-            offered_rewrites=None) -> GuardVerdict:
+            offered_rewrites=None, rewrite_wait_sec=None) -> GuardVerdict:
     from .column_registry import registry_settings
     from .config import caps_for, partition_column
     from .rewrites import PRUNING_ONLY_FIXERS, deterministic_rewrite
     from .rules.static_rules import ALL_RULES, LARGE_TABLE_ROWS, QUERY_RULES
-    from .tools.compare_results import compare_results
 
     caps = caps_for(customer, workload_class)
     base = dict(workload_class=workload_class, caps=caps)
@@ -417,8 +484,14 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
                 if cand_est.rows_processed > rows:
                     findings.append(f"{source} rewrite is not cheaper by estimate — not offered")
                     continue
-            with tracer.span(tid, "compare_results", source=source):
-                res = compare_results(sql, cand, backend=backend)
+            with tracer.span(tid, "compare_results", source=source) as span:
+                res, how = _verify(sql, cand, backend, rewrite_wait_sec)
+                span["attrs"]["how"] = how
+            if res is None:
+                findings.append(
+                    f"{source} rewrite found and still being verified in the background "
+                    f"(over {rewrite_wait_sec:g}s) — not offered yet; check this query again to get it")
+                break
             if res.passed:
                 return GuardVerdict(
                     decision="rewrite",
@@ -431,10 +504,12 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
                     rewritten_sql=cand,
                     findings=findings,
                     rewrite_source=source,
-                    verification=res.detail,
+                    verification=res.detail + (" (remembered from an earlier check)"
+                                               if how == "remembered" else ""),
                     **base,
                 )
-            findings.append(f"{source} rewrite failed verification — not offered ({res.detail})")
+            findings.append(f"{source} rewrite failed verification — not offered ({res.detail})"
+                            + (" (remembered)" if how == "remembered" else ""))
 
     if findings:
         return GuardVerdict(decision="warn", reason="; ".join(findings), findings=findings, **base)

@@ -46,6 +46,11 @@ column_registry:
 # the caller passes a bypass reason. Every bypass is recorded in the trace.
 guard:
   allow_bypass: false
+  # Long-running services only (decide(rewrite_wait_sec=...)): wait at most this
+  # long for a rewrite's verification, then answer without it; verification
+  # finishes in the background and the same query gets the rewrite next time.
+  # The one-shot CLI and the evals wait until verification is done.
+  rewrite_wait_sec: 2
 
 # Modeled cost figures. Label every dollar number derived from this as MODELED.
 cost_model:

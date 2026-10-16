@@ -107,6 +107,12 @@ class BigQueryWarehouse:
         )
 
     def estimate(self, sql: str) -> PlanEstimate:
+        """Dry-run bytes. The same SQL within METADATA_TTL_SEC reuses the
+        answer: dashboards and reruns repeat queries, and a dry run is a
+        0.6-1.7 s round trip; data added in that window barely moves it."""
+        return self._cached(("dry_run", " ".join(sql.split())), lambda: self._dry_run(sql))
+
+    def _dry_run(self, sql: str) -> PlanEstimate:
         job = self._bq().query(sql, job_config=self._job_config(dry_run=True, use_query_cache=False))
         nbytes = int(job.total_bytes_processed or 0)
         return PlanEstimate(
