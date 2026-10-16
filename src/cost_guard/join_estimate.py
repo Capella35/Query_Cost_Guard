@@ -20,7 +20,15 @@ No estimate (None) when anything is unknown: a relation that is not a table
 (subquery, CTE, UNNEST), a missing or stale registry entry, a relation with
 no equality to the ones before it, an unqualified column in a predicate.
 
-`filtered`: some predicate in the scope is not a join-key equality (a
+Filters on a relation's PARTITION column alone are applied when the caller
+passes `partition_fraction(table, column, conditions) -> fraction | None`:
+on BigQuery that is a dry-run ratio (bytes of the partition column read
+with the filter / without), i.e. the share of partitions actually read. It
+follows the real distribution of the data — TheLook, like most data, grows
+over time, so assuming evenly spread dates would overestimate old periods
+and could block wrongly.
+
+`filtered`: some other predicate in the scope is not a join-key equality (a
 WHERE filter, or a join condition on an expression). The estimate uses
 whole-table rows and ignores those predicates, so it can be far too high:
 Q28 estimates 8.6M, really 85k (1.75M even without its date filters). The
@@ -59,9 +67,12 @@ class JoinEstimate:
         return self.rows / self.largest_input if self.largest_input else 0.0
 
 
-def join_estimates(tree: exp.Expression, registry, max_age_days: float) -> list[JoinEstimate]:
+def join_estimates(tree: exp.Expression, registry, max_age_days: float,
+                   partition_columns: Optional[dict[str, str]] = None,
+                   partition_fraction=None) -> list[JoinEstimate]:
     """One estimate per SELECT scope with two or more relations, where every
     input is known. See the module docstring."""
+    pcols = {k.lower(): v.lower() for k, v in (partition_columns or {}).items() if v}
     if registry is None:
         return []
     ctes = sql_ast.cte_bodies(tree)
@@ -69,7 +80,8 @@ def join_estimates(tree: exp.Expression, registry, max_age_days: float) -> list[
     for select in tree.find_all(exp.Select):
         rels = sql_ast._relations(select)
         if len(rels) >= 2:
-            est = _scope_estimate(select, rels, ctes, registry, max_age_days)
+            est = _scope_estimate(select, rels, ctes, registry, max_age_days, pcols,
+                                  partition_fraction)
             if est is not None:
                 out.append(est)
     return out
@@ -79,7 +91,9 @@ def _fresh(entry, max_age_days):
     return entry is not None and entry.age_days() <= max_age_days
 
 
-def _scope_estimate(select, rels, ctes, registry, max_age_days) -> Optional[JoinEstimate]:
+def _scope_estimate(select, rels, ctes, registry, max_age_days, pcols=None,
+                    partition_fraction=None) -> Optional[JoinEstimate]:
+    pcols = pcols or {}
     aliases: list[str] = []
     tables: list[str] = []
     table_rows: list[int] = []
@@ -110,6 +124,7 @@ def _scope_estimate(select, rels, ctes, registry, max_age_days) -> Optional[Join
             using[idx] = [c.name.lower() for c in join.args["using"]]
     edges: list[tuple[int, str, int, str]] = []  # (rel i, col, rel j, col)
     filtered = False
+    on_partition: dict[int, list[exp.Expression]] = {}  # rel -> its partition-column filters
     for p in preds:
         cols = list(p.find_all(exp.Column))
         if any(not c.table for c in cols):
@@ -122,7 +137,27 @@ def _scope_estimate(select, rels, ctes, registry, max_age_days) -> Optional[Join
             if ia is not None and ib is not None and ia != ib:
                 edges.append((ia, a.name.lower(), ib, b.name.lower()))
                 continue
+        owners = {c.table.lower() for c in cols}
+        if (partition_fraction is not None and len(owners) == 1 and owners <= set(aliases)
+                and not any(isinstance(n, exp.Subquery) for n in p.walk())):
+            i = aliases.index(next(iter(owners)))
+            if all(c.name.lower() == pcols.get(tables[i]) for c in cols):
+                on_partition.setdefault(i, []).append(p)
+                continue
         filtered = True
+
+    for i, conds in on_partition.items():
+        bare = []
+        for p in conds:
+            q = p.copy()
+            for c in q.find_all(exp.Column):
+                c.set("table", None)
+            bare.append(q)
+        frac = partition_fraction(tables[i], pcols[tables[i]], bare)
+        if frac is None:
+            filtered = True
+        else:
+            table_rows[i] = max(1, round(table_rows[i] * min(1.0, frac)))
 
     rows = table_rows[0]
     keys_used: list[str] = []

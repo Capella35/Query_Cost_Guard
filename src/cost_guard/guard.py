@@ -286,7 +286,10 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
 
         with tracer.span(tid, "join_estimate") as span:
             try:
-                ests = join_estimates(tree, backend.column_registry(), max_age_days)
+                ests = join_estimates(
+                    tree, backend.column_registry(), max_age_days,
+                    partition_columns={t: md.get("partition_column") for t, md in table_md.items()},
+                    partition_fraction=getattr(backend, "partition_fraction", None))
             except Exception as e:  # noqa: BLE001 — no estimate = no join check
                 ests, span["attrs"]["error"] = [], str(e)[:200]
             span["attrs"]["estimates"] = [

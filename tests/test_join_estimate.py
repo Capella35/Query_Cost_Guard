@@ -89,7 +89,7 @@ def test_stale_registry_gives_no_estimate():
 
 # ---- Guard on BigQuery --------------------------------------------------------
 
-def _bq_warehouse(tmp_path):
+def _bq_warehouse(tmp_path, pruned_share=0.01):
     pytest.importorskip("google.cloud.bigquery")
     from types import SimpleNamespace
 
@@ -97,7 +97,9 @@ def _bq_warehouse(tmp_path):
 
     class Client:
         def query(self, sql, job_config=None):
-            return SimpleNamespace(total_bytes_processed=10 * 1024**2)
+            # a filter on the partition column reads `pruned_share` of the partitions
+            share = pruned_share if "WHERE" in sql and "created_at" in sql.split("WHERE")[-1] else 1
+            return SimpleNamespace(total_bytes_processed=int(10 * 1024**2 * share))
 
         def get_table(self, ref):
             name = ref.rsplit(".", 1)[-1]
@@ -158,3 +160,43 @@ def test_group_by_qualified_column_is_judged_on_its_own_table(tmp_path):
                backend=_bq_warehouse(tmp_path), tracer=Tracer())
     near_unique = [f for f in v.findings if "near-unique" in f]
     assert near_unique and all("in 'users'" in f for f in near_unique), v.findings
+
+
+def test_partition_filter_scales_the_join_by_the_measured_fraction(tmp_path):
+    """A date filter on the partition column is applied as the share of
+    partitions a dry run reads (B19's shape): 30% of events still fans out
+    past the cap, 1% does not."""
+    from cost_guard.guard import decide
+    from cost_guard.tracing import Tracer
+
+    q = ("SELECT a.user_id FROM events a JOIN events b ON a.user_id = b.user_id "
+         "WHERE a.created_at >= TIMESTAMP '2023-12-01' AND b.created_at >= TIMESTAMP '2023-12-01'")
+    wide = decide(q, backend=_bq_warehouse(tmp_path, pruned_share=0.3), tracer=Tracer())
+    narrow = decide(q, backend=_bq_warehouse(tmp_path, pruned_share=0.01), tracer=Tracer())
+    assert wide.decision == "block" and "join fan-out" in wide.reason
+    assert narrow.decision != "block"
+
+
+def test_other_filters_still_keep_the_estimate_out_of_decisions(tmp_path):
+    from cost_guard.guard import decide
+    from cost_guard.tracing import Tracer
+
+    v = decide("SELECT a.user_id FROM events a JOIN events b ON a.user_id = b.user_id "
+               "WHERE a.event_type = 'purchase'",
+               backend=_bq_warehouse(tmp_path, pruned_share=1), tracer=Tracer())
+    assert "join fan-out" not in v.reason
+
+
+def test_partition_fraction_hook_unit():
+    seen = []
+
+    def frac(table, column, conds):
+        seen.append((table, column, [c.sql() for c in conds]))
+        return 0.5
+
+    [e] = join_estimates(sql_ast.parse_one(
+        "SELECT 1 FROM events a JOIN users u ON a.user_id = u.id "
+        "WHERE a.created_at >= '2023-01-01'"), _registry(), 35,
+        partition_columns={"events": "created_at"}, partition_fraction=frac)
+    assert seen == [("events", "created_at", ["created_at >= '2023-01-01'"])]
+    assert not e.filtered and e.rows == 1_200_000 * 100_000 // 100_000

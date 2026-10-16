@@ -95,8 +95,13 @@ rows produced). The Guard estimates join output from the registry:
 rows(L) × rows(R) / max(distinct keys), per SELECT scope of tables joined on
 column equalities. It blocks over the rows cap only when the join fans out
 (≥2× its largest input, so lookup joins never count) and nothing else
-filters the inputs. Filtered estimates use whole-table rows and can run far
-high (Q28: 8.6M estimated, 85k real), so they are only traced. Unknown
+filters the inputs. Filters on the partition column are applied as the
+share of partitions a dry run reads (it follows the real, growing
+distribution of the data; evenly spread dates would overestimate old periods
+and could block wrongly). Other filters leave the estimate far high (Q28:
+8.6M estimated, 85k real), so those estimates are only traced. On skewed
+join keys the formula runs low (57× on a `city` join), so it misses blocks
+rather than making wrong ones. Unknown
 inputs (subqueries, CTEs, missing registry entries) give no estimate.
 
 **Estimate corrections** (`plan_estimate.py`) use the column registry where
@@ -357,10 +362,13 @@ Never stored: SQL text, literal values, result rows.
   ~8–10 s per verified rewrite. On TheLook that costs more than the rewrite
   saves; at real scale it does not. Too slow to sit inline in an
   interactive check: run it in the background and attach the rewrite after?
-- The BigQuery join fan-out estimate acts only on unfiltered joins. A
-  filtered fan-out (or one whose join condition uses an expression) is only
-  traced; the watchdog's timeout is the backstop. Applying filter
-  selectivity from the registry's min/max could lift that.
+- The BigQuery join fan-out estimate applies filters on the partition
+  column (as a dry-run share of partitions read) and stays out of decisions
+  when any other filter is present; the watchdog's timeout is the backstop.
+  It assumes evenly spread join keys, so on skewed keys it runs LOW: a
+  users-events join on `city` for one month estimated 221k rows, really
+  12.6M (57×). That only ever misses a block, but it misses often. Most
+  common values per column in the registry would fix most of it.
 - Count rows read instead of rows out of scans? It would make "scanned"
   honest, but it shifts every estimate and possibly verdicts.
 - Are rewrites worth offering on DuckDB, where most measure ~1× (pushdown

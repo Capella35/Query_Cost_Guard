@@ -109,6 +109,21 @@ class BigQueryWarehouse:
             detail=f"dry run: {nbytes:,} bytes processed",
         )
 
+    def partition_fraction(self, table: str, column: str, conditions) -> Optional[float]:
+        """Share of `table`'s partitions that `conditions` (predicates on its
+        partition column, as sqlglot expressions) read: dry-run bytes of the
+        column with the filter / without. Free; None when unknown."""
+        if not (_IDENT.match(table) and _IDENT.match(column)):
+            return None
+        where = " AND ".join(f"({c.sql(dialect='bigquery')})" for c in conditions)
+        src = f"`{self.project}.{self.dataset}.{table}`"
+        try:
+            part = self.estimate(f"SELECT `{column}` FROM {src} WHERE {where}").estimated_bytes_scanned
+            whole = self.estimate(f"SELECT `{column}` FROM {src}").estimated_bytes_scanned
+        except Exception:  # noqa: BLE001 — unknown fraction: the estimate stays "filtered"
+            return None
+        return part / whole if whole else None
+
     def run_sample(self, sql: str, max_rows: int = 10_000) -> str:
         raise NotImplementedError("use sampled(); not built for BigQuery yet")
 
