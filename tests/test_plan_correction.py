@@ -89,13 +89,6 @@ def test_window_query_no_longer_falsely_blocked(synthetic_wh):
     assert v.decision != "block" and v.estimate_source == "explain+corrected"
 
 
-def test_real_blowups_still_block(synthetic_wh):
-    for q in (SELF_JOIN, "SELECT * FROM users, orders"):
-        est = synthetic_wh.estimate(q)
-        assert est.source == "explain" and not est.corrections
-        assert decide(q, backend=synthetic_wh, tracer=Tracer()).decision == "block"
-
-
 def test_without_registry_window_still_blocks(tmp_path):
     db = str(tmp_path / "noreg.duckdb")
     con = duckdb.connect(db)

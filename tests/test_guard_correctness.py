@@ -61,7 +61,8 @@ def test_unqualified_join_predicate_is_not_flagged():
 ])
 def test_fanout_exceeds_cap(synthetic_wh, sql):
     est = synthetic_wh.estimate(sql)
-    assert est.source == "explain"
+    # A real blow-up: the registry correction (plan_estimate) leaves it alone.
+    assert est.source == "explain" and not est.corrections
     # The old table-sum measure stays under the 5M interactive cap...
     table_sum = sum(synthetic_wh.row_count(t) for t in sql_ast.referenced_tables(sql_ast.parse_one(sql)))
     assert table_sum < 5_000_000

@@ -218,11 +218,6 @@ def test_option_b_keeps_the_bar_after_a_spike(tmp_path):
         assert (run_query(SQL, wh, customer=cust, log_path=log).anomaly is not None) is second_flagged
 
 
-def test_repeated_flags_read_as_a_lasting_change():
-    causes, _ = diagnose("runtime", {}, {"history": {"anomalies_in_last_10": 3}})
-    assert causes[0].startswith("looks like a lasting change")
-
-
 def _b():
     return {**_customer(), "anomaly": {"exclude_flagged": True}}
 

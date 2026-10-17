@@ -364,7 +364,7 @@ static-only vs static+adaptive.
 │   └── rules/static_rules.py
 ├── scripts/                  # TheLook loader, column registry build, BigQuery schema check
 ├── demo/                     # synthetic warehouse, 4-beat CLI demo, Streamlit UI
-└── tests/                    # 350 tests (TheLook-dependent ones skip without data/)
+└── tests/                    # 346 tests (TheLook-dependent ones skip without data/)
 ```
 
 ## Quickstart (local-first, no cloud)

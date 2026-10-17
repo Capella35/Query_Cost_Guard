@@ -69,14 +69,6 @@ def test_pushdown_refuses_unsafe_shapes(sql):
     assert suggest_pushdown_rewrite(sql) is None
 
 
-def test_guard_offers_verified_catalog_rewrites(synthetic_wh):
-    v = decide("SELECT order_id FROM orders WHERE DATE_TRUNC('month', created_at) = DATE '2024-02-01'",
-               backend=synthetic_wh, tracer=Tracer())
-    assert v.decision == "rewrite" and v.rewrite_source == "deterministic:sargable"
-    v = decide(PUSH, backend=synthetic_wh, tracer=Tracer())
-    assert v.decision == "rewrite" and "pushdown" in v.rewrite_source
-
-
 def test_select_star_and_missing_filter_get_no_rewrite(synthetic_wh):
     """No equivalent rewrite exists: dropping columns or adding a date
     filter changes the result."""

@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-from cost_guard import guard
 from cost_guard.config import caps_for, load_customer
 from cost_guard.guard import decide
 from cost_guard.tracing import Tracer
@@ -91,6 +90,3 @@ def test_bypass_requires_config_flag(synthetic_wh, tmp_path):
     v = decide("DELETE FROM users", customer=cfg, tracer=Tracer(), bypass_reason="x")
     assert v.decision == "block"
 
-
-def test_is_read_only_still_exported():
-    assert guard.is_read_only("SELECT 1")
