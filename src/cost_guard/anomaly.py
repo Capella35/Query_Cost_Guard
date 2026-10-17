@@ -101,13 +101,19 @@ def _hours(ts: str, t0: datetime) -> float:
 
 
 def check_run(log: list[dict], fingerprint: str, ts: str, size: Optional[int],
-              duration_sec: float, min_runs: int = COLD_START_RUNS) -> Optional[Anomaly]:
+              duration_sec: float, min_runs: int = COLD_START_RUNS,
+              exclude_flagged: bool = False) -> Optional[Anomaly]:
     """Check one completed run against the completed runs of its shape that
     came before it in the log (records with `anomaly_size`; older records
-    without it have no comparable size and are left out). Drift-aware rule."""
+    without it have no comparable size and are left out). Drift-aware rule.
+
+    exclude_flagged: leave runs that were themselves flagged out of the
+    history ("option B"), so one spike does not raise the bar for the next.
+    False keeps every run ("option A", what the batch replays evaluated)."""
     hist = sorted((r for r in log if r["fingerprint"] == fingerprint and r["status"] == "completed"
                    and r.get("duration_sec") is not None and r.get("anomaly_size") is not None
-                   and r["ts"] < ts), key=lambda r: r["ts"])
+                   and r["ts"] < ts and not (exclude_flagged and r.get("anomaly"))),
+                  key=lambda r: r["ts"])
     if len(hist) < min_runs:
         return None
     stats = FingerprintStats(fingerprint, [(r["anomaly_size"], r["duration_sec"]) for r in hist])
