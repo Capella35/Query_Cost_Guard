@@ -69,6 +69,10 @@ HEADER = """\
 #             each; a join that multiplies rows past 5,000,000 output rows
 #             (a low-cardinality or many-to-many non-key join), with or
 #             without filters; SUM/AVG of an identifier.
+#             EXCEPTION (Guard, 2026-10-17): the fan-out estimate applies
+#             date-partition filters and `col = value` / `col IN (values)`;
+#             under any other filter (a range, LIKE, a join on an expression)
+#             it is only traced, so such a fan-out is a known miss.
 #   rewrite - an EQUIVALENT query (same rows and columns) that bills FEWER
 #             bytes and can be produced mechanically. BigQuery prunes through
 #             CAST(col AS DATE), DATE(col), TIMESTAMP_TRUNC, DATE_TRUNC(DATE(col)),

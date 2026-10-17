@@ -67,7 +67,8 @@ Owner's order (2026-10-17). When two goals conflict, the higher one wins:
 ### When the Guard and the policy disagree
 
 The policy is the labeling guide (the header of `eval/bq_validation.yaml`,
-repeated in `eval/bq_test.yaml`) plus the decision log (section 12). A code
+written by `scripts/build_bq_validation.py`; the copy in `eval/bq_test.yaml`
+stays as registered) plus the decision log (section 12). A code
 choice that departs from the guide is written into the guide as an
 exception, never only in a docstring. For each disagreement:
 
@@ -146,8 +147,13 @@ column equalities. It blocks over the rows cap only when the join fans out
 filters the inputs. Filters on the partition column are applied as the
 share of partitions a dry run reads (it follows the real, growing
 distribution of the data; evenly spread dates would overestimate old periods
-and could block wrongly). Other filters leave the estimate far high (Q28:
-8.6M estimated, 85k real), so those estimates are only traced. On skewed
+and could block wrongly). Filters `col = value` and `col IN (values)` on a
+profiled column keep 1/distinct (n/distinct) of the rows, a uniform
+assumption (T08: `country = 'Japan'` estimated 1/16, ~2.5% real; ~333M rows
+estimated, 122.5M real, measured live). Other filters (ranges, LIKE, a join
+on an expression) leave the estimate far high (Q28: 8.6M estimated, 85k
+real), so those estimates are only traced; the labeling guide lists this as
+an exception. On skewed
 join keys the formula runs low (57× on a `city` join), so it misses blocks
 rather than making wrong ones. Unknown
 inputs (subqueries, CTEs, missing registry entries) give no estimate.

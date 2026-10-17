@@ -28,13 +28,21 @@ follows the real distribution of the data — TheLook, like most data, grows
 over time, so assuming evenly spread dates would overestimate old periods
 and could block wrongly.
 
-`filtered`: some other predicate in the scope is not a join-key equality (a
-WHERE filter, or a join condition on an expression). The estimate uses
-whole-table rows and ignores those predicates, so it can be far too high:
-Q28 estimates 8.6M, really 85k (1.75M even without its date filters). The
-Guard therefore acts only on UNFILTERED estimates (block over the rows cap
-when the join fans out) and only traces filtered ones. That choice was made
-after seeing Q28 on the 30-query tuning set. On skewed keys the formula runs
+Filters `t.col = literal` and `t.col IN (literals)` on a column the registry
+profiled are applied as the share of rows they keep, 1/ndv (n/ndv for an IN
+list, at most 1) — a uniform assumption: a rare value is overestimated and a
+common one underestimated (T08: country = 'Japan' is 1/16 by ndv, ~2.5% in
+the data; 312M estimated, 122.5M real, both far past the cap). Added
+2026-10-17 after the test set's T08 (a filtered fan-out let through).
+
+`filtered`: some other predicate in the scope is neither a join-key equality
+nor one of the filters above (a range, LIKE, a join condition on an
+expression). The estimate ignores those, so it can be far too high: Q28
+estimates 8.6M, really 85k (its join has `b.sequence_number =
+a.sequence_number + 1`). The Guard therefore acts only on UNFILTERED
+estimates (block over the rows cap when the join fans out) and only traces
+filtered ones. That choice was made after seeing Q28 on the 30-query tuning
+set. On skewed keys the formula runs
 LOW (Q13: ~74M estimated, ~100M real), so a block is not an artefact of
 overestimating.
 """
@@ -58,7 +66,7 @@ FANOUT_MIN_RATIO = 2.0
 class JoinEstimate:
     rows: int  # estimated output rows of the scope's joins
     largest_input: int  # rows of the largest table joined
-    filtered: bool  # a non-key predicate exists: rows is an upper-side figure
+    filtered: bool  # a predicate it can't apply exists: rows is an upper-side figure
     tables: list[str]
     keys: list[str]  # the equalities used, e.g. "a.user_id = b.user_id"
 
@@ -85,6 +93,39 @@ def join_estimates(tree: exp.Expression, registry, max_age_days: float,
             if est is not None:
                 out.append(est)
     return out
+
+
+def _is_value(node) -> bool:
+    if isinstance(node, exp.Neg):
+        node = node.this
+    return isinstance(node, (exp.Literal, exp.Boolean))
+
+
+def _value_filter_share(p, aliases, tables, ndv):
+    """(relation, share of rows kept) for `t.col = literal` or
+    `t.col IN (literals)` on a profiled column; None for anything else."""
+    if isinstance(p, exp.EQ):
+        col, val = p.this, p.expression
+        if isinstance(val, exp.Column):
+            col, val = val, col
+        if not (isinstance(col, exp.Column) and _is_value(val)):
+            return None
+        n = 1
+    elif isinstance(p, exp.In) and not p.args.get("query") and not p.args.get("unnest"):
+        col, vals = p.this, p.expressions
+        if not (isinstance(col, exp.Column) and vals and all(_is_value(v) for v in vals)):
+            return None
+        n = len({v.sql() for v in vals})
+    else:
+        return None
+    alias = col.table.lower()
+    if alias not in aliases:
+        return None
+    i = aliases.index(alias)
+    d = ndv(i, col.name.lower())
+    if not d:
+        return None
+    return i, min(1.0, n / d)
 
 
 def _fresh(entry, max_age_days):
@@ -125,6 +166,7 @@ def _scope_estimate(select, rels, ctes, registry, max_age_days, pcols=None,
     edges: list[tuple[int, str, int, str]] = []  # (rel i, col, rel j, col)
     filtered = False
     on_partition: dict[int, list[exp.Expression]] = {}  # rel -> its partition-column filters
+    value_share: dict[int, float] = {}  # rel -> share of rows its value filters keep
     for p in preds:
         cols = list(p.find_all(exp.Column))
         if any(not c.table for c in cols):
@@ -144,7 +186,15 @@ def _scope_estimate(select, rels, ctes, registry, max_age_days, pcols=None,
             if all(c.name.lower() == pcols.get(tables[i]) for c in cols):
                 on_partition.setdefault(i, []).append(p)
                 continue
+        sel = _value_filter_share(p, aliases, tables, ndv)
+        if sel is not None:
+            i, share = sel
+            value_share[i] = value_share.get(i, 1.0) * share
+            continue
         filtered = True
+
+    for i, share in value_share.items():
+        table_rows[i] = max(1, round(table_rows[i] * share))
 
     for i, conds in on_partition.items():
         bare = []

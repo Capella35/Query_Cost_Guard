@@ -236,3 +236,49 @@ def test_cartesian_reads_a_view_row_count_from_the_registry(tmp_path):
     wh = BigQueryWarehouse("p", "ds", client=Client(), registry_path=str(tmp_path / "none"))
     wh._registry, wh._registry_loaded = None, True  # no registry: not provably tiny
     assert decide(q, backend=wh, tracer=Tracer()).decision == "block"
+
+
+def _users_registry():
+    return ColumnRegistry([
+        RegistryEntry("ds", "users", c, "STRING", 100_000, ndv, 0, True, NOW)
+        for c, ndv in (("id", 100_000), ("gender", 2), ("country", 16))
+    ], default_schema="ds")
+
+
+def test_value_filters_are_applied_as_a_share_of_rows():
+    """T08: an equality or IN filter on a profiled column keeps 1/ndv (n/ndv)
+    of the rows, so the estimate is no longer 'filtered' (traced only)."""
+    reg = _users_registry()
+    (e,) = _est("SELECT a.id, b.id FROM users a JOIN users b ON a.gender = b.gender "
+                "WHERE a.country = 'Japan'", reg)
+    assert not e.filtered and e.rows == 100_000 // 16 * 100_000 // 2  # 312.5M
+    (e,) = _est("SELECT a.id, b.id FROM users a JOIN users b ON a.gender = b.gender "
+                "WHERE a.country IN ('Japan', 'Spain') AND b.country = 'Japan'", reg)
+    assert not e.filtered and e.rows == 12_500 * 6_250 // 2
+    (e,) = _est("SELECT a.id FROM users a JOIN users b ON a.gender = b.gender "
+                "WHERE a.country LIKE 'J%'", reg)  # not a value filter: still traced only
+    assert e.filtered
+
+
+def test_guard_blocks_filtered_fanout_with_a_value_filter(tmp_path):
+    from types import SimpleNamespace
+
+    from cost_guard.backends.bigquery_backend import BigQueryWarehouse
+    from cost_guard.guard import decide
+    from cost_guard.tracing import Tracer
+
+    class Client:
+        def query(self, sql, job_config=None):
+            return SimpleNamespace(total_bytes_processed=2 * 1024**2)
+
+        def get_table(self, ref):
+            return SimpleNamespace(
+                table_type="TABLE", num_rows=100_000, num_bytes=0,
+                schema=[SimpleNamespace(name=c) for c in ("id", "gender", "country")],
+                time_partitioning=None, range_partitioning=None, clustering_fields=None)
+
+    wh = BigQueryWarehouse("p", "ds", client=Client(), registry_path=str(tmp_path / "none"))
+    wh._registry, wh._registry_loaded = _users_registry(), True
+    v = decide("SELECT a.id, b.id AS same_gender_user FROM users a JOIN users b "
+               "ON a.gender = b.gender WHERE a.country = 'Japan'", backend=wh, tracer=Tracer())
+    assert v.decision == "block" and "join fan-out" in v.reason
