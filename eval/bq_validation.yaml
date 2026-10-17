@@ -848,8 +848,12 @@ queries:
   sql: SELECT id, user_id, event_type, created_at FROM events WHERE created_at >= TIMESTAMP '2023-01-01' AND created_at
     < TIMESTAMP '2024-01-01' ORDER BY created_at
   bytes_mib: 7.82
-  guard_action_expected: warn
-  role: bad
+  label_from:
+    label: warn
+    reason: 'sort with no LIMIT is cheap at this size: live runs 2026-10-17 sorting 284,310 rows took 9.3 slot-s
+      / 1.4 s vs 7.0 slot-s / 0.6 s with LIMIT 1000, same 10 MiB billed'
+  guard_action_expected: allow
+  role: good
 - id: B29
   source: eval/bq_queries.yaml
   pattern: redundant_distinct
