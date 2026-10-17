@@ -117,6 +117,12 @@ class RunOutcome:
 BIGQUERY_MIN_BILLED_PER_TABLE = 10 * 1024**2  # BigQuery bills at least 10 MiB per table read
 
 
+def bigquery_billed(bytes_read: int, tables: int) -> int:
+    """What BigQuery on-demand bills for a query reading `bytes_read` from
+    `tables` tables: at least 10 MiB per table."""
+    return max(int(bytes_read or 0), BIGQUERY_MIN_BILLED_PER_TABLE * max(1, tables))
+
+
 @dataclass
 class ShapeVolume:
     """A query shape's executed runs in the recent window (volume rule)."""

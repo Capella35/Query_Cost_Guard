@@ -276,7 +276,7 @@ def _volume_finding(estimate, tables, volume, customer, backend):
     per table; logged runs count what they billed (a cache hit bills 0).
     Returns (finding, None), (None, why skipped) or (None, None)."""
     from .config import volume_settings
-    from .runtime import BIGQUERY_MIN_BILLED_PER_TABLE
+    from .runtime import bigquery_billed
 
     cfg = volume_settings(customer)
     price = ((customer or {}).get("cost_model") or {}).get("price_per_tb_usd")
@@ -286,7 +286,7 @@ def _volume_finding(estimate, tables, volume, customer, backend):
     runs = volume.runs + 1
     if runs < cfg["min_runs"]:
         return None, None
-    this_run = max(est, BIGQUERY_MIN_BILLED_PER_TABLE * max(1, len(tables)))
+    this_run = bigquery_billed(est, len(tables))
     usd = (volume.bytes + this_run) / 1024**4 * price
     if usd < cfg["warn_usd_per_window"]:
         return None, None
@@ -600,16 +600,25 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
             if estimate is not None and estimate.source == "dry_run":
                 # BigQuery: dry-run bytes are exact, so a rewrite must bill FEWER
                 # bytes — "not costlier" would offer ones that save nothing
-                # (CTE/pushdown rewrites measured 0 bytes saved there).
+                # (CTE/pushdown rewrites measured 0 bytes saved there). Billed,
+                # not read: BigQuery bills at least 10 MiB per table, so on a
+                # small table a rewrite that reads less saves nothing, and its
+                # sampled verification (~30 MiB billed) would cost more (T15).
                 try:
                     cand_bytes = backend.estimate(cand).estimated_bytes_scanned or 0
                 except Exception as e:  # noqa: BLE001 — the warehouse rejected it: not offered
                     findings.append(f"{source} rewrite could not be estimated — not offered "
                                     f"({str(e).splitlines()[0][:120]})")
                     continue
-                if cand_bytes >= (base["estimated_bytes"] or 0):
-                    findings.append(f"{source} rewrite bills no fewer bytes "
-                                    f"({cand_bytes:,}) — not offered")
+                from .runtime import bigquery_billed
+
+                cand_billed = bigquery_billed(cand_bytes, len(sql_ast.referenced_tables(
+                    sql_ast.parse_one(cand))))
+                orig_billed = bigquery_billed(base["estimated_bytes"] or 0, len(tables))
+                if cand_billed >= orig_billed:
+                    findings.append(f"{source} rewrite bills no fewer bytes ({cand_billed:,} vs "
+                                    f"{orig_billed:,}, BigQuery's 10 MiB-per-table minimum included)"
+                                    " — not offered")
                     continue
             elif estimate is not None and not (source.startswith("deterministic:") and pruning_only):
                 try:
@@ -633,7 +642,7 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
                 return GuardVerdict(
                     decision="rewrite",
                     reason=("verified rewrite available ("
-                            + ("fewer bytes by dry run" if estimate is not None
+                            + ("fewer bytes billed by dry run" if estimate is not None
                                and estimate.source == "dry_run"
                                else "same filter in a prunable form" if source.startswith("deterministic:")
                                and pruning_only else "not costlier by estimate")

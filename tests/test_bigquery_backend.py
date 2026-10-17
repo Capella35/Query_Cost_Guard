@@ -557,3 +557,33 @@ def test_bytes_ceiling_refusal_is_reported():
 
     res = BigQueryWarehouse("proj", client=Refusing(0)).execute("SELECT 1", max_bytes_billed=1000)
     assert res.status == "error" and res.detail.startswith("bytes ceiling:")
+
+
+@pytest.mark.parametrize("orig_mib, cand_mib, offered", [
+    (5, 1, False),     # both bill the 10 MiB minimum: saves nothing (T15 on TheLook)
+    (12, 9, True),     # 12 MiB billed vs 10 MiB
+    (500, 40, True),
+])
+def test_rewrite_gate_compares_billed_bytes(monkeypatch, orig_mib, cand_mib, offered):
+    """A rewrite is offered only when it BILLS fewer bytes: BigQuery bills at
+    least 10 MiB per table, so reading less from a small table saves nothing,
+    and the sampled verification (~30 MiB billed) would cost more."""
+    import importlib
+
+    cr = importlib.import_module("cost_guard.tools.compare_results")  # the module, not the re-export
+
+    class Client(FakeClient):
+        def query(self, sql, job_config=None):
+            self.configs.append(job_config)
+            mib = orig_mib if "FORMAT_TIMESTAMP" in sql or "STRFTIME" in sql else cand_mib
+            return SimpleNamespace(total_bytes_processed=mib * 1024**2, result=lambda timeout=None: [])
+
+    monkeypatch.setattr(cr, "compare_results",
+                        lambda a, b, backend=None: SimpleNamespace(passed=True, detail="same rows"))
+    wh = BigQueryWarehouse("proj", client=Client(0))
+    q = (f"SELECT id FROM orders WHERE FORMAT_TIMESTAMP('%Y-%m', created_at) = '2024-01' "
+         f"AND status <> 'gate-{orig_mib}-{cand_mib}'")  # unique: no remembered verification
+    v = decide(q, backend=wh, tracer=Tracer())
+    assert (v.decision == "rewrite") == offered, (v.decision, v.findings)
+    if not offered:
+        assert any("bills no fewer bytes" in f and "10 MiB-per-table minimum" in f for f in v.findings)
