@@ -203,3 +203,21 @@ def test_trend_is_not_extrapolated_across_a_long_gap(tmp_path):
     later = (T0 + timedelta(days=16)).isoformat()
     assert check_run(read_log(log), fp, later, 1000, 1.0).kind == "runtime"
     assert check_run(read_log(log), fp, later, 1000, 0.105) is None
+
+
+def test_option_b_keeps_the_bar_after_a_spike(tmp_path):
+    # Option A: the first 1.5 s spike joins the history and hides the second.
+    # Option B (customer.yaml anomaly.exclude_flagged): the second is caught too.
+    wh = FakeWarehouse()
+    wh.next_duration = 1.5
+    for option, second_flagged in ((False, False), (True, True)):
+        log = tmp_path / f"log_{option}.jsonl"
+        _seed(log)
+        cust = {**_customer(), "anomaly": {"exclude_flagged": option}}
+        assert run_query(SQL, wh, customer=cust, log_path=log).anomaly is not None
+        assert (run_query(SQL, wh, customer=cust, log_path=log).anomaly is not None) is second_flagged
+
+
+def test_repeated_flags_read_as_a_lasting_change():
+    causes, _ = diagnose("runtime", {}, {"history": {"anomalies_in_last_10": 3}})
+    assert causes[0].startswith("looks like a lasting change")

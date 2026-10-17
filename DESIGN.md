@@ -369,17 +369,16 @@ query history drops the caller id and the keyed query hash.
 | 2026-10-17 | Anomaly rule moved into the package and run after every completed run; flags are logged, never enforced | It was the replays' only; one copy now (dev-seed replay output identical before/after). A flag starts the report-only agent |
 | 2026-10-17 | Drift trend extrapolated at most one history span past the last run (production wrapper only) | Found by test: 25 runs in 25 minutes, then a run 16 days later — the trend "expected" 8×10⁷ s and nothing could be flagged. The replays had continuous traffic, so their numbers are unchanged |
 | 2026-10-17 | Investigator agent: fixed steps over the MCP tools + deterministic diagnosis; one optional Claude summary (off by default, capped per day in its own usage log, cached by facts) | Owner's choice: frugal and testable; a model-chosen tool loop costs more per investigation and is harder to test. Reports hold no SQL, literals or rule findings (two rules quote the query) |
+| 2026-10-17 | Option B: flagged runs stay out of their shape's anomaly history (`customer.yaml anomaly.exclude_flagged: true`); repeated flags read as "a lasting change — a person accepts it" | Owner's choice, checked on a pre-registered online replay (held-out seeds 201–220, run once; `eval/RESULTS_replay_online.md`): catch 0.532 → 0.701, false positives 0.019 → 0.041. B catches a lasting regression to the end (creep 107/114 vs 82) but flags every recurrence of a legitimate new pattern (new_peak 40 vs 13 of 360) until a person accepts it |
 | 2026-10-17 | Report: block follow-through (fixed and ran / retried unchanged / still blocked / bypassed / nothing) | Measures whether hints help; counts runs only (checks are not logged) |
 | 2026-10-16 | Rewrite verification: 2 s limit for long-running services, results remembered (passed and failed) in memory for 24 h; dry runs of identical SQL reused for 10 min | Live, one process: first check of a rewritable query 4.0 s (answer without the rewrite, verification continues), the same query again 0.01 s with the verified rewrite. Failed verifications are not re-run (cost). Nothing written to disk; the CLI and evals wait, so their results stay deterministic |
 
 ## 13. Open questions
 
-- Anomaly history includes earlier flagged runs (as the replays evaluated):
-  the drift baseline's bar is the largest past residual, so one spike raises
-  the bar for the next (a second 1.5 s run after a first one is not
-  flagged). Excluding flagged runs would keep the bar, but a shape that
-  changed for good would then flag until the cooldown/daily cap stop it.
-  Needs a decision and a replay check.
+- Accepting a new normal under option B: nothing yet lets a person mark a
+  shape's flagged runs as normal, so a lasting legitimate change keeps
+  being flagged (the cooldown and daily cap bound the investigations, not
+  the flags). Needs an accept step (e.g. a CLI command per shape id).
 - Registry distinct counts (HyperLogLog) measured against exact counts on
   TheLook (47 columns with >= 1,000 values, 2026-10-17): -17% to +16%, not
   the ~2% assumed. `plan_estimate.HLL_MARGIN` (1.05) is narrower than that,

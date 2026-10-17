@@ -52,6 +52,16 @@ guard:
   # The one-shot CLI and the evals wait until verification is done.
   rewrite_wait_sec: 2
 
+# Adaptive anomaly rule (anomaly.py): a completed run far above its own shape's
+# history is flagged (logged, investigated; never blocked).
+anomaly:
+  # Owner's choice 2026-10-17 (option B): flagged runs stay OUT of the shape's
+  # history, so one spike does not raise the bar for the next. Measured on the
+  # online replay (eval/RESULTS_replay_online.md, held-out, run once): catch
+  # 0.532 -> 0.701, false positives 0.019 -> 0.041 — a legitimate new pattern
+  # is flagged every time it recurs until a person accepts it. false = option A.
+  exclude_flagged: true
+
 # Report-only investigator agent (investigator_agent.py): started when a
 # completed run breaks its query shape's own history. It writes reports to
 # runs/investigations/ and changes nothing.

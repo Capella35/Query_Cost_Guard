@@ -283,7 +283,8 @@ def _history_facts(hist: Optional[dict], trigger: dict, trigger_ts: str) -> Opti
             "this_run_size_x_median": ratio(trigger.get("size"), med_size),
             "this_run_duration_x_median": ratio(trigger.get("duration_sec"), med_dur),
             "killed_last_20": sum(1 for r in before[-20:] if r["status"] == "killed"),
-            "earlier_anomalies": sum(1 for r in before if r.get("anomaly"))}
+            "earlier_anomalies": sum(1 for r in before if r.get("anomaly")),
+            "anomalies_in_last_10": sum(1 for r in before[-10:] if r.get("anomaly"))}
 
 
 def diagnose(kind: str, trigger: dict, facts: dict) -> tuple[list[str], list[str]]:
@@ -323,6 +324,12 @@ def diagnose(kind: str, trigger: dict, facts: dict) -> tuple[list[str], list[str
         if hist.get("killed_last_20"):
             causes.append(f"{hist['killed_last_20']} of the shape's last 20 runs were killed at "
                           "the runtime limit — the slowdown may be ongoing")
+    if hist.get("anomalies_in_last_10", 0) >= 2:
+        # With flagged runs left out of the baseline (customer.yaml
+        # anomaly.exclude_flagged), a new normal keeps being flagged.
+        causes.insert(0, f"looks like a lasting change, not a one-off: {hist['anomalies_in_last_10'] + 1} "
+                         "of this shape's last 11 runs were flagged — if this is the new normal, a "
+                         "person should accept it (flagged runs stay out of the baseline until then)")
     if facts.get("past_incidents"):
         causes.append(f"recurring: {facts['past_incidents']} earlier incident(s) for this shape")
         nxt.append("a recurring shape may need a structural fix (a summary table, partitioning, "
