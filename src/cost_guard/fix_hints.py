@@ -20,6 +20,12 @@ inputs as the verdict (table metadata, the estimate, the column registry):
       DuckDB it does not change rows processed (said so);
     - a looser workload class, as information only: callers cannot raise their
       own class (the deployment sets it).
+  information, before the fixes
+    - on BigQuery, a query that already has a LIMIT: LIMIT does not reduce the
+      bytes billed (columns and partitions are read in full before rows are
+      cut; dry runs on TheLook: SELECT * FROM events 367.2 MiB with or without
+      LIMIT 10), so the analyst's attention goes to the date filter and the
+      column list instead.
 
 Nothing here rewrites the query: every fix changes the answer, so a person (or
 the calling AI) chooses. Hints only appear on blocks; warns already carry
@@ -180,6 +186,14 @@ def fix_hints(sql: str, verdict, table_md: dict[str, dict], registry, customer: 
             impact_text = ""
         fixes.append(_hint("fix", f"filter {t}.{pcol} to the dates you need{impact_text}",
                            changes_result=True, table=t, estimated_after=impact))
+
+    if bytes_capped and tree.find(exp.Limit) is not None:
+        where = next((f"{t}.{p}" for _, t, p in unfiltered if p), None)
+        fixes.insert(0, _hint(
+            "info", "LIMIT doesn't reduce bytes billed on BigQuery: the columns and partitions "
+            "are read in full before rows are cut. To cut the cost, "
+            + (f"filter {where} to the dates you need or " if where else "")
+            + "list fewer columns", changes_result=False))
 
     stars = sql_ast.star_tables(tree)
     if stars:

@@ -441,3 +441,23 @@ def test_same_sql_reuses_its_dry_run():
     b = wh.estimate("SELECT order_id  FROM orders\nWHERE created_at >= '2024-01-01'")  # whitespace only
     wh.estimate("SELECT order_id FROM orders WHERE created_at >= '2024-02-01'")  # different SQL
     assert a.estimated_bytes_scanned == b.estimated_bytes_scanned and client.n_query == 2
+
+
+def test_blocked_query_with_limit_gets_the_limit_hint():
+    # 500 GB dry run: over the 200 GB interactive cap, with or without the LIMIT.
+    wh = BigQueryWarehouse("proj", client=FakeClient(nbytes=500 * 1024**3))
+    v = decide("SELECT * FROM orders LIMIT 10", backend=wh, tracer=Tracer())
+    assert v.decision == "block"
+    hint = next(h for h in v.fix_hints if "LIMIT" in h["text"])
+    assert hint["kind"] == "info" and hint["changes_result"] is False
+    assert "doesn't reduce bytes billed" in hint["text"] and "orders.created_at" in hint["text"]
+    # It comes before the fixes, and only when the query has a LIMIT.
+    kinds = [h["kind"] for h in v.fix_hints]
+    assert kinds.index("info") < kinds.index("fix")
+    plain = decide("SELECT * FROM orders", backend=wh, tracer=Tracer())
+    assert not any("LIMIT" in h["text"] for h in plain.fix_hints)
+
+
+def test_no_limit_hint_on_duckdb(synthetic_wh):
+    v = decide("SELECT * FROM users, orders LIMIT 10", backend=synthetic_wh, tracer=Tracer())
+    assert v.decision == "block" and not any("LIMIT" in h["text"] for h in v.fix_hints)
