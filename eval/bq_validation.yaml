@@ -1,0 +1,875 @@
+# BigQuery VALIDATION set: every existing eval query (Q, H, B), BigQuery SQL,
+# labeled for BigQuery. Built by scripts/build_bq_validation.py — edit the
+# script, not this file. Tune on this set and rerun it freely; the held-out
+# TEST set is eval/bq_test.yaml (run once).
+#
+# Provenance: Q01-Q30 (tuning set) and H01-H30 (held-out, run once on DuckDB
+# 2026-10-14) were written in DuckDB SQL and adapted with to_bigquery();
+# B01-B30 were written for BigQuery (run once 2026-10-16). All 90 have been
+# run, so none is held out any more. `label_from` records a label changed for
+# BigQuery, with the measured reason. `bytes_mib` is the dry run at build time.
+#
+# CAPS: eval/eval_caps_bigquery.yaml, interactive — 100 MiB bytes, 5,000,000
+# rows for join fan-out, 300 s runtime.
+#
+# LABELING GUIDE v2 (BigQuery; 2026-10-17). Precedence: block > rewrite > warn > allow.
+#   block   - a non-read-only statement; bytes read above the cap (100 MiB);
+#             a cartesian product of two tables with more than 1,000 rows
+#             each; a join that multiplies rows past 5,000,000 output rows
+#             (a low-cardinality or many-to-many non-key join), with or
+#             without filters; SUM/AVG of an identifier.
+#   rewrite - an EQUIVALENT query (same rows and columns) that bills FEWER
+#             bytes and can be produced mechanically. BigQuery prunes through
+#             CAST(col AS DATE), DATE(col), TIMESTAMP_TRUNC, DATE_TRUNC(DATE(col)),
+#             TIMESTAMP_ADD/SUB, DATE_ADD/SUB, EXTRACT(YEAR|DATE) and
+#             FORMAT_TIMESTAMP('%Y-%m-%d', col): NOT rewrite cases. EXTRACT of
+#             other parts, FORMAT_TIMESTAMP('%Y-%m', ...) and col + INTERVAL
+#             defeat pruning; with an equivalent range, that is a rewrite case.
+#   warn    - wasteful, risky or wrong with no equivalent fix, under the cap:
+#             SELECT * reading >= 50% of the cap (column count does not
+#             matter); no filter on the partition column of a partitioned
+#             table (orders, order_items, events, inventory_items); GROUP BY a
+#             unique key; a sort of 100k+ rows with no LIMIT; DISTINCT that
+#             cannot remove anything; an IN list of more than 100 values;
+#             NOT IN over a column that can be NULL.
+#   allow   - under the cap and none of the above. A filter after a join
+#             inside a derived table, a CTE or subquery used twice, and HAVING
+#             on a group column are NOT waste on BigQuery (measured: same
+#             bytes), so on their own they are allow.
+# role: good = labeled allow; bad = anything else.
+# Not testable here: the SELECT * runtime clause (needs 20 logged runs).
+
+queries:
+- id: Q01
+  source: eval/eval_queries.yaml
+  pattern: select_star_wide_table
+  description: SELECT * on a wide table when only a few columns are needed.
+  sql: SELECT * FROM users WHERE country = 'Brasil' AND traffic_source = 'Search' LIMIT 200
+  bytes_mib: 18.9
+  guard_action_expected: allow
+  role: good
+- id: Q02
+  source: eval/eval_queries.yaml
+  pattern: result_changing_rewrite
+  description: A cheaper rewrite exists but would CHANGE the result (e.g. dropping a filter that looks redundant
+    but isn't).
+  sql: SELECT user_id, SUM(sale_price) AS lifetime_value FROM order_items WHERE status = 'Complete' GROUP BY user_id
+  bytes_mib: 4.54
+  guard_action_expected: warn
+  role: bad
+- id: Q03
+  source: eval/eval_queries.yaml
+  pattern: missing_partition_filter
+  description: Query against a partitioned table with no partition filter.
+  sql: SELECT event_type, COUNT(*) AS n FROM events GROUP BY event_type
+  bytes_mib: 20.62
+  guard_action_expected: warn
+  role: bad
+- id: Q04
+  source: eval/eval_queries.yaml
+  pattern: optimizer_may_fix
+  description: Anti-pattern the BigQuery optimizer may already fix (e.g. redundant DISTINCT).
+  sql: SELECT DISTINCT status, COUNT(*) AS n FROM orders WHERE created_at >= CAST('2023-07-01' AS TIMESTAMP) AND
+    created_at < CAST('2023-10-01' AS TIMESTAMP) GROUP BY status
+  bytes_mib: 0.06
+  guard_action_expected: warn
+  role: bad
+- id: Q05
+  source: eval/eval_queries.yaml
+  pattern: optimizer_may_fix
+  description: Anti-pattern the BigQuery optimizer may already fix (e.g. predicate pushdown it already does).
+  sql: SELECT t.order_id, t.country FROM (SELECT o.order_id, o.created_at, u.country FROM orders AS o JOIN users
+    AS u ON u.id = o.user_id) AS t WHERE t.created_at >= CAST('2023-06-01' AS TIMESTAMP) AND t.country = 'Japan'
+  bytes_mib: 4.01
+  label_from:
+    label: rewrite
+    reason: 'filter after a join inside a derived table: BigQuery pushes it down; the pushdown rewrite billed the
+      same bytes (eval/RESULTS_bq_dryrun_full.md)'
+  guard_action_expected: allow
+  role: good
+- id: Q06
+  source: eval/eval_queries.yaml
+  pattern: cross_join_without_condition
+  description: Explicit CROSS JOIN with no join condition.
+  sql: SELECT u.id AS user_id, p.id AS product_id FROM users AS u CROSS JOIN products AS p
+  bytes_mib: 0.99
+  guard_action_expected: block
+  role: bad
+- id: Q07
+  source: eval/eval_queries.yaml
+  pattern: function_on_partition_column
+  description: Function wrapped around the partition column in a filter (kills partition pruning).
+  sql: SELECT order_id, status FROM orders WHERE TIMESTAMP_TRUNC(created_at, MONTH) = CAST('2023-06-01' AS TIMESTAMP)
+  bytes_mib: 0.03
+  label_from:
+    label: rewrite
+    reason: 'TIMESTAMP_TRUNC(created_at, MONTH) = X prunes on BigQuery: 0.03 MiB; no fewer-bytes equivalent'
+  guard_action_expected: allow
+  role: good
+- id: Q08
+  source: eval/eval_queries.yaml
+  pattern: filter_after_join
+  description: Filter applied after the join instead of before it.
+  sql: SELECT j.order_id, j.sale_price FROM (SELECT oi.order_id, oi.sale_price, oi.created_at, p.category FROM order_items
+    AS oi JOIN products AS p ON p.id = oi.product_id) AS j WHERE j.category = 'Jeans' AND j.created_at >= CAST('2023-01-01'
+    AS TIMESTAMP)
+  bytes_mib: 5.23
+  label_from:
+    label: rewrite
+    reason: 'filter after a join inside a derived table: BigQuery pushes it down; the pushdown rewrite billed the
+      same bytes (eval/RESULTS_bq_dryrun_full.md)'
+  guard_action_expected: allow
+  role: good
+- id: Q09
+  source: eval/eval_queries.yaml
+  pattern: repeated_subquery_no_cte
+  description: Identical subquery repeated instead of a CTE.
+  sql: SELECT a.user_id, a.spend, b.spend AS spend_again FROM (SELECT user_id, SUM(sale_price) AS spend FROM order_items
+    WHERE created_at >= CAST('2023-01-01' AS TIMESTAMP) GROUP BY user_id) AS a JOIN (SELECT user_id, SUM(sale_price)
+    AS spend FROM order_items WHERE created_at >= CAST('2023-01-01' AS TIMESTAMP) GROUP BY user_id) AS b ON a.user_id
+    = b.user_id ORDER BY a.spend DESC, a.user_id NULLS LAST LIMIT 100
+  bytes_mib: 3.5
+  label_from:
+    label: rewrite
+    reason: 'repeated subquery: the CTE rewrite billed the same bytes on BigQuery (eval/RESULTS_bq_dryrun_full.md);
+      no fewer-bytes equivalent'
+  guard_action_expected: allow
+  role: good
+- id: Q10
+  source: eval/eval_queries.yaml
+  pattern: unbounded_full_scan
+  description: No date filter on a large event table — full scan.
+  sql: SELECT traffic_source, COUNT(*) AS n FROM events GROUP BY traffic_source
+  bytes_mib: 18.97
+  guard_action_expected: warn
+  role: bad
+- id: Q11
+  source: eval/eval_queries.yaml
+  pattern: select_star_wide_table
+  description: SELECT * on the wide events table.
+  sql: SELECT * FROM events WHERE created_at >= CAST('2024-01-01' AS TIMESTAMP)
+  bytes_mib: 207.38
+  label_from:
+    label: allow
+    reason: reads 207.4 MiB, over the 100 MiB cap (the copy has data to 2026, so 'since 2024' is most of events)
+  guard_action_expected: block
+  role: bad
+- id: Q12
+  source: eval/eval_queries.yaml
+  pattern: implicit_comma_join_no_condition
+  description: Comma join with a missing join condition (accidental cross product).
+  sql: SELECT o.order_id, u.email FROM orders AS o, users AS u WHERE o.status = 'Shipped'
+  bytes_mib: 4.68
+  guard_action_expected: block
+  role: bad
+- id: Q13
+  source: eval/eval_queries.yaml
+  pattern: runaway_join
+  description: DELIBERATE runaway join — tests long-running thresholds and the runtime watchdog. Set caps first.
+  sql: SELECT a.user_id, COUNT(*) AS pairs FROM events AS a JOIN events AS b ON a.user_id = b.user_id GROUP BY a.user_id
+  bytes_mib: 9.92
+  guard_action_expected: block
+  role: bad
+- id: Q14
+  source: eval/eval_queries.yaml
+  pattern: result_changing_rewrite
+  description: A cheaper rewrite exists but would CHANGE the result.
+  sql: SELECT user_id, MAX(created_at) AS last_seen FROM events WHERE NOT user_id IS NULL GROUP BY user_id
+  bytes_mib: 28.43
+  guard_action_expected: warn
+  role: bad
+- id: Q15
+  source: eval/eval_queries.yaml
+  pattern: optimizer_may_fix
+  description: Anti-pattern the BigQuery optimizer may already fix.
+  sql: SELECT status, COUNT(*) AS n FROM orders WHERE created_at >= CAST('2023-01-01' AS TIMESTAMP) GROUP BY status
+    HAVING status <> 'Cancelled'
+  bytes_mib: 1.84
+  label_from:
+    label: warn
+    reason: 'HAVING on a group column bills the same as the WHERE form (Q30): 1.84 MiB each, so no waste on BigQuery'
+  guard_action_expected: allow
+  role: good
+- id: Q16
+  source: eval/eval_queries.yaml
+  pattern: clean
+  description: Same intent as Q01 with an explicit column list.
+  sql: SELECT id, first_name, last_name, email FROM users WHERE country = 'Brasil' AND traffic_source = 'Search'
+    LIMIT 200
+  bytes_mib: 6.52
+  guard_action_expected: allow
+  role: good
+- id: Q17
+  source: eval/eval_queries.yaml
+  pattern: clean
+  description: Same intent as Q02, written so no rewrite is needed.
+  sql: SELECT user_id, SUM(sale_price) AS spend_2023 FROM order_items WHERE status = 'Complete' AND created_at >=
+    CAST('2023-01-01' AS TIMESTAMP) AND created_at < CAST('2024-01-01' AS TIMESTAMP) GROUP BY user_id
+  bytes_mib: 0.64
+  guard_action_expected: allow
+  role: good
+- id: Q18
+  source: eval/eval_queries.yaml
+  pattern: clean
+  description: Same intent as Q03 with a partition filter present.
+  sql: SELECT event_type, COUNT(*) AS n FROM events WHERE created_at >= CAST('2023-12-01' AS TIMESTAMP) AND created_at
+    < CAST('2024-01-01' AS TIMESTAMP) GROUP BY event_type
+  bytes_mib: 0.43
+  guard_action_expected: allow
+  role: good
+- id: Q19
+  source: eval/eval_queries.yaml
+  pattern: clean
+  description: Same intent as Q04 without the redundant operation.
+  sql: SELECT status, COUNT(*) AS n FROM orders WHERE created_at >= CAST('2023-07-01' AS TIMESTAMP) AND created_at
+    < CAST('2023-10-01' AS TIMESTAMP) GROUP BY status
+  bytes_mib: 0.06
+  guard_action_expected: allow
+  role: good
+- id: Q20
+  source: eval/eval_queries.yaml
+  pattern: clean
+  description: Same intent as Q05 in optimizer-friendly form.
+  sql: SELECT o.order_id, u.country FROM orders AS o JOIN users AS u ON u.id = o.user_id WHERE o.created_at >= CAST('2023-06-01'
+    AS TIMESTAMP) AND u.country = 'Japan'
+  bytes_mib: 4.01
+  guard_action_expected: allow
+  role: good
+- id: Q21
+  source: eval/eval_queries.yaml
+  pattern: clean
+  description: Same intent as Q06 with a proper join condition.
+  sql: SELECT p.name AS product, dc.name AS distribution_center FROM products AS p JOIN distribution_centers AS
+    dc ON dc.id = p.distribution_center_id
+  bytes_mib: 1.63
+  guard_action_expected: allow
+  role: good
+- id: Q22
+  source: eval/eval_queries.yaml
+  pattern: clean
+  description: Same intent as Q07 with a sargable partition filter.
+  sql: SELECT order_id, status FROM orders WHERE created_at >= CAST('2023-06-01' AS TIMESTAMP) AND created_at <
+    CAST('2023-07-01' AS TIMESTAMP)
+  bytes_mib: 0.03
+  guard_action_expected: allow
+  role: good
+- id: Q23
+  source: eval/eval_queries.yaml
+  pattern: clean
+  description: Same intent as Q08 with the filter before the join.
+  sql: SELECT oi.order_id, oi.sale_price FROM order_items AS oi JOIN (SELECT id FROM products WHERE category = 'Jeans')
+    AS p ON p.id = oi.product_id WHERE oi.created_at >= CAST('2023-01-01' AS TIMESTAMP)
+  bytes_mib: 5.23
+  guard_action_expected: allow
+  role: good
+- id: Q24
+  source: eval/eval_queries.yaml
+  pattern: clean
+  description: Same intent as Q09 using a CTE.
+  sql: WITH spend AS (SELECT user_id, SUM(sale_price) AS spend FROM order_items WHERE created_at >= CAST('2023-01-01'
+    AS TIMESTAMP) GROUP BY user_id) SELECT a.user_id, a.spend, b.spend AS spend_again FROM spend AS a JOIN spend
+    AS b ON a.user_id = b.user_id ORDER BY a.spend DESC, a.user_id NULLS LAST LIMIT 100
+  bytes_mib: 3.5
+  guard_action_expected: allow
+  role: good
+- id: Q25
+  source: eval/eval_queries.yaml
+  pattern: clean
+  description: Same intent as Q10 with a bounded date filter.
+  sql: SELECT traffic_source, COUNT(*) AS n FROM events WHERE created_at >= CAST('2023-12-01' AS TIMESTAMP) AND
+    created_at < CAST('2024-01-01' AS TIMESTAMP) GROUP BY traffic_source
+  bytes_mib: 0.41
+  guard_action_expected: allow
+  role: good
+- id: Q26
+  source: eval/eval_queries.yaml
+  pattern: clean
+  description: Same intent as Q11 with an explicit column list.
+  sql: SELECT id, user_id, session_id, event_type, uri FROM events WHERE created_at >= CAST('2024-01-01' AS TIMESTAMP)
+  bytes_mib: 117.25
+  label_from:
+    label: allow
+    reason: reads 117.3 MiB, over the 100 MiB cap (same reason as Q11)
+  guard_action_expected: block
+  role: bad
+- id: Q27
+  source: eval/eval_queries.yaml
+  pattern: clean
+  description: Same intent as Q12 with an explicit JOIN ... ON.
+  sql: SELECT o.order_id, u.email FROM orders AS o JOIN users AS u ON u.id = o.user_id WHERE o.status = 'Shipped'
+    AND o.created_at >= CAST('2023-12-01' AS TIMESTAMP)
+  bytes_mib: 6.31
+  guard_action_expected: allow
+  role: good
+- id: Q28
+  source: eval/eval_queries.yaml
+  pattern: clean
+  description: Same intent as Q13 with the join constrained (bounded, filtered).
+  sql: SELECT a.event_type AS step, b.event_type AS next_step, COUNT(*) AS n FROM events AS a JOIN events AS b ON
+    a.session_id = b.session_id AND b.sequence_number = a.sequence_number + 1 WHERE a.created_at >= CAST('2024-01-01'
+    AS TIMESTAMP) AND b.created_at >= CAST('2024-01-01' AS TIMESTAMP) GROUP BY 1, 2
+  bytes_mib: 81.46
+  guard_action_expected: allow
+  role: good
+- id: Q29
+  source: eval/eval_queries.yaml
+  pattern: clean
+  description: Same intent as Q14, written so no rewrite is needed.
+  sql: SELECT user_id, MAX(created_at) AS last_seen FROM events WHERE NOT user_id IS NULL AND created_at >= CAST('2023-10-01'
+    AS TIMESTAMP) GROUP BY user_id
+  bytes_mib: 18.53
+  guard_action_expected: allow
+  role: good
+- id: Q30
+  source: eval/eval_queries.yaml
+  pattern: clean
+  description: Same intent as Q15 in optimizer-friendly form.
+  sql: SELECT status, COUNT(*) AS n FROM orders WHERE created_at >= CAST('2023-01-01' AS TIMESTAMP) AND status <>
+    'Cancelled' GROUP BY status
+  bytes_mib: 1.84
+  guard_action_expected: allow
+  role: good
+- id: H01
+  source: eval/holdout_queries.yaml
+  pattern: clean
+  description: Monthly completed revenue for Q4 2023.
+  sql: SELECT TIMESTAMP_TRUNC(created_at, MONTH) AS month, SUM(sale_price) AS revenue FROM order_items WHERE status
+    = 'Complete' AND created_at >= CAST('2023-10-01' AS TIMESTAMP) AND created_at < CAST('2024-01-01' AS TIMESTAMP)
+    GROUP BY 1 ORDER BY 1 NULLS LAST
+  bytes_mib: 0.14
+  guard_action_expected: allow
+  role: good
+- id: H02
+  source: eval/holdout_queries.yaml
+  pattern: clean
+  description: Top 10 brands by 2023 revenue.
+  sql: SELECT p.brand, SUM(oi.sale_price) AS revenue FROM order_items AS oi JOIN products AS p ON p.id = oi.product_id
+    WHERE oi.created_at >= CAST('2023-01-01' AS TIMESTAMP) AND oi.created_at < CAST('2024-01-01' AS TIMESTAMP) GROUP
+    BY p.brand ORDER BY revenue DESC LIMIT 10
+  bytes_mib: 1.0
+  guard_action_expected: allow
+  role: good
+- id: H03
+  source: eval/holdout_queries.yaml
+  pattern: clean
+  description: Customers per country (users is not a partitioned table).
+  sql: SELECT country, COUNT(*) AS customers FROM users GROUP BY country ORDER BY customers DESC
+  bytes_mib: 0.95
+  guard_action_expected: allow
+  role: good
+- id: H04
+  source: eval/holdout_queries.yaml
+  pattern: unbounded_full_scan
+  description: Browser share across all events, no date filter.
+  sql: SELECT browser, COUNT(*) AS n FROM events GROUP BY browser
+  bytes_mib: 18.39
+  guard_action_expected: warn
+  role: bad
+- id: H05
+  source: eval/holdout_queries.yaml
+  pattern: runaway_join
+  description: Event-pair funnel by joining every event of a user to every other, all history.
+  sql: SELECT a.event_type AS first_type, b.event_type AS second_type, COUNT(*) AS n FROM events AS a JOIN events
+    AS b ON a.user_id = b.user_id GROUP BY 1, 2
+  bytes_mib: 30.54
+  guard_action_expected: block
+  role: bad
+- id: H06
+  source: eval/holdout_queries.yaml
+  pattern: function_on_partition_column
+  description: Black Friday orders via a cast on the date column.
+  sql: SELECT order_id, status FROM orders WHERE CAST(created_at AS DATE) = CAST('2023-11-24' AS DATE)
+  bytes_mib: 0.0
+  label_from:
+    label: rewrite
+    reason: 'CAST(created_at AS DATE) = X prunes on BigQuery: 0.0 MiB; no fewer-bytes equivalent'
+  guard_action_expected: allow
+  role: good
+- id: H07
+  source: eval/holdout_queries.yaml
+  pattern: select_star_wide_table
+  description: All columns of December order items.
+  sql: SELECT * FROM order_items WHERE created_at >= CAST('2023-12-01' AS TIMESTAMP)
+  bytes_mib: 9.69
+  guard_action_expected: allow
+  role: good
+- id: H08
+  source: eval/holdout_queries.yaml
+  pattern: clean
+  description: Point lookup of one customer.
+  sql: SELECT id, email FROM users WHERE id = 4242
+  bytes_mib: 3.25
+  guard_action_expected: allow
+  role: good
+- id: H09
+  source: eval/holdout_queries.yaml
+  pattern: implicit_comma_join_no_condition
+  description: Emails paired with Jeans products, join condition forgotten.
+  sql: SELECT u.email, p.name FROM users AS u, products AS p WHERE p.category = 'Jeans'
+  bytes_mib: 4.24
+  guard_action_expected: block
+  role: bad
+- id: H10
+  source: eval/holdout_queries.yaml
+  pattern: clean
+  description: Sell-through rate per distribution center for 2023+ inventory.
+  sql: SELECT product_distribution_center_id, COUNTIF(NOT sold_at IS NULL) * 1.0 / COUNT(*) AS sell_through FROM
+    inventory_items WHERE created_at >= CAST('2023-01-01' AS TIMESTAMP) GROUP BY 1
+  bytes_mib: 6.1
+  guard_action_expected: allow
+  role: good
+- id: H11
+  source: eval/holdout_queries.yaml
+  pattern: sum_of_identifier
+  description: Summing order IDs per status.
+  sql: SELECT status, SUM(order_id) AS total FROM orders WHERE created_at >= CAST('2023-01-01' AS TIMESTAMP) GROUP
+    BY status
+  bytes_mib: 2.65
+  guard_action_expected: block
+  role: bad
+- id: H12
+  source: eval/holdout_queries.yaml
+  pattern: clean
+  description: Average items per order by gender, 2023.
+  sql: SELECT gender, AVG(num_of_item) AS avg_items FROM orders WHERE created_at >= CAST('2023-01-01' AS TIMESTAMP)
+    AND created_at < CAST('2024-01-01' AS TIMESTAMP) GROUP BY gender
+  bytes_mib: 0.25
+  guard_action_expected: allow
+  role: good
+- id: H13
+  source: eval/holdout_queries.yaml
+  pattern: clean
+  description: Events per session in January 2024 (session length).
+  sql: SELECT session_id, COUNT(*) AS events_in_session FROM events WHERE created_at >= CAST('2024-01-01' AS TIMESTAMP)
+    GROUP BY session_id
+  bytes_mib: 59.55
+  guard_action_expected: allow
+  role: good
+- id: H14
+  source: eval/holdout_queries.yaml
+  pattern: unbounded_sort
+  description: Every event sorted newest first, no filter and no LIMIT.
+  sql: SELECT id, uri, created_at FROM events ORDER BY created_at DESC
+  bytes_mib: 87.66
+  guard_action_expected: warn
+  role: bad
+- id: H15
+  source: eval/holdout_queries.yaml
+  pattern: clean
+  description: Latest 100 events since mid-January 2024.
+  sql: SELECT id, uri FROM events WHERE created_at >= CAST('2024-01-15' AS TIMESTAMP) ORDER BY created_at DESC LIMIT
+    100
+  bytes_mib: 48.78
+  guard_action_expected: allow
+  role: good
+- id: H16
+  source: eval/holdout_queries.yaml
+  pattern: filter_after_join
+  description: California orders since September, filtered outside the joined subquery.
+  sql: SELECT x.order_id FROM (SELECT o.order_id, o.created_at, u.state FROM orders AS o JOIN users AS u ON u.id
+    = o.user_id) AS x WHERE x.state = 'California' AND x.created_at >= CAST('2023-09-01' AS TIMESTAMP)
+  bytes_mib: 4.08
+  label_from:
+    label: rewrite
+    reason: 'filter after a join inside a derived table: BigQuery pushes it down; the pushdown rewrite billed the
+      same bytes (eval/RESULTS_bq_dryrun_full.md)'
+  guard_action_expected: allow
+  role: good
+- id: H17
+  source: eval/holdout_queries.yaml
+  pattern: clean
+  description: Cancel-page events since 2023, substring match.
+  sql: SELECT COUNT(*) AS n FROM events WHERE uri LIKE '%cancel%' AND created_at >= CAST('2023-01-01' AS TIMESTAMP)
+  bytes_mib: 46.97
+  guard_action_expected: allow
+  role: good
+- id: H18
+  source: eval/holdout_queries.yaml
+  pattern: not_in_with_nulls
+  description: Users who never generated an event — NOT IN over a column with NULLs, all history.
+  sql: SELECT COUNT(*) AS n FROM users WHERE NOT id IN (SELECT user_id FROM events)
+  bytes_mib: 10.68
+  guard_action_expected: warn
+  role: bad
+- id: H19
+  source: eval/holdout_queries.yaml
+  pattern: unbounded_full_scan
+  description: Last order date per Japanese customer via a correlated subquery over all orders.
+  sql: SELECT u.id, (SELECT MAX(o.created_at) FROM orders AS o WHERE o.user_id = u.id) AS last_order FROM users
+    AS u WHERE u.country = 'Japan'
+  bytes_mib: 3.63
+  guard_action_expected: warn
+  role: bad
+- id: H20
+  source: eval/holdout_queries.yaml
+  pattern: non_read_only
+  description: Cleanup attempt from an analyst session.
+  sql: DELETE FROM events WHERE created_at < CAST('2020-01-01' AS TIMESTAMP)
+  bytes_mib: 0.0
+  guard_action_expected: block
+  role: bad
+- id: H21
+  source: eval/holdout_queries.yaml
+  pattern: clean
+  description: 2024 row counts for orders and order items side by side.
+  sql: SELECT 'orders' AS src, COUNT(*) AS n FROM orders WHERE created_at >= CAST('2024-01-01' AS TIMESTAMP) UNION
+    ALL SELECT 'order_items', COUNT(*) FROM order_items WHERE created_at >= CAST('2024-01-01' AS TIMESTAMP)
+  bytes_mib: 1.72
+  guard_action_expected: allow
+  role: good
+- id: H22
+  source: eval/holdout_queries.yaml
+  pattern: unbounded_full_scan
+  description: Distinct users across all events ever.
+  sql: SELECT COUNT(DISTINCT user_id) AS users FROM events
+  bytes_mib: 9.92
+  guard_action_expected: warn
+  role: bad
+- id: H23
+  source: eval/holdout_queries.yaml
+  pattern: clean
+  description: Average margin by department and category.
+  sql: SELECT department, category, ROUND(AVG(retail_price - cost), 2) AS avg_margin FROM products GROUP BY 1, 2
+  bytes_mib: 0.96
+  guard_action_expected: allow
+  role: good
+- id: H24
+  source: eval/holdout_queries.yaml
+  pattern: runaway_join
+  description: Events joined to users on traffic source instead of user id.
+  sql: SELECT e.session_id, u.email FROM events AS e JOIN users AS u ON u.traffic_source = e.traffic_source
+  bytes_mib: 110.16
+  guard_action_expected: block
+  role: bad
+- id: H25
+  source: eval/holdout_queries.yaml
+  pattern: function_on_partition_column
+  description: December 2023 event count via DATE_TRUNC on the date column.
+  sql: SELECT COUNT(*) AS n FROM events WHERE TIMESTAMP_TRUNC(created_at, MONTH) = CAST('2023-12-01' AS TIMESTAMP)
+  bytes_mib: 0.2
+  label_from:
+    label: rewrite
+    reason: 'TIMESTAMP_TRUNC(created_at, MONTH) = X prunes on BigQuery: 0.2 MiB; no fewer-bytes equivalent'
+  guard_action_expected: allow
+  role: good
+- id: H26
+  source: eval/holdout_queries.yaml
+  pattern: clean
+  description: Order sequence number per customer since July 2023.
+  sql: SELECT user_id, order_id, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at NULLS LAST) AS nth_order
+    FROM orders WHERE created_at >= CAST('2023-07-01' AS TIMESTAMP)
+  bytes_mib: 2.28
+  guard_action_expected: allow
+  role: good
+- id: H27
+  source: eval/holdout_queries.yaml
+  pattern: redundant_distinct
+  description: Customers per state with a DISTINCT that cannot remove anything.
+  sql: SELECT DISTINCT state, COUNT(*) AS customers FROM users GROUP BY state
+  bytes_mib: 1.1
+  guard_action_expected: warn
+  role: bad
+- id: H28
+  source: eval/holdout_queries.yaml
+  pattern: clean
+  description: Average Q4 2023 orders per buyer, by country.
+  sql: WITH recent AS (SELECT user_id, COUNT(*) AS n FROM orders WHERE created_at >= CAST('2023-10-01' AS TIMESTAMP)
+    GROUP BY user_id) SELECT u.country, AVG(r.n) AS avg_orders FROM recent AS r JOIN users AS u ON u.id = r.user_id
+    GROUP BY u.country
+  bytes_mib: 3.18
+  guard_action_expected: allow
+  role: good
+- id: H29
+  source: eval/holdout_queries.yaml
+  pattern: select_star_wide_table
+  description: Every column of 2024 events joined to every column of users.
+  sql: SELECT * FROM events AS e JOIN users AS u ON u.id = e.user_id WHERE e.created_at >= CAST('2024-01-01' AS
+    TIMESTAMP)
+  bytes_mib: 226.28
+  label_from:
+    label: allow
+    reason: reads 226.3 MiB, over the 100 MiB cap (same reason as Q11)
+  guard_action_expected: block
+  role: bad
+- id: H30
+  source: eval/holdout_queries.yaml
+  pattern: clean
+  description: Products per distribution center.
+  sql: SELECT dc.name, COUNT(*) AS products FROM products AS p JOIN distribution_centers AS dc ON dc.id = p.distribution_center_id
+    GROUP BY dc.name
+  bytes_mib: 0.22
+  guard_action_expected: allow
+  role: good
+- id: B01
+  source: eval/bq_queries.yaml
+  pattern: clean
+  description: Monthly completed revenue for 2023, TIMESTAMP_TRUNC in the SELECT only.
+  sql: SELECT TIMESTAMP_TRUNC(created_at, MONTH) AS month, SUM(sale_price) AS revenue FROM `cost_guard_thelook.order_items`
+    WHERE created_at >= TIMESTAMP '2023-01-01' AND created_at < TIMESTAMP '2024-01-01' AND status = 'Complete' GROUP
+    BY month ORDER BY month
+  bytes_mib: 0.49
+  guard_action_expected: allow
+  role: good
+- id: B02
+  source: eval/bq_queries.yaml
+  pattern: clean
+  description: Daily events by type for one week, filtered with DATE(created_at) — BigQuery prunes through DATE().
+  sql: SELECT DATE(created_at) AS day, event_type, COUNT(*) AS n FROM events WHERE DATE(created_at) BETWEEN '2023-11-20'
+    AND '2023-11-26' GROUP BY day, event_type
+  bytes_mib: 0.1
+  guard_action_expected: allow
+  role: good
+- id: B03
+  source: eval/bq_queries.yaml
+  pattern: clean
+  description: Users per country (small view, backticked column).
+  sql: SELECT `country`, COUNT(*) AS users FROM users GROUP BY `country` ORDER BY users DESC
+  bytes_mib: 0.95
+  guard_action_expected: allow
+  role: good
+- id: B04
+  source: eval/bq_queries.yaml
+  pattern: clean
+  description: Top 10 products by Q3 2023 revenue.
+  sql: SELECT p.name, SUM(oi.sale_price) AS revenue FROM order_items AS oi JOIN products AS p ON p.id = oi.product_id
+    WHERE oi.created_at >= TIMESTAMP '2023-07-01' AND oi.created_at < TIMESTAMP '2023-10-01' GROUP BY p.name ORDER
+    BY revenue DESC LIMIT 10
+  bytes_mib: 1.75
+  guard_action_expected: allow
+  role: good
+- id: B05
+  source: eval/bq_queries.yaml
+  pattern: clean
+  description: Return rate by category over the last 90 days of 2023 (SAFE_DIVIDE, COUNTIF, TIMESTAMP_SUB on a constant).
+  sql: SELECT p.category, SAFE_DIVIDE(COUNTIF(oi.status = 'Returned'), COUNT(*)) AS return_rate FROM order_items
+    oi JOIN products p ON p.id = oi.product_id WHERE oi.created_at >= TIMESTAMP_SUB(TIMESTAMP '2024-01-01', INTERVAL
+    90 DAY) AND oi.created_at < TIMESTAMP '2024-01-01' GROUP BY p.category
+  bytes_mib: 0.71
+  guard_action_expected: allow
+  role: good
+- id: B06
+  source: eval/bq_queries.yaml
+  pattern: clean
+  description: Latest order per user in one week (QUALIFY).
+  sql: SELECT user_id, order_id, created_at FROM orders WHERE created_at >= TIMESTAMP '2023-12-01' AND created_at
+    < TIMESTAMP '2023-12-08' QUALIFY ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY created_at DESC) = 1
+  bytes_mib: 0.01
+  guard_action_expected: allow
+  role: good
+- id: B07
+  source: eval/bq_queries.yaml
+  pattern: clean
+  description: Products per distribution center (two small views).
+  sql: SELECT dc.name, COUNT(*) AS products FROM products p JOIN distribution_centers dc ON dc.id = p.distribution_center_id
+    GROUP BY dc.name
+  bytes_mib: 0.22
+  guard_action_expected: allow
+  role: good
+- id: B08
+  source: eval/bq_queries.yaml
+  pattern: clean
+  description: Unsold inventory by department, Q1 2023 stock.
+  sql: SELECT product_department, COUNT(*) AS unsold FROM inventory_items WHERE created_at >= TIMESTAMP '2023-01-01'
+    AND created_at < TIMESTAMP '2023-04-01' AND sold_at IS NULL GROUP BY product_department
+  bytes_mib: 0.24
+  guard_action_expected: allow
+  role: good
+- id: B09
+  source: eval/bq_queries.yaml
+  pattern: prunable_wrapper
+  description: Black Friday purchases and sessions per traffic source; TIMESTAMP_TRUNC on the partition column,
+    which BigQuery prunes through.
+  sql: SELECT traffic_source, COUNTIF(event_type = 'purchase') AS purchases, COUNT(DISTINCT session_id) AS sessions
+    FROM events WHERE TIMESTAMP_TRUNC(created_at, DAY) = TIMESTAMP '2023-11-24' GROUP BY traffic_source
+  bytes_mib: 0.05
+  guard_action_expected: allow
+  role: good
+- id: B10
+  source: eval/bq_queries.yaml
+  pattern: filter_after_join
+  description: Filter written after the join inside a derived table; BigQuery pushes it down (0 bytes saved by the
+    pushdown rewrite), so not waste here.
+  sql: SELECT t.order_id, t.state FROM (SELECT o.order_id, o.created_at, u.state FROM orders o JOIN users u ON u.id
+    = o.user_id) t WHERE t.created_at >= TIMESTAMP '2023-12-01' AND t.state = 'California'
+  bytes_mib: 4.0
+  guard_action_expected: allow
+  role: good
+- id: B11
+  source: eval/bq_queries.yaml
+  pattern: cte_twice
+  description: Month-over-month revenue from a CTE referenced twice.
+  sql: WITH m AS (SELECT DATE_TRUNC(DATE(created_at), MONTH) AS month, SUM(sale_price) AS rev FROM order_items WHERE
+    created_at >= TIMESTAMP '2023-01-01' AND created_at < TIMESTAMP '2024-01-01' GROUP BY month) SELECT cur.month,
+    cur.rev, prev.rev AS prev_rev FROM m AS cur LEFT JOIN m AS prev ON prev.month = DATE_SUB(cur.month, INTERVAL
+    1 MONTH) ORDER BY cur.month
+  bytes_mib: 0.3
+  guard_action_expected: allow
+  role: good
+- id: B12
+  source: eval/bq_queries.yaml
+  pattern: clean
+  description: Users by age band and gender (CASE).
+  sql: SELECT CASE WHEN age < 25 THEN 'under 25' WHEN age < 45 THEN '25-44' ELSE '45+' END AS band, gender, COUNT(*)
+    AS n FROM users GROUP BY band, gender
+  bytes_mib: 1.05
+  guard_action_expected: allow
+  role: good
+- id: B13
+  source: eval/bq_queries.yaml
+  pattern: clean
+  description: US users in four states (short IN list).
+  sql: SELECT state, COUNT(*) AS users FROM users WHERE country = 'United States' AND state IN ('California', 'Texas',
+    'New York', 'Florida') GROUP BY state
+  bytes_mib: 2.04
+  guard_action_expected: allow
+  role: good
+- id: B14
+  source: eval/bq_queries.yaml
+  pattern: clean
+  description: Approximate sessions per browser in December 2023.
+  sql: SELECT browser, APPROX_COUNT_DISTINCT(session_id) AS sessions FROM events WHERE created_at >= TIMESTAMP '2023-12-01'
+    AND created_at < TIMESTAMP '2024-01-01' GROUP BY browser
+  bytes_mib: 1.36
+  guard_action_expected: allow
+  role: good
+- id: B15
+  source: eval/bq_queries.yaml
+  pattern: bytes_cap
+  description: 'Every column of events, all partitions: ~367 MiB, over the 100 MiB cap.'
+  sql: SELECT * FROM events WHERE event_type = 'purchase'
+  bytes_mib: 367.19
+  guard_action_expected: block
+  role: bad
+- id: B16
+  source: eval/bq_queries.yaml
+  pattern: bytes_cap
+  description: 'Five wide events columns plus the filter column, all partitions: ~244 MiB.'
+  sql: SELECT session_id, uri, ip_address, city, state FROM `cost_guard_thelook.events` WHERE traffic_source = 'Email'
+  bytes_mib: 244.59
+  guard_action_expected: block
+  role: bad
+- id: B17
+  source: eval/bq_queries.yaml
+  pattern: cartesian
+  description: Comma join of users and products with no linking predicate (100k x 29k before filters).
+  sql: SELECT u.email, p.name FROM users u, products p WHERE u.country = 'Brasil' AND p.category = 'Jeans'
+  bytes_mib: 5.19
+  guard_action_expected: block
+  role: bad
+- id: B18
+  source: eval/bq_queries.yaml
+  pattern: join_fanout
+  description: 'Join users to events on state (~230 values, not a key): ~10^9 rows; ~29 MiB read.'
+  sql: SELECT u.id, COUNT(*) AS n FROM users u JOIN events e ON e.state = u.state GROUP BY u.id
+  bytes_mib: 28.46
+  guard_action_expected: block
+  role: bad
+- id: B19
+  source: eval/bq_queries.yaml
+  pattern: join_fanout
+  description: 'Same state join limited to one month of events: still ~10^7 rows (60k events x 100k users / 230).'
+  sql: SELECT u.id, COUNT(*) AS n FROM users u JOIN events e ON e.state = u.state WHERE e.created_at >= TIMESTAMP
+    '2023-12-01' AND e.created_at < TIMESTAMP '2024-01-01' GROUP BY u.id
+  bytes_mib: 2.35
+  guard_action_expected: block
+  role: bad
+- id: B20
+  source: eval/bq_queries.yaml
+  pattern: non_read_only
+  description: CREATE TABLE AS SELECT — writes.
+  sql: CREATE OR REPLACE TABLE cost_guard_thelook.big_orders AS SELECT * FROM orders WHERE num_of_item > 3
+  bytes_mib: 6.48
+  guard_action_expected: block
+  role: bad
+- id: B21
+  source: eval/bq_queries.yaml
+  pattern: unprunable_wrapper
+  description: EXTRACT(YEAR ...) on the partition column reads every partition; the 2023 range is equivalent and
+    prunes.
+  sql: SELECT COUNT(*) AS purchases FROM events WHERE EXTRACT(YEAR FROM created_at) = 2023 AND event_type = 'purchase'
+  bytes_mib: 4.59
+  guard_action_expected: allow
+  role: good
+- id: B22
+  source: eval/bq_queries.yaml
+  pattern: unprunable_wrapper
+  description: FORMAT_TIMESTAMP('%Y-%m', ...) = '2023-06' reads every partition; the June range is equivalent and
+    prunes.
+  sql: SELECT order_id, sale_price FROM order_items WHERE FORMAT_TIMESTAMP('%Y-%m', created_at) = '2023-06'
+  bytes_mib: 4.16
+  guard_action_expected: rewrite
+  role: bad
+- id: B23
+  source: eval/bq_queries.yaml
+  pattern: unprunable_wrapper
+  description: Arithmetic on the partition column (col + INTERVAL) defeats pruning; created_at >= '2023-12-01' is
+    equivalent.
+  sql: SELECT COUNT(*) AS n FROM orders WHERE created_at + INTERVAL 1 DAY >= TIMESTAMP '2023-12-02'
+  bytes_mib: 0.96
+  guard_action_expected: rewrite
+  role: bad
+- id: B24
+  source: eval/bq_queries.yaml
+  pattern: select_star
+  description: SELECT * on users (16 columns) — every column billed.
+  sql: SELECT * FROM users WHERE country = 'Japan'
+  bytes_mib: 18.9
+  guard_action_expected: allow
+  role: good
+- id: B25
+  source: eval/bq_queries.yaml
+  pattern: missing_partition_filter
+  description: Order status counts over all of history, no date filter.
+  sql: SELECT status, COUNT(*) AS n FROM orders GROUP BY status
+  bytes_mib: 1.23
+  guard_action_expected: warn
+  role: bad
+- id: B26
+  source: eval/bq_queries.yaml
+  pattern: meaningless_aggregate
+  description: SUM of an ID column.
+  sql: SELECT SUM(user_id) AS total_users FROM orders WHERE created_at >= TIMESTAMP '2023-12-01'
+  bytes_mib: 1.43
+  guard_action_expected: block
+  role: bad
+- id: B27
+  source: eval/bq_queries.yaml
+  pattern: group_by_unique_key
+  description: 'GROUP BY the events primary key: every group is one row.'
+  sql: SELECT id, COUNT(*) AS n FROM events WHERE created_at >= TIMESTAMP '2023-01-01' AND created_at < TIMESTAMP
+    '2024-01-01' GROUP BY id
+  bytes_mib: 4.34
+  guard_action_expected: warn
+  role: bad
+- id: B28
+  source: eval/bq_queries.yaml
+  pattern: sort_no_limit
+  description: Sort a year of events (~500k rows) with no LIMIT.
+  sql: SELECT id, user_id, event_type, created_at FROM events WHERE created_at >= TIMESTAMP '2023-01-01' AND created_at
+    < TIMESTAMP '2024-01-01' ORDER BY created_at
+  bytes_mib: 7.82
+  guard_action_expected: warn
+  role: bad
+- id: B29
+  source: eval/bq_queries.yaml
+  pattern: redundant_distinct
+  description: DISTINCT over a GROUP BY that is already unique.
+  sql: SELECT DISTINCT status, COUNT(*) AS n FROM orders WHERE created_at >= TIMESTAMP '2023-12-01' GROUP BY status
+  bytes_mib: 1.63
+  guard_action_expected: warn
+  role: bad
+- id: B30
+  source: eval/bq_queries.yaml
+  pattern: long_in_list
+  description: IN list of 120 user ids.
+  sql: SELECT order_id, status FROM orders WHERE created_at >= TIMESTAMP '2023-12-01' AND user_id IN (1001, 1002,
+    1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010, 1011, 1012, 1013, 1014, 1015, 1016, 1017, 1018, 1019, 1020,
+    1021, 1022, 1023, 1024, 1025, 1026, 1027, 1028, 1029, 1030, 1031, 1032, 1033, 1034, 1035, 1036, 1037, 1038,
+    1039, 1040, 1041, 1042, 1043, 1044, 1045, 1046, 1047, 1048, 1049, 1050, 1051, 1052, 1053, 1054, 1055, 1056,
+    1057, 1058, 1059, 1060, 1061, 1062, 1063, 1064, 1065, 1066, 1067, 1068, 1069, 1070, 1071, 1072, 1073, 1074,
+    1075, 1076, 1077, 1078, 1079, 1080, 1081, 1082, 1083, 1084, 1085, 1086, 1087, 1088, 1089, 1090, 1091, 1092,
+    1093, 1094, 1095, 1096, 1097, 1098, 1099, 1100, 1101, 1102, 1103, 1104, 1105, 1106, 1107, 1108, 1109, 1110,
+    1111, 1112, 1113, 1114, 1115, 1116, 1117, 1118, 1119, 1120)
+  bytes_mib: 3.05
+  guard_action_expected: warn
+  role: bad

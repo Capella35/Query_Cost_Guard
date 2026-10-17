@@ -21,6 +21,12 @@ against the TheLook copies in BigQuery (--project; dataset cost_guard_thelook)
 under eval/eval_caps_bigquery.yaml. Dry runs, plus small capped sample queries
 when a rewrite is verified; run once, like holdout.
 
+BigQuery is the target (2026-10-17); DuckDB stays for the unit tests only.
+--suite bq-validation: all 90 earlier queries in BigQuery SQL, labeled for
+BigQuery (eval/bq_validation.yaml, scripts/build_bq_validation.py) — the set
+to tune on, rerun freely. --suite bq-test: the pre-registered test set
+(eval/bq_test.yaml) — run ONCE, after tuning.
+
 --suite regression runs the 11 inline cases on the synthetic warehouse
 (also covered by tests/test_guard_regression.py). Those were written next
 to the rules: 100% there is expected, not evidence.
@@ -65,8 +71,12 @@ SUITE_FILES = {
     "holdout": ("holdout_queries.yaml", "RESULTS_holdout.md", "held-out TheLook queries"),
     "bigquery": ("bq_queries.yaml", "RESULTS_bigquery.md",
                  "pre-registered BigQuery TheLook queries"),
+    "bq-validation": ("bq_validation.yaml", "RESULTS_bq_validation.md",
+                      "BigQuery validation set (all 90 earlier queries)"),
+    "bq-test": ("bq_test.yaml", "RESULTS_bq_test.md", "pre-registered BigQuery test set"),
 }
-RUN_ONCE = ("holdout", "bigquery")  # held-out / pre-registered: first run is the result
+RUN_ONCE = ("holdout", "bigquery", "bq-test")  # held-out / pre-registered: first run is the result
+BQ_SUITES = ("bigquery", "bq-validation", "bq-test")  # BigQuery dry runs, eval_caps_bigquery.yaml
 
 
 def load_thelook_cases(filename: str = "eval_queries.yaml") -> list[dict]:
@@ -124,7 +134,7 @@ def full_check(wh, original: str, rewrite: str) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--suite", choices=["thelook", "holdout", "bigquery", "regression"],
+    ap.add_argument("--suite", choices=["thelook", "holdout", "bigquery", "bq-validation", "bq-test", "regression"],
                     default="thelook")
     ap.add_argument("--rerun", action="store_true",
                     help="holdout/bigquery: run again although it has been run (recorded as a rerun)")
@@ -149,13 +159,13 @@ def main() -> None:
                 "it into a tuning set. Pass --rerun to run anyway; the summary will say it is a rerun."
             )
         rerun = True
-    if args.suite == "bigquery":
+    if args.suite in BQ_SUITES:
         from cost_guard.backends.bigquery_backend import BigQueryWarehouse
 
         if not args.project:
             raise SystemExit("--suite bigquery needs --project")
         wh = BigQueryWarehouse(args.project, args.dataset, maximum_bytes_billed=20 * 1024**3)
-        cases = load_thelook_cases(SUITE_FILES["bigquery"][0])
+        cases = load_thelook_cases(SUITE_FILES[args.suite][0])
     elif args.suite in SUITE_FILES:
         from cost_guard.backends.duckdb_backend import DuckDBWarehouse
 
@@ -179,7 +189,7 @@ def main() -> None:
     from eval_config import load_eval_customer
 
     customer = (load_eval_customer(ROOT / "eval" / "eval_caps_bigquery.yaml")
-                if args.suite == "bigquery" else load_eval_customer())  # caps the labels were written under
+                if args.suite in BQ_SUITES else load_eval_customer())  # caps the labels were written under
     tracer = Tracer()
     results = []
     for case in cases:
@@ -207,7 +217,7 @@ def main() -> None:
             r["rewrite_source"] = v.rewrite_source
             r["rewritten_sql"] = v.rewritten_sql
             r["verification"] = v.verification
-            if args.suite in SUITE_FILES and args.suite != "bigquery":  # DuckDB: execute both
+            if args.suite in SUITE_FILES and args.suite not in BQ_SUITES:  # DuckDB: execute both
                 r.update(full_check(wh, case["sql"], v.rewritten_sql))
         results.append(r)
         tracer.save(ROOT / "runs" / "traces.jsonl")
@@ -273,7 +283,7 @@ def main() -> None:
     print(f"results -> {dest.relative_to(ROOT)}")
     if args.suite in SUITE_FILES:
         where = (f"`{args.project}.{args.dataset}` (BigQuery dry runs; caps "
-                 "`eval/eval_caps_bigquery.yaml`)" if args.suite == "bigquery"
+                 "`eval/eval_caps_bigquery.yaml`)" if args.suite in BQ_SUITES
                  else "`data/thelook.duckdb` (Kaggle TheLook CSVs)")
         write_summary(ts, metrics, by_pattern, results, args.suite, rerun, where)
 
