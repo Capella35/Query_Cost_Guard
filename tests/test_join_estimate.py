@@ -200,3 +200,39 @@ def test_partition_fraction_hook_unit():
         partition_columns={"events": "created_at"}, partition_fraction=frac)
     assert seen == [("events", "created_at", ["created_at >= '2023-01-01'"])]
     assert not e.filtered and e.rows == 1_200_000 * 100_000 // 100_000
+
+
+def test_cartesian_reads_a_view_row_count_from_the_registry(tmp_path):
+    """T27: BigQuery reports no row count for a view, so a 10-row view never
+    counted as tiny and a cross join with it was blocked. The registry
+    profiled the view; its row count decides."""
+    from types import SimpleNamespace
+
+    from cost_guard.backends.bigquery_backend import BigQueryWarehouse
+    from cost_guard.guard import decide
+    from cost_guard.tracing import Tracer
+
+    class Client:
+        def query(self, sql, job_config=None):
+            return SimpleNamespace(total_bytes_processed=1024**2)
+
+        def get_table(self, ref):
+            name = ref.rsplit(".", 1)[-1]
+            view = name == "centers"
+            return SimpleNamespace(
+                table_type="VIEW" if view else "TABLE", num_rows=0 if view else 100_000, num_bytes=0,
+                schema=[SimpleNamespace(name=c) for c in ("id", "name", "country")],
+                time_partitioning=None, range_partitioning=None, clustering_fields=None)
+
+    q = "SELECT u.id, c.name FROM users u CROSS JOIN centers c WHERE u.country = 'Japan'"
+    for centers_rows, expected_block in ((10, False), (50_000, True)):
+        wh = BigQueryWarehouse("p", "ds", client=Client(), registry_path=str(tmp_path / "none"))
+        wh._registry = ColumnRegistry(
+            [RegistryEntry("ds", "users", "id", "INTEGER", 100_000, 100_000, 0, True, NOW),
+             RegistryEntry("ds", "centers", "id", "INTEGER", centers_rows, centers_rows, 0, True, NOW)], "ds")
+        wh._registry_loaded = True
+        v = decide(q, backend=wh, tracer=Tracer())
+        assert (v.decision == "block") == expected_block, (centers_rows, v.decision, v.findings)
+    wh = BigQueryWarehouse("p", "ds", client=Client(), registry_path=str(tmp_path / "none"))
+    wh._registry, wh._registry_loaded = None, True  # no registry: not provably tiny
+    assert decide(q, backend=wh, tracer=Tracer()).decision == "block"

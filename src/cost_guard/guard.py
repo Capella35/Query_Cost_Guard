@@ -364,6 +364,21 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
         md["registry_max_age_days"] = max_age_days
         table_md[t] = md
     table_rows = {t: md.get("num_rows") for t, md in table_md.items()}
+    # A view reports no row count; the registry profiled it through the view.
+    # Without this a 10-row view never counts as tiny for the cartesian rule (T27).
+    if registry is None and backend is not None and None in table_rows.values():
+        with tracer.span(tid, "column_registry.lookup"):
+            get = getattr(backend, "column_registry", None)
+            try:
+                registry = get() if get is not None else None
+            except Exception:  # noqa: BLE001 — no registry: the row count stays unknown
+                registry = None
+    if registry is not None:
+        for t, rows in table_rows.items():
+            if rows is None:
+                entry = next((e for e in registry.entries() if e.table_name.lower() == t.lower()), None)
+                if entry is not None and entry.age_days() <= max_age_days:
+                    table_rows[t] = int(entry.total_rows)
     if ctx is not None:  # for fix hints on a block (decide -> _add_fix_hints)
         ctx.update(tree=tree, table_md=table_md, registry=registry, max_age_days=max_age_days)
 
