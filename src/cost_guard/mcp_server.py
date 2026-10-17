@@ -122,12 +122,15 @@ class CostGuardService:
         workload_class = self._workload(workload_class)
 
         def go(tracer):
-            from .runtime import read_log, shape_runtimes
+            from .config import volume_settings
+            from .runtime import read_log, shape_runtimes, shape_volume
 
             fp = fingerprint_query(sql)
+            log = read_log(self.log_path)
             v = decide(sql, workload_class, customer=self.customer, backend=self.backend,
                        tracer=tracer, llm=self.llm, rewrite_wait_sec=self.rewrite_wait_sec,
-                       shape_runtimes=shape_runtimes(read_log(self.log_path), fp))
+                       shape_runtimes=shape_runtimes(log, fp),
+                       shape_volume=shape_volume(log, fp, volume_settings(self.customer)["window_hours"]))
             _annotate_verdict(tracer, v, fp)
             return {**_verdict_fields(v), "fingerprint": fp, "rules_fired": _rules_fired(tracer)}
 

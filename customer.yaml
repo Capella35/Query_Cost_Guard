@@ -71,6 +71,17 @@ investigator:
   max_per_day: 20         # investigations per day, all shapes
   llm_max_per_day: 0      # optional Claude summary per report; 0 = never (deterministic only)
 
+# Volume rule (guard.py _volume_finding; owner's priority 4, spend at volume):
+# a query shape that ran at least min_runs times in window_hours and whose
+# modeled total (this run included) reaches warn_usd_per_window gets a WARN
+# (never a block) pointing at a summary table, materialized view or schedule.
+# Logged runs count their billed bytes (a cache hit bills 0); BigQuery only.
+# warn_usd_per_window is a judgment call, not a measurement.
+volume:
+  window_hours: 24
+  min_runs: 20
+  warn_usd_per_window: 5.0
+
 # Modeled cost figures. Label every dollar number derived from this as MODELED.
 cost_model:
   price_per_tb_usd: 6.25

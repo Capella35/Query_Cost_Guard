@@ -146,6 +146,7 @@ def decide(
     offered_rewrites: Optional[Collection[str]] = None,
     rewrite_wait_sec: Optional[float] = None,
     shape_runtimes: Optional[Sequence[float]] = None,
+    shape_volume=None,
 ) -> GuardVerdict:
     """Guard pipeline: read-only check -> cost estimate -> static rules
     (per referenced table, with column profiles) -> hard caps for the
@@ -163,6 +164,8 @@ def decide(
     _verify (customer.yaml guard.rewrite_wait_sec).
     shape_runtimes: run times (seconds) of this query shape's completed runs,
     from the query log; used by the SELECT * check (see _select_star_finding).
+    shape_volume: runtime.ShapeVolume, this shape's recent executed runs from
+    the query log; used by the volume rule (see _volume_finding).
     """
     from .config import load_customer
     from .tracing import get_tracer
@@ -174,7 +177,7 @@ def decide(
             sql_ast.using_dialect(dialect):
         ctx: dict = {}
         verdict = _decide(sql, workload_class, customer, backend, tracer, tid, llm,
-                           offered_rewrites, rewrite_wait_sec, ctx, shape_runtimes)
+                           offered_rewrites, rewrite_wait_sec, ctx, shape_runtimes, shape_volume)
         if verdict.decision == "block":
             _add_fix_hints(sql, verdict, customer, backend, tracer, tid, ctx)
         verdict = _maybe_bypass(verdict, customer, bypass_reason, tracer, tid)
@@ -264,9 +267,38 @@ def _select_star_finding(tree, estimate, caps, workload_class,
     return None
 
 
+def _volume_finding(estimate, tables, volume, customer, backend):
+    """Volume rule (owner's priority 4: spend = cost per run x runs). Warns,
+    never blocks, when a shape ran at least `min_runs` times in the window
+    and its modeled total, this run included, reaches `warn_usd_per_window`
+    (customer.yaml `volume`). Each query may be cheap; the total isn't.
+    This run counts its dry-run bytes, raised to BigQuery's 10 MiB minimum
+    per table; logged runs count what they billed (a cache hit bills 0).
+    Returns (finding, None), (None, why skipped) or (None, None)."""
+    from .config import volume_settings
+    from .runtime import BIGQUERY_MIN_BILLED_PER_TABLE
+
+    cfg = volume_settings(customer)
+    price = ((customer or {}).get("cost_model") or {}).get("price_per_tb_usd")
+    est = estimate.estimated_bytes_scanned if estimate is not None else None
+    if getattr(backend, "name", None) != "bigquery" or est is None or not price:
+        return None, "needs BigQuery dry-run bytes and cost_model.price_per_tb_usd"
+    runs = volume.runs + 1
+    if runs < cfg["min_runs"]:
+        return None, None
+    this_run = max(est, BIGQUERY_MIN_BILLED_PER_TABLE * max(1, len(tables)))
+    usd = (volume.bytes + this_run) / 1024**4 * price
+    if usd < cfg["warn_usd_per_window"]:
+        return None, None
+    return (f"this query shape ran {runs:,} times in the last {volume.window_hours:g} h, "
+            f"~${usd:,.2f} billed in total (MODELED; ~${this_run / 1024**4 * price:,.4f} this run) — "
+            "at this volume, read from a summary table or materialized view, or run it "
+            "once on a schedule and share the result"), None
+
+
 def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
             offered_rewrites=None, rewrite_wait_sec=None, ctx=None,
-            shape_runtimes=None) -> GuardVerdict:
+            shape_runtimes=None, shape_volume=None) -> GuardVerdict:
     from .column_registry import registry_settings
     from .config import caps_for, partition_column
     from .rewrites import PRUNING_ONLY_FIXERS, deterministic_rewrite
@@ -444,6 +476,13 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
     if star:
         with tracer.span(tid, "select_star.costly"):
             findings.append(star)
+    if shape_volume is not None:
+        volume, why = _volume_finding(estimate, tables, shape_volume, customer, backend)
+        if volume:
+            with tracer.span(tid, "volume.costly", runs=shape_volume.runs + 1):
+                findings.append(volume)
+        elif why:
+            skipped.append(f"volume_cost: {why}")
     findings = list(dict.fromkeys(findings))  # same finding can fire per table
     skipped.extend(no_profile)
     if skipped:

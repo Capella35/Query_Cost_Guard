@@ -40,7 +40,7 @@ import json
 import os
 import secrets
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -114,6 +114,38 @@ class RunOutcome:
     anomaly: Optional[object] = None  # anomaly.Anomaly when the run broke its shape's history
 
 
+BIGQUERY_MIN_BILLED_PER_TABLE = 10 * 1024**2  # BigQuery bills at least 10 MiB per table read
+
+
+@dataclass
+class ShapeVolume:
+    """A query shape's executed runs in the recent window (volume rule)."""
+    runs: int
+    bytes: int  # billed bytes where the log has them, else the estimate (at least the minimum)
+    window_hours: float
+
+
+def shape_volume(log: list[dict], fingerprint: str, window_hours: float = 24,
+                 now: Optional[datetime] = None) -> ShapeVolume:
+    """Executed runs of a shape within `window_hours`. A run's bytes are its
+    billed bytes when known (a cache hit bills 0), else its dry-run estimate
+    raised to BigQuery's 10 MiB minimum; runs with neither count 0 bytes."""
+    now = now or datetime.now(timezone.utc)
+    since = now - timedelta(hours=window_hours)
+    runs, total = 0, 0
+    for r in log:
+        if r["fingerprint"] != fingerprint or r["status"] not in ("completed", "killed"):
+            continue
+        if datetime.fromisoformat(r["ts"]) < since:
+            continue
+        runs += 1
+        if r.get("bytes_billed") is not None:
+            total += int(r["bytes_billed"])
+        elif r.get("bytes_estimate"):
+            total += max(int(r["bytes_estimate"]), BIGQUERY_MIN_BILLED_PER_TABLE)
+    return ShapeVolume(runs, total, window_hours)
+
+
 def shape_runtimes(log: list[dict], fingerprint: str) -> list[float]:
     """Run times of a query shape's completed runs in the log."""
     return [r["duration_sec"] for r in log if r["fingerprint"] == fingerprint
@@ -146,7 +178,7 @@ def run_query(
     in memory only — never logged) when a completed run breaks its history."""
     import time
 
-    from .config import caps_for, load_customer
+    from .config import caps_for, load_customer, volume_settings
 
     customer = customer if customer is not None else load_customer()
     fp = fingerprint_query(sql)
@@ -156,7 +188,8 @@ def run_query(
     t0 = time.perf_counter()
     verdict = decide(sql, workload_class, customer=customer, backend=backend, tracer=tracer,
                      llm=llm, bypass_reason=bypass_reason, offered_rewrites=offered,
-                     rewrite_wait_sec=rewrite_wait_sec, shape_runtimes=shape_runtimes(log, fp))
+                     rewrite_wait_sec=rewrite_wait_sec, shape_runtimes=shape_runtimes(log, fp),
+                     shape_volume=shape_volume(log, fp, volume_settings(customer)["window_hours"]))
     check_ms = round((time.perf_counter() - t0) * 1000, 1)
     caps = caps_for(customer, workload_class)
     hard_cap = float(caps.get("max_runtime_sec") or 0) or None

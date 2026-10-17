@@ -61,6 +61,14 @@ def partition_column(customer: Optional[dict], table: str) -> Optional[str]:
     return ((customer or {}).get("partitioned_tables") or {}).get(table)
 
 
+VOLUME_DEFAULTS = {"window_hours": 24, "min_runs": 20, "warn_usd_per_window": 5.0}
+
+
+def volume_settings(customer: Optional[dict]) -> dict:
+    """customer.yaml `volume` (the volume rule), over the defaults."""
+    return {**VOLUME_DEFAULTS, **((customer or {}).get("volume") or {})}
+
+
 def bypass_allowed(customer: Optional[dict]) -> bool:
     return bool(((customer or {}).get("guard") or {}).get("allow_bypass", False))
 
