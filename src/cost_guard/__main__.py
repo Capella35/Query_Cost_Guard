@@ -3,6 +3,9 @@
   check "SQL"      Guard verdict only (nothing executes).
   run "SQL"        Guard, then execute under the watchdog; logs to runs/query_log.jsonl.
   investigate      Baselines from the query log -> threshold proposals.
+  investigate-anomalies
+                   Report-only investigator agent over flagged runs in the log
+                   that have no report yet (runs/investigations/); changes nothing.
   report           Workload report from the query log: warn follow-through,
                    cost by query shape, result-cache opportunity, spend ledger.
 
@@ -57,6 +60,11 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("investigate")
     p.add_argument("--log", default="runs/query_log.jsonl")
     p.add_argument("--workload", default="interactive")
+    p = sub.add_parser("investigate-anomalies")
+    p.add_argument("--log", default="runs/query_log.jsonl")
+    p.add_argument("--traces", default="runs/traces.jsonl")
+    p.add_argument("--llm", choices=["none", "claude"], default="none",
+                   help="optional summary, within customer.yaml investigator.llm_max_per_day")
     args = parser.parse_args(argv)
     customer = load_customer(args.customer)
 
@@ -88,6 +96,26 @@ def main(argv: list[str] | None = None) -> int:
         from .runtime import read_log
 
         print(json.dumps(build_report(read_log(args.log), customer, args.top), indent=2))
+        return 0
+
+    if args.cmd == "investigate-anomalies":
+        from .investigator_agent import events_from_log
+        from .mcp_server import CostGuardService
+        from .runtime import read_log
+
+        backend = _backend(args, customer)
+        svc = CostGuardService(backend, customer, args.log, args.traces, investigations=True,
+                               agent_llm=_llm(args, backend))
+        done = skipped = 0
+        for ev in events_from_log(read_log(args.log)):
+            rep = svc.agent.investigate(ev)
+            if rep is None:
+                skipped += 1
+                continue
+            done += 1
+            print(f"{rep.id}: {rep.anomaly_kind} — {rep.likely_causes[0] if rep.likely_causes else '?'}")
+        print(f"{done} report(s) written to {svc.agent.out_dir}, {skipped} skipped "
+              "(already reported, cooldown or daily cap)")
         return 0
 
     if args.cmd == "investigate":

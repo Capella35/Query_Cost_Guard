@@ -52,6 +52,15 @@ guard:
   # The one-shot CLI and the evals wait until verification is done.
   rewrite_wait_sec: 2
 
+# Report-only investigator agent (investigator_agent.py): started when a
+# completed run breaks its query shape's own history. It writes reports to
+# runs/investigations/ and changes nothing.
+investigator:
+  enabled: true
+  cooldown_min: 60        # at most one investigation per query shape per hour
+  max_per_day: 20         # investigations per day, all shapes
+  llm_max_per_day: 0      # optional Claude summary per report; 0 = never (deterministic only)
+
 # Modeled cost figures. Label every dollar number derived from this as MODELED.
 cost_model:
   price_per_tb_usd: 6.25

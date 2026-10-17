@@ -366,11 +366,20 @@ query history drops the caller id and the keyed query hash.
 | 2026-10-16 | LLM calls traced by token counts only, not auto-instrumented | An instrumentor exports the prompt, and the prompt holds the query |
 | 2026-10-17 | MCP: the deployment sets the workload class (`--workload`); a caller may only pick an equal or stricter class; no bypass through MCP | Found on a blocked 3-table join: the same query as `scheduled` became a warn and would have run. A bypass is a person's decision, not a model's |
 | 2026-10-17 | Blocks carry `fix_hints`: main cause first (a table alone over the cap, a many-to-many join key, the joins' fan-out, a cartesian product), then fixes, each marked whether it changes the result; never a rewrite, never a different decision | A block listed every finding with equal weight; neither a person nor an AI could tell which change mattered. Deterministic, from the decision's own metadata: +0.7 ms on a 4.5 ms block (warm, DuckDB) |
+| 2026-10-17 | Anomaly rule moved into the package and run after every completed run; flags are logged, never enforced | It was the replays' only; one copy now (dev-seed replay output identical before/after). A flag starts the report-only agent |
+| 2026-10-17 | Drift trend extrapolated at most one history span past the last run (production wrapper only) | Found by test: 25 runs in 25 minutes, then a run 16 days later — the trend "expected" 8×10⁷ s and nothing could be flagged. The replays had continuous traffic, so their numbers are unchanged |
+| 2026-10-17 | Investigator agent: fixed steps over the MCP tools + deterministic diagnosis; one optional Claude summary (off by default, capped per day in its own usage log, cached by facts) | Owner's choice: frugal and testable; a model-chosen tool loop costs more per investigation and is harder to test. Reports hold no SQL, literals or rule findings (two rules quote the query) |
 | 2026-10-17 | Report: block follow-through (fixed and ran / retried unchanged / still blocked / bypassed / nothing) | Measures whether hints help; counts runs only (checks are not logged) |
 | 2026-10-16 | Rewrite verification: 2 s limit for long-running services, results remembered (passed and failed) in memory for 24 h; dry runs of identical SQL reused for 10 min | Live, one process: first check of a rewritable query 4.0 s (answer without the rewrite, verification continues), the same query again 0.01 s with the verified rewrite. Failed verifications are not re-run (cost). Nothing written to disk; the CLI and evals wait, so their results stay deterministic |
 
 ## 13. Open questions
 
+- Anomaly history includes earlier flagged runs (as the replays evaluated):
+  the drift baseline's bar is the largest past residual, so one spike raises
+  the bar for the next (a second 1.5 s run after a first one is not
+  flagged). Excluding flagged runs would keep the bar, but a shape that
+  changed for good would then flag until the cooldown/daily cap stop it.
+  Needs a decision and a replay check.
 - Registry distinct counts (HyperLogLog) measured against exact counts on
   TheLook (47 columns with >= 1,000 values, 2026-10-17): -17% to +16%, not
   the ~2% assumed. `plan_estimate.HLL_MARGIN` (1.05) is narrower than that,
@@ -446,7 +455,8 @@ nothing that can block wrongly without a person's confirmation.
    warehouse and no raw rows returned; an agent triggered only when a query
    shape breaks its own history, writing a report, changing nothing.
    Groundwork done: thread-safe backends, fast cached checks. MCP server
-   BUILT (2026-10-16, `mcp_server.py`, with Phoenix tracing); the agent is next.
+   BUILT (2026-10-16, `mcp_server.py`, with Phoenix tracing); the report-only
+   agent BUILT 2026-10-17 (`investigator_agent.py`, triggered by `anomaly.py`).
 6. **Independent evaluation.** Every query set so far was written by the
    assistant that wrote the rules. A set of real or hand-written queries
    (and the tricky columns for the column-kind check) from someone else,

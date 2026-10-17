@@ -24,6 +24,11 @@ Boundaries, enforced here and not left to the calling model:
   row count and bytes; history returns numbers, not users or query hashes;
 - the server holds one warehouse backend and exposes no other route to it.
 
+When a completed run breaks its shape's own history (anomaly.py), run_query
+says so (`anomaly`) and the report-only investigator agent
+(investigator_agent.py) starts in the background — the response does not
+wait for it. Reports land in runs/investigations/; nothing is changed.
+
 Every tool call is one trace: a root span mcp.<tool> with the Guard's spans
 under it, appended to the trace file (runs/traces.jsonl) after the call, and
 its trace_id returned in the response. With PHOENIX_COLLECTOR_ENDPOINT set
@@ -45,7 +50,8 @@ from .tracing import Tracer
 
 DEFAULT_TRACES = Path("runs/traces.jsonl")
 HISTORY_FIELDS = ("ts", "workload_class", "decision", "status", "duration_sec", "rows_estimate",
-                  "bytes_estimate", "bytes_billed", "timeout_sec", "check_ms", "bypassed")
+                  "bytes_estimate", "bytes_billed", "timeout_sec", "check_ms", "bypassed",
+                  "anomaly_size", "anomaly")
 
 
 def shape_id(fingerprint: str) -> str:
@@ -60,10 +66,25 @@ class CostGuardService:
 
     def __init__(self, backend, customer: dict, log_path: str | Path = "runs/query_log.jsonl",
                  trace_path: str | Path | None = DEFAULT_TRACES, llm=None,
-                 workload_class: str = "interactive"):
+                 workload_class: str = "interactive", investigations: bool = True,
+                 investigation_dir: str | Path | None = None, agent_llm=None):
+        from concurrent.futures import ThreadPoolExecutor
+
         from .config import caps_for
 
         caps_for(customer, workload_class)  # unknown class fails at startup, not per call
+        self.agent = None
+        self._agent_pool = None
+        if investigations:
+            from .investigator_agent import InvestigatorAgent
+
+            # Reports sit next to the query log they investigate.
+            self.agent = InvestigatorAgent(
+                self, customer, investigation_dir or Path(log_path).parent / "investigations",
+                llm=agent_llm)
+            # One worker: investigations queue up instead of competing with queries.
+            self._agent_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="investigator")
+        self.pending: list = []  # futures of started investigations (tests wait on them)
         self.backend = backend
         self.customer = customer
         self.workload_class = workload_class
@@ -107,7 +128,7 @@ class CostGuardService:
             v = decide(sql, workload_class, customer=self.customer, backend=self.backend,
                        tracer=tracer, llm=self.llm, rewrite_wait_sec=self.rewrite_wait_sec)
             _annotate_verdict(tracer, v, fp)
-            return {**_verdict_fields(v), "fingerprint": fp}
+            return {**_verdict_fields(v), "fingerprint": fp, "rules_fired": _rules_fired(tracer)}
 
         return self._traced("check_query", go, workload_class=workload_class)
 
@@ -117,10 +138,21 @@ class CostGuardService:
 
         workload_class = self._workload(workload_class)
 
+        started: dict = {}
+
+        def on_anomaly(event: dict) -> None:
+            if self.agent is None:
+                started["investigation"] = "off"
+                return
+            ok, why = self.agent.should_investigate(event["fingerprint"], event["ts"])
+            started["investigation"] = "started" if ok else f"skipped: {why}"
+            if ok:
+                self.pending.append(self._agent_pool.submit(self.agent.investigate, event))
+
         def go(tracer):
             out = run_query(sql, self.backend, workload_class, customer=self.customer,
                             log_path=self.log_path, tracer=tracer, user=user, llm=self.llm,
-                            rewrite_wait_sec=self.rewrite_wait_sec)
+                            rewrite_wait_sec=self.rewrite_wait_sec, on_anomaly=on_anomaly)
             _annotate_verdict(tracer, out.verdict, out.fingerprint)
             ex = out.execution
             from .tracing import annotate
@@ -136,6 +168,10 @@ class CostGuardService:
                 "bytes_billed": ex.bytes_billed if ex else None,
                 "detail": ex.detail if ex else None,
                 "timeout_sec": out.timeout_sec,
+                # The run broke its shape's own history (never blocks anything);
+                # the report-only investigator runs in the background.
+                "anomaly": out.anomaly.reason if out.anomaly else None,
+                "investigation": started.get("investigation"),
             }
 
         return self._traced("run_query", go, workload_class=workload_class)
@@ -182,6 +218,12 @@ class CostGuardService:
             return rep
 
         return self._traced("workload_report", go, top=top)
+
+
+def _rules_fired(tracer) -> list[str]:
+    """Names of the rules that produced findings (from the call's rule spans)."""
+    return sorted({s["name"][len("rule."):] for s in tracer.spans
+                   if s["name"].startswith("rule.") and s["attrs"].get("findings")})
 
 
 def _verdict_fields(v) -> dict:
@@ -313,6 +355,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--llm", choices=["none", "claude"], default="none")
     p.add_argument("--log", default="runs/query_log.jsonl")
     p.add_argument("--traces", default=str(DEFAULT_TRACES))
+    p.add_argument("--no-investigations", action="store_true",
+                   help="do not start the investigator agent on anomalies")
     args = p.parse_args(argv)
 
     customer = load_customer(args.customer)
@@ -324,7 +368,15 @@ def main(argv: list[str] | None = None) -> int:
         llm = ClaudeLLM(backend=backend)
     if os.environ.get("PHOENIX_COLLECTOR_ENDPOINT"):
         observability.setup()
-    service = CostGuardService(backend, customer, args.log, args.traces, llm, args.workload)
+    agent_llm = None
+    from .investigator_agent import settings as agent_settings
+
+    if agent_settings(customer)["llm_max_per_day"] > 0:
+        from .llm import ClaudeLLM
+
+        agent_llm = llm or ClaudeLLM(backend=backend)
+    service = CostGuardService(backend, customer, args.log, args.traces, llm, args.workload,
+                               investigations=not args.no_investigations, agent_llm=agent_llm)
     try:
         build_server(service).run("stdio")
     finally:

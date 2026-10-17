@@ -21,6 +21,13 @@ Two fields exist for the workload report (ledger.py):
   candidates without it.
 - user: an opaque caller id, as passed by the caller (pseudonymize upstream).
   Needed to tell whether a warned analyst changed their next query.
+
+After a run completes, the adaptive anomaly rule (anomaly.py) compares it
+with the earlier completed runs of its shape in this log. A flag blocks and
+kills nothing; it is logged on the run (`anomaly`) and passed to
+`on_anomaly` (the MCP server starts a report-only investigation). The size
+it compares is `anomaly_size`: DuckDB's two-way estimate (one extra EXPLAIN
+per completed run), BigQuery's dry-run bytes (already known).
 """
 from __future__ import annotations
 
@@ -32,7 +39,7 @@ import secrets
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .backends.base import ExecutionResult
 from .guard import GuardVerdict, decide
@@ -59,6 +66,8 @@ class LogRecord:
     bypassed: bool = False
     check_ms: Optional[float] = None  # time the Guard took to decide
     bytes_billed: Optional[int] = None  # actual billed bytes (BigQuery), vs bytes_estimate
+    anomaly_size: Optional[int] = None  # the anomaly rule's size: two-way rows (DuckDB) / bytes (BQ)
+    anomaly: Optional[str] = None  # the anomaly rule's reason when this run broke its history
 
 
 def _log_key(log_path: Path) -> bytes:
@@ -99,6 +108,7 @@ class RunOutcome:
     execution: Optional[ExecutionResult]
     timeout_sec: Optional[float]
     fingerprint: str
+    anomaly: Optional[object] = None  # anomaly.Anomaly when the run broke its shape's history
 
 
 def run_query(
@@ -113,6 +123,7 @@ def run_query(
     bypass_reason: Optional[str] = None,
     llm=None,
     rewrite_wait_sec: Optional[float] = None,
+    on_anomaly: Optional[Callable[[dict], None]] = None,
 ) -> RunOutcome:
     """Guard the query, run it under the watchdog unless blocked, log it,
     and feed the duration to the threshold updater's shadow/probation.
@@ -121,14 +132,17 @@ def run_query(
     the Guard so a run rewrite is not rewritten again. The log is read whole
     each call — fine for a POC log, an index for a real one.
     rewrite_wait_sec: see guard.decide (long-running services pass
-    customer.yaml guard.rewrite_wait_sec)."""
+    customer.yaml guard.rewrite_wait_sec).
+    on_anomaly: called with the anomaly event (a dict; it includes the SQL,
+    in memory only — never logged) when a completed run breaks its history."""
     import time
 
     from .config import caps_for, load_customer
 
     customer = customer if customer is not None else load_customer()
     fp = fingerprint_query(sql)
-    offered = ({r["rewrite_fingerprint"] for r in read_log(log_path) if r.get("rewrite_fingerprint")}
+    log = read_log(log_path) if log_path is not None else []
+    offered = ({r["rewrite_fingerprint"] for r in log if r.get("rewrite_fingerprint")}
                if log_path is not None else None)
     t0 = time.perf_counter()
     verdict = decide(sql, workload_class, customer=customer, backend=backend, tracer=tracer,
@@ -145,10 +159,14 @@ def run_query(
         execution = backend.execute(sql, timeout_sec=timeout)
         if updater is not None and execution.status in ("completed", "killed"):
             updater.observe(fp, execution.duration_sec)
+    ts = datetime.now(timezone.utc).isoformat()
+    size, anomaly = None, None
+    if execution is not None and execution.status == "completed":
+        size, anomaly = _anomaly_check(sql, fp, ts, verdict, execution, backend, log, tracer)
     if log_path is not None:
         append_log(
             LogRecord(
-                ts=datetime.now(timezone.utc).isoformat(),
+                ts=ts,
                 fingerprint=fp,
                 workload_class=workload_class,
                 decision=verdict.decision,
@@ -164,7 +182,43 @@ def run_query(
                 bypassed=verdict.bypassed is not None,
                 check_ms=check_ms,
                 bytes_billed=execution.bytes_billed if execution else None,
+                anomaly_size=size,
+                anomaly=anomaly.reason if anomaly else None,
             ),
             log_path,
         )
-    return RunOutcome(verdict, execution, timeout, fp)
+    if anomaly is not None and on_anomaly is not None:
+        from dataclasses import asdict as _asdict
+
+        on_anomaly({**_asdict(anomaly), "ts": ts, "workload_class": workload_class,
+                    "user": user, "sql": sql})
+    return RunOutcome(verdict, execution, timeout, fp, anomaly)
+
+
+def _anomaly_size(sql: str, verdict, backend) -> Optional[int]:
+    """The size the anomaly rule compares runs by: BigQuery's dry-run bytes;
+    elsewhere the two-way plan estimate (a 7-day window reads as 7 days of
+    rows, not the planner's flat share) — comparable between runs, never
+    used for a cap."""
+    if getattr(backend, "name", None) == "bigquery":
+        return verdict.estimated_bytes
+    try:
+        return backend.estimate(sql, two_way_ranges=True).rows_processed
+    except TypeError:  # a backend without two-way estimates
+        return verdict.estimated_rows
+    except Exception:  # noqa: BLE001 — no size: the runtime clause still applies
+        return None
+
+
+def _anomaly_check(sql, fp, ts, verdict, execution, backend, log, tracer):
+    from .anomaly import check_run
+    from .tracing import get_tracer
+
+    from .tracing import annotate
+
+    with (tracer or get_tracer()).trace("anomaly.check"):
+        size = _anomaly_size(sql, verdict, backend)
+        found = check_run(log, fp, ts, size, execution.duration_sec)
+        annotate(anomaly=found.kind if found else None,
+                 history_runs=found.history_runs if found else None)
+    return size, found

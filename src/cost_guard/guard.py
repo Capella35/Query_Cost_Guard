@@ -349,9 +349,11 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
     skipped: list[str] = []
 
     def run(rule, md, label):
-        with tracer.span(tid, f"rule.{rule.__name__}", table=md.get("table")):
+        with tracer.span(tid, f"rule.{rule.__name__}", table=md.get("table")) as span:
             try:
-                findings.extend(rule(sql, md))
+                found = rule(sql, md)
+                findings.extend(found)
+                span["attrs"]["findings"] = len(found)
             except NotImplementedError:
                 skipped.append(f"{label}: not implemented")
             except Exception as e:  # noqa: BLE001 — a broken rule is visible, not fatal

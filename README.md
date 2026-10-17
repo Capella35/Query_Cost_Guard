@@ -45,9 +45,10 @@ What exists in code today. "How it works" below only describes rows marked **bui
 | Workload report (`report`): warn follow-through (did the warned user adopt the rewrite, change the query, or re-run it unchanged), block follow-through (fixed and ran, retried unchanged, still blocked, bypassed, nothing), cost by query shape, result-cache opportunity, spend ledger (executed / killed / blocked, bypasses, by week), Guard health (decision mix, block / flag / bypass rates, check latency p50/p95, billed ÷ estimated bytes on BigQuery), LLM usage from the trace file (calls, tokens, errors per LLM span). Dollars are MODELED and appear only when a price is set | **built** — measured on test logs only; no real users yet | `ledger.py` |
 | Investigator: regression check vs a pre-regression baseline, bounded tightening, rule-store lookup, episodic memory | **built** | `investigator.py` |
 | Threshold updater: deterministic gates → optional judge → shadow trial → enforce → probation, auto-rollback | **built** (offline-tested) | `thresholds.ThresholdUpdater` |
-| CLI: `check`, `run` (`--user`, `--bypass-reason`), `investigate`, `report` | **built** | `python -m cost_guard` |
+| CLI: `check`, `run` (`--user`, `--bypass-reason`), `investigate`, `investigate-anomalies`, `report` | **built** | `python -m cost_guard` |
 | LLM rewrite proposer, flag explainer, threshold judge (Claude) | **built, live eval not yet run** — tested with fakes; needs Anthropic credentials | `llm.py` |
-| Adaptive anomaly rule (far above own fingerprint history) | **built in the replay harness only** — not called by `decide()` | `eval/run_replay.anomaly_flag` |
+| Adaptive anomaly rule (a completed run far above its own shape's history: size clause on the two-way estimate / BigQuery bytes, drift-aware runtime clause). Runs after every completed run in `run_query`, logged on the run (`anomaly`, `anomaly_size`); never blocks or kills. The replays import the same code. Trend extrapolated at most one history span past the last run | **built** — evidence from the replays (held-out hard seeds: FP 1.1%, catch 72.5%); live: a 5-year window over a weekly shape flagged at 262× its median size (TheLook DuckDB) | `anomaly.py`, `runtime.py` |
+| Report-only investigator agent: started by an anomaly (MCP server, background) or `investigate-anomalies` (batch from the log). Fixed steps through the MCP tools (history, tables, check, neighbouring shapes, past incidents), deterministic diagnosis (size jump vs warehouse-wide slowdown vs this shape alone, recurring), report in `runs/investigations/`, incident in memory. Changes nothing. Optional Claude summary from aggregates only, off by default (`investigator.llm_max_per_day`), capped per day and cached. Cooldown per shape and a daily cap | **built** — tested with a fake warehouse and end to end over stdio on TheLook; LLM summary tested with a fake model only | `investigator_agent.py` |
 | BigQuery backend: dry-run bytes, table metadata (incl. partition column), watchdog execute | **partial** — `check` run live (dry runs) on the 30-query set: 26 of 30 verdicts match DuckDB, 0 errors ([`eval/RESULTS_bq_live_check.md`](eval/RESULTS_bq_live_check.md)); `run` never executed live; rewrites verified on TEMP-table samples in a BigQuery session (live: ~30 MiB billed and ~8–10 s per verification, mostly BigQuery's 10 MiB-per-table minimum); a check takes about one dry run (~0.6 s warm: table metadata cached 10 min, independent calls overlapped); column registry built and read (the GROUP BY check now runs instead of being skipped); join fan-out estimated from the registry (`join_estimate.py`): Q13 now blocks, 26 of 30 match | `backends/bigquery_backend.py`, `scripts/bq_live_check.py` |
 | BigQuery history from `INFORMATION_SCHEMA.JOBS`; telemetry exporter | **planned** (interfaces only) | `interfaces.py` |
 | Human ground truth for false positives | **planned** | — |
@@ -350,6 +351,9 @@ static-only vs static+adaptive.
 │   ├── tracing.py            # JSONL spans for every decision
 │   ├── observability.py      # optional OpenTelemetry export (Phoenix)
 │   ├── investigator.py       # regression detection + bounded proposals
+│   ├── anomaly.py            # run vs its own shape's history (replays + production)
+│   ├── investigator_agent.py # report-only agent on anomalies; changes nothing
+│   ├── fix_hints.py          # ranked causes and fixes on blocks
 │   ├── thresholds.py         # fingerprints, baselines, gates, rule store, updater
 │   ├── llm.py                # Claude rewrite proposer / explainer / judge
 │   ├── results.py            # canonical result hashing
@@ -360,7 +364,7 @@ static-only vs static+adaptive.
 │   └── rules/static_rules.py
 ├── scripts/                  # TheLook loader, column registry build, BigQuery schema check
 ├── demo/                     # synthetic warehouse, 4-beat CLI demo, Streamlit UI
-└── tests/                    # 336 tests (TheLook-dependent ones skip without data/)
+└── tests/                    # 344 tests (TheLook-dependent ones skip without data/)
 ```
 
 ## Quickstart (local-first, no cloud)

@@ -56,6 +56,10 @@ class ColumnKindsOut(BaseModel):
     columns: list[ColumnKindOut]
 
 
+class SummaryOut(BaseModel):
+    summary: str
+
+
 class JudgmentOut(BaseModel):
     decision: Literal["approve", "reject", "hold"]
     reason: str
@@ -94,6 +98,15 @@ shape given ALL the evidence. Reject if it would likely kill legitimate runs \
 history too short in time to be representative). Hold if the evidence is \
 ambiguous and more history is needed. Your decision cannot enforce anything; \
 a shadow trial follows an approval."""
+
+
+SUMMARY_SYSTEM = """You write a short incident note (3-5 plain sentences) for a \
+data team about one query shape whose latest run broke its own history. You \
+are given the investigator's facts and its deterministic diagnosis as JSON \
+(aggregates only: no SQL). Say what happened, the most likely cause from the \
+diagnosis, and what to look at next. Do not add causes the facts do not \
+support; say what is unknown. Nothing will be changed automatically — do not \
+recommend enforcement, thresholds or kills. No preamble."""
 
 
 class ClaudeLLM:
@@ -195,6 +208,13 @@ class ClaudeLLM:
         if out is None:
             return {}
         return {(c.table, c.column): {"kind": c.kind, "reason": c.reason} for c in out.columns}
+
+    def summarize_investigation(self, facts: dict) -> Optional[str]:
+        """Plain-language note from an investigation's facts (aggregates only)."""
+        import json
+
+        out = self._parse(SUMMARY_SYSTEM, json.dumps(facts, default=str), SummaryOut)
+        return out.summary if out is not None else None
 
     def judge(self, proposal) -> str:
         """approve | reject | hold, from aggregates only."""

@@ -43,15 +43,13 @@ from warehouse import build_synthetic_warehouse
 from cost_guard.guard import decide
 from eval_config import load_eval_customer  # noqa: E402
 from cost_guard.thresholds import BaselineStore, FingerprintStats
+# The anomaly rule lives in the package (production runs the same code).
+from cost_guard.anomaly import (  # noqa: E402,F401
+    ANOMALY_MEDIAN_MULT, COLD_START_RUNS, MIN_ABS_DURATION_SEC, anomaly_flag, drift_aware_flag)
 
 EVAL_CUSTOMER = load_eval_customer()  # caps the replay labels were written under
 
 EXEC_TIMEOUT_SEC = 45  # defensive; authored queries finish in << 1 s
-COLD_START_RUNS = 20  # brief: static rules only below ~20 runs per fingerprint
-ANOMALY_MEDIAN_MULT = 3.0  # brief: "above p95 or a few times the median"
-MIN_ABS_DURATION_SEC = 0.02  # runtime is noisy at ms scale (caching, jitter):
-    # the duration clause only fires above this floor, so a 3 ms point lookup
-    # can never be flagged as an anomaly over a 1 ms median
 
 rng = random.Random(20261013)
 
@@ -134,40 +132,6 @@ def timed_execute(db_path: str, sql: str):
             return fut.result(timeout=EXEC_TIMEOUT_SEC)
         except Exception:
             return None
-
-
-def anomaly_flag(stats: FingerprintStats | None, rows_scanned, duration_sec,
-                min_runs: int = COLD_START_RUNS) -> str | None:
-    """Layer 2 anomaly rule (brief §Layer 2): warn when far above the
-    fingerprint's own history — above p95 or a few times the median.
-    Cold start: needs >= min_runs history runs.
-
-    rows_scanned is the DuckDB upper-bound row estimate, standing in for
-    bytes scanned on this path (the brief's dry-run bytes on BigQuery)."""
-    if stats is None or stats.run_count < min_runs:
-        return None
-    reasons = []
-    if rows_scanned is not None:
-        pb, mb = stats.p95_bytes, stats.median_bytes
-        if (pb is not None and rows_scanned > pb) or (
-            mb and rows_scanned > ANOMALY_MEDIAN_MULT * mb
-        ):
-            reasons.append(
-                f"rows scanned {rows_scanned:,} above fingerprint history "
-                f"(median {mb:,.0f}, p95 {pb:,.0f}, {stats.run_count} runs)"
-            )
-    if duration_sec is not None and duration_sec > MIN_ABS_DURATION_SEC:
-        ps, ms = stats.p95_secs, stats.median_secs
-        if (ps is not None and duration_sec > ps) or (
-            ms and duration_sec > ANOMALY_MEDIAN_MULT * ms
-        ):
-            reasons.append(
-                f"runtime {duration_sec:.2f}s above fingerprint history "
-                f"(median {ms:.2f}s, p95 {ps:.2f}s, {stats.run_count} runs)"
-            )
-    if reasons:
-        return "adaptive anomaly: " + "; ".join(reasons)
-    return None
 
 
 def split_chronological(log: list[dict], frac: float = 0.70):
@@ -325,27 +289,6 @@ def gen_hard_traffic(seed: int = 7) -> list[dict]:
 # against fitting one seed's noise, not against fitting the scenario design.
 HARD_DEV_SEED = 7
 HARD_HELDOUT_SEEDS = tuple(range(101, 111))
-
-
-def drift_aware_flag(stats: FingerprintStats | None, baseline, rows_scanned, t_h: float,
-                     duration_sec: float | None, min_runs: int = COLD_START_RUNS) -> str | None:
-    """The anomaly rule with a drift-aware runtime clause: the size clause is
-    unchanged; runtime is compared with the shape's trend-expected runtime
-    (thresholds.DriftAwareBaseline) instead of its flat median/p95."""
-    from cost_guard.investigator import REGRESSION_RATIO
-
-    if stats is None or stats.run_count < min_runs:
-        return None
-    size = anomaly_flag(stats, rows_scanned, None, min_runs)  # size clause only
-    if size:
-        return size
-    if (baseline is not None and duration_sec is not None and duration_sec > MIN_ABS_DURATION_SEC
-            and baseline.is_anomaly(t_h, duration_sec, REGRESSION_RATIO)):
-        return (f"adaptive anomaly: runtime {duration_sec:.2f}s is "
-                f"{baseline.excess(t_h, duration_sec):.1f}x the shape's trend-expected "
-                f"{baseline.expected(t_h):.2f}s ({baseline.runs} runs, trend "
-                f"{'used' if baseline.trend_trusted else 'not trusted: flat'})")
-    return None
 
 
 def score_hard(seed: int, method: str = "flat") -> tuple[dict, list[dict]]:

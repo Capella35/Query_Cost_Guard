@@ -273,6 +273,13 @@ def guard_health(log: list[dict]) -> dict:
         "flag_rate": round(sum(decisions.get(k, 0) for k in ("warn", "rewrite", "block")) / n, 4) if n else None,
         "bypass_rate": round(sum(1 for r in log if r.get("bypassed")) / n, 4) if n else None,
         "check_ms": {"runs": len(latency), "p50": _pct(latency, 0.5), "p95": _pct(latency, 0.95)},
+        # Completed runs that broke their shape's own history (anomaly.py); each
+        # may have a report in runs/investigations/.
+        "anomalies": {
+            "runs": sum(1 for r in log if r.get("anomaly")),
+            "size": sum(1 for r in log if (r.get("anomaly") or "").startswith("adaptive anomaly: rows")),
+            "runtime": sum(1 for r in log if (r.get("anomaly") or "").startswith("adaptive anomaly: runtime")),
+        },
         "estimate_accuracy": {
             "runs": len(ratios),
             "median_billed_over_estimate": round(ratios[len(ratios) // 2], 3) if ratios else None,
