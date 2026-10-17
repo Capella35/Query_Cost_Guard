@@ -83,7 +83,8 @@ report:
   followup_window_min: 30       # after a warn, the user's next run within this counts as follow-up
   cache_ttl_min: 60             # identical query re-run within this = result-cache opportunity
 
-# Warehouse backend. DuckDB is primary (local, zero cloud spend); BigQuery is the stretch goal.
+# Warehouse backend. BigQuery is the target (2026-10-17): the evals run there
+# (eval/bq_validation.yaml, eval/bq_test.yaml). DuckDB stays for the unit tests and offline demos.
 warehouse:
   backend: duckdb
   duckdb:

@@ -128,6 +128,16 @@ never rows.
 
 All numbers below regenerate from the scripts named; each has its limits next to it.
 
+**BigQuery is the target from 2026-10-17; DuckDB stays for the unit tests
+only** (free, offline, ~30 s). The eval is split in two, on BigQuery:
+
+| Set | Queries | Use | Result |
+|---|---|---|---|
+| Validation, `eval/bq_validation.yaml` | 90: every earlier query (Q, H, B) in BigQuery SQL, labeled for BigQuery (guide v2; 11 relabeled with the measured reason, e.g. Q11 over the cap because the copy has data to 2026) | tune on it, rerun freely (`--suite bq-validation`) | **86/90**, 0 false blocks ([`eval/RESULTS_bq_validation.md`](eval/RESULTS_bq_validation.md)). Misses: Q09 and Q15 warn for patterns that cost nothing extra on BigQuery (repeated subquery, HAVING on a group column), H28 near-unique GROUP BY inside a CTE, B28 a sort a dry run cannot see |
+| Test, `eval/bq_test.yaml` | 40 new queries, labeled from the guide and data facts only, committed (`ddf0030`) before any Guard run on it or on the validation set | run ONCE after tuning (`--suite bq-test`) | not run yet |
+
+The sections below are the earlier DuckDB-era evals, kept as history.
+
 **Caps the evals run under:** every eval below (and the regression tests) runs
 with the caps its labels were written under — 5M / 50M rows, 1 TB / 5 TB,
 300 s / 3600 s — frozen in `eval/eval_caps.yaml` and overlaid on
