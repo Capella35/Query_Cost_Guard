@@ -97,12 +97,16 @@ class BigQueryWarehouse:
             self._client = bigquery.Client(project=self.project)
         return self._client
 
-    def _job_config(self, **kw):
+    def _job_config(self, max_bytes_billed: Optional[int] = None, **kw):
+        """max_bytes_billed can only lower the backend's own ceiling."""
         from google.cloud import bigquery
 
+        ceiling = self.maximum_bytes_billed
+        if max_bytes_billed is not None:
+            ceiling = min(ceiling, int(max_bytes_billed))
         return bigquery.QueryJobConfig(
             default_dataset=f"{self.project}.{self.dataset}",
-            maximum_bytes_billed=self.maximum_bytes_billed,
+            maximum_bytes_billed=ceiling,
             **kw,
         )
 
@@ -196,11 +200,15 @@ class BigQueryWarehouse:
             except Exception:  # noqa: BLE001 — an unclosed session expires on its own
                 pass
 
-    def execute(self, sql: str, timeout_sec: Optional[float] = None) -> ExecutionResult:
+    def execute(self, sql: str, timeout_sec: Optional[float] = None,
+                max_bytes_billed: Optional[int] = None) -> ExecutionResult:
+        """The bytes ceiling is enforced by BigQuery itself: a job that would
+        bill more fails before it reads anything (and bills nothing), so a
+        query the dry-run check got wrong still can't run past the cap."""
         kw = {"job_timeout_ms": int(timeout_sec * 1000)} if timeout_sec else {}
         t0 = time.perf_counter()
         try:
-            job = self._bq().query(sql, job_config=self._job_config(**kw))
+            job = self._bq().query(sql, job_config=self._job_config(max_bytes_billed, **kw))
             rows = list(job.result(timeout=timeout_sec))
             return ExecutionResult("completed", time.perf_counter() - t0, len(rows),
                                    bytes_billed=getattr(job, "total_bytes_billed", None))
@@ -209,6 +217,8 @@ class BigQueryWarehouse:
             msg = str(e).splitlines()[0] if str(e) else type(e).__name__
             if "timeout" in msg.lower() or "timed out" in msg.lower():
                 return ExecutionResult("killed", dur, detail=f"watchdog: {msg}")
+            if "bytes billed" in msg.lower():
+                return ExecutionResult("error", dur, detail=f"bytes ceiling: {msg}")
             return ExecutionResult("error", dur, detail=msg)
 
     def _cached(self, key, compute):

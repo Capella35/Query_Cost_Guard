@@ -503,3 +503,57 @@ def test_select_star_flagged_on_its_shapes_runtime_after_20_runs():
     assert v.decision == "warn" and "median of 20 runs" in star[0] and "53%" in star[0]
     assert not _star(MiB, shape_runtimes=slow[:19])[1]  # too little history: silent
     assert not _star(MiB, shape_runtimes=[100.0] * 25)[1]  # 33% of the limit
+
+
+# ---- Bytes ceiling at the driver ------------------------------------------------
+
+def _execute_config(fake):
+    """The executed job's config (the one with a watchdog), not a dry run's."""
+    return [c for c in fake.configs if getattr(c, "job_timeout_ms", None)][-1]
+
+
+def test_run_carries_the_class_bytes_cap_as_maximum_bytes_billed(tmp_path):
+    """BigQuery refuses a job over the class cap even if the dry-run check
+    let it through; the backend's project-wide ceiling only applies above it."""
+    from cost_guard.config import caps_for, load_customer
+    from cost_guard.runtime import run_query
+
+    customer = load_customer()
+    q = "SELECT order_id FROM orders WHERE created_at >= '2024-01-01'"
+    for cls in ("interactive", "scheduled"):
+        fake = FakeClient(nbytes=1024**2)
+        wh = BigQueryWarehouse("proj", client=fake, maximum_bytes_billed=2 * 1024**4)
+        out = run_query(q, wh, cls, customer=customer, log_path=tmp_path / f"{cls}.jsonl", tracer=Tracer())
+        assert out.verdict.decision != "block"
+        cap = caps_for(customer, cls)["max_bytes_scanned"]
+        assert int(_execute_config(fake).maximum_bytes_billed) == cap
+    fake = FakeClient(nbytes=1024**2)
+    wh = BigQueryWarehouse("proj", client=fake, maximum_bytes_billed=1024**3)  # project ceiling below the cap
+    run_query(q, wh, customer=customer, log_path=tmp_path / "low.jsonl", tracer=Tracer())
+    assert int(_execute_config(fake).maximum_bytes_billed) == 1024**3  # can only lower it
+
+
+def test_bypassed_block_keeps_only_the_project_ceiling(tmp_path):
+    import copy
+
+    from cost_guard.config import load_customer
+    from cost_guard.runtime import run_query
+
+    customer = copy.deepcopy(load_customer())
+    customer.setdefault("guard", {})["allow_bypass"] = True
+    fake = FakeClient(nbytes=500 * 1024**3)  # over the 200 GB interactive cap
+    wh = BigQueryWarehouse("proj", client=fake, maximum_bytes_billed=1024**4)
+    out = run_query("SELECT order_id FROM orders WHERE created_at >= '2024-01-01'", wh,
+                    customer=customer, log_path=tmp_path / "log.jsonl", tracer=Tracer(),
+                    bypass_reason="quarter-end backfill")
+    assert out.verdict.bypassed and out.execution is not None
+    assert int(_execute_config(fake).maximum_bytes_billed) == 1024**4
+
+
+def test_bytes_ceiling_refusal_is_reported():
+    class Refusing(FakeClient):
+        def query(self, sql, job_config=None):
+            raise RuntimeError("400 Query exceeded limit for bytes billed: 1000. 2000 or higher required.")
+
+    res = BigQueryWarehouse("proj", client=Refusing(0)).execute("SELECT 1", max_bytes_billed=1000)
+    assert res.status == "error" and res.detail.startswith("bytes ceiling:")

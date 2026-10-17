@@ -7,8 +7,11 @@ hard cap (customer.yaml max_runtime_sec). Only read-only queries reach
 execution — the Guard blocks everything else — so killing one is safe.
 
 DuckDB: connection.interrupt() from a timer thread (backend.execute).
-BigQuery equivalent: QueryJobConfig(job_timeout_ms=...) plus
-maximum_bytes_billed; the job is cancelled server-side at the deadline.
+BigQuery equivalent: QueryJobConfig(job_timeout_ms=...); the job is
+cancelled server-side at the deadline. Every BigQuery run also carries the
+class's bytes cap (max_bytes_scanned) as maximum_bytes_billed, so BigQuery
+refuses a query the dry-run check let through by mistake. A bypassed block
+keeps only the backend's project-wide ceiling: it was let through on purpose.
 
 The query log stores literal-free fingerprints (the normalized query shape,
 which stays in-customer) and numbers — never raw SQL or its literal values.
@@ -155,14 +158,16 @@ def run_query(
                      llm=llm, bypass_reason=bypass_reason, offered_rewrites=offered,
                      rewrite_wait_sec=rewrite_wait_sec, shape_runtimes=shape_runtimes(log, fp))
     check_ms = round((time.perf_counter() - t0) * 1000, 1)
-    hard_cap = float(caps_for(customer, workload_class).get("max_runtime_sec") or 0) or None
+    caps = caps_for(customer, workload_class)
+    hard_cap = float(caps.get("max_runtime_sec") or 0) or None
+    bytes_ceiling = None if verdict.bypassed else (int(caps.get("max_bytes_scanned") or 0) or None)
     timeout = hard_cap
     if updater is not None and hard_cap is not None:
         timeout = updater.rules.threshold(fp, hard_cap)
 
     execution = None
     if verdict.decision != "block":
-        execution = backend.execute(sql, timeout_sec=timeout)
+        execution = backend.execute(sql, timeout_sec=timeout, max_bytes_billed=bytes_ceiling)
         if updater is not None and execution.status in ("completed", "killed"):
             updater.observe(fp, execution.duration_sec)
     ts = datetime.now(timezone.utc).isoformat()

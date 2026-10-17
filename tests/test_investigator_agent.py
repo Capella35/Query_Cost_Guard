@@ -32,7 +32,7 @@ class FakeWarehouse:
     def table_metadata(self, table):
         return {"table": table, "num_rows": 5000, "column_count": 4, "columns": ["status", "user_id"]}
 
-    def execute(self, sql, timeout_sec=None):
+    def execute(self, sql, timeout_sec=None, max_bytes_billed=None):
         return ExecutionResult("completed", self.next_duration, row_count=3)
 
     def column_registry(self):

@@ -437,10 +437,12 @@ class DuckDBWarehouse:
         finally:
             mem.close()
 
-    def execute(self, sql: str, timeout_sec: Optional[float] = None) -> ExecutionResult:
+    def execute(self, sql: str, timeout_sec: Optional[float] = None,
+                max_bytes_billed: Optional[int] = None) -> ExecutionResult:
         """Runtime watchdog (F4.2): run on a cursor and interrupt it past
         timeout_sec. Callers must only pass read-only queries — killing a
-        write mid-flight is not safe; the Guard enforces this."""
+        write mid-flight is not safe; the Guard enforces this.
+        max_bytes_billed is ignored: DuckDB bills no bytes."""
         base = self._connect()
         with self._lock:
             cur = base.cursor()  # a cursor of its own, so interrupt() hits only this query

@@ -87,8 +87,10 @@ class WarehouseBackend(Protocol):
         """Sampled copies of `tables` for bounded-cost verification."""
         ...
 
-    def execute(self, sql: str, timeout_sec: Optional[float]) -> ExecutionResult:
-        """Run the query with a watchdog; kill it past timeout_sec."""
+    def execute(self, sql: str, timeout_sec: Optional[float],
+                max_bytes_billed: Optional[int] = None) -> ExecutionResult:
+        """Run the query with a watchdog; kill it past timeout_sec. A backend
+        that bills bytes refuses the query past max_bytes_billed."""
         ...
 
     def table_metadata(self, table: str) -> dict:
