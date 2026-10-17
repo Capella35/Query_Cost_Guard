@@ -20,6 +20,11 @@ happened (runs/query_log.jsonl, written by runtime.run_query) and answers:
    counterfactual upper bound: the estimate of what would have run, not
    money saved — the analyst may have run a fixed version instead (that run
    is in the log and counted as executed).
+5. Guard health — decision mix and rates, Guard latency (p50/p95 of the
+   check, from check_ms), and estimate accuracy where the warehouse reports
+   billed bytes (BigQuery: billed / estimated, per executed run).
+6. LLM usage — from the trace file, when one is given: calls, tokens and
+   errors per LLM span (llm.*), so the "capped LLM" rule is checkable.
 
 Dollars are MODELED (customer.yaml cost_model): bytes x price_per_tb_usd
 where bytes exist (BigQuery), else runtime x price_per_runtime_hour_usd when
@@ -200,9 +205,66 @@ def spend_ledger(log: list[dict], s: dict) -> dict:
     }
 
 
-def build_report(log: list[dict], customer: Optional[dict] = None, top: int = 10) -> dict:
-    s = _settings(customer)
+def _pct(values: list[float], q: float) -> Optional[float]:
+    if not values:
+        return None
+    import math
+
+    v = sorted(values)  # nearest rank
+    return round(v[max(0, math.ceil(q * len(v)) - 1)], 1)
+
+
+def guard_health(log: list[dict]) -> dict:
+    n = len(log)
+    decisions: dict[str, int] = defaultdict(int)
+    for r in log:
+        decisions[r["decision"]] += 1
+    latency = [r["check_ms"] for r in log if r.get("check_ms") is not None]
+    ratios = sorted(r["bytes_billed"] / r["bytes_estimate"] for r in log
+                    if _executed(r) and r.get("bytes_billed") is not None and r.get("bytes_estimate"))
+
+    def rate(k):
+        return round(decisions.get(k, 0) / n, 4) if n else None
+
     return {
+        "decisions": dict(sorted(decisions.items())),
+        "block_rate": rate("block"),
+        "flag_rate": round(sum(decisions.get(k, 0) for k in ("warn", "rewrite", "block")) / n, 4) if n else None,
+        "bypass_rate": round(sum(1 for r in log if r.get("bypassed")) / n, 4) if n else None,
+        "check_ms": {"runs": len(latency), "p50": _pct(latency, 0.5), "p95": _pct(latency, 0.95)},
+        "estimate_accuracy": {
+            "runs": len(ratios),
+            "median_billed_over_estimate": round(ratios[len(ratios) // 2], 3) if ratios else None,
+            "note": "billed bytes from the warehouse (BigQuery only); 1.0 = estimate exact",
+        },
+    }
+
+
+def llm_usage(traces: list[dict]) -> dict:
+    """LLM calls and tokens from trace spans named llm.* (counts only)."""
+    by_name: dict[str, dict] = defaultdict(lambda: {"calls": 0, "errors": 0, "input_tokens": 0,
+                                                    "output_tokens": 0})
+    for sp in traces:
+        if not sp.get("name", "").startswith("llm."):
+            continue
+        a, row = sp.get("attrs") or {}, by_name[sp["name"]]
+        row["calls"] += 1
+        row["errors"] += 1 if a.get("error") else 0
+        row["input_tokens"] += a.get("input_tokens") or 0
+        row["output_tokens"] += a.get("output_tokens") or 0
+    return {
+        "by_span": dict(sorted(by_name.items())),
+        "calls": sum(r["calls"] for r in by_name.values()),
+        "input_tokens": sum(r["input_tokens"] for r in by_name.values()),
+        "output_tokens": sum(r["output_tokens"] for r in by_name.values()),
+    }
+
+
+def build_report(log: list[dict], customer: Optional[dict] = None, top: int = 10,
+                 traces: Optional[list[dict]] = None) -> dict:
+    """traces: spans from the trace file (tracing.read_traces); adds LLM usage."""
+    s = _settings(customer)
+    rep = {
         "cost_unit": ("MODELED USD from bytes" if s["price_per_tb"] and any(r.get("bytes_estimate") for r in log)
                       else "MODELED USD from runtime" if s["price_per_hour"]
                       else "runtime seconds and estimated rows (no price set)"),
@@ -210,4 +272,8 @@ def build_report(log: list[dict], customer: Optional[dict] = None, top: int = 10
         "workload_by_shape": workload_by_shape(log, s, top),
         "cache_opportunity": cache_opportunity(log, s),
         "spend_ledger": spend_ledger(log, s),
+        "guard_health": guard_health(log),
     }
+    if traces is not None:
+        rep["llm_usage"] = llm_usage(traces)
+    return rep

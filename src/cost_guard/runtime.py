@@ -57,6 +57,8 @@ class LogRecord:
     rewrite_fingerprint: Optional[str] = None  # shape of the offered rewrite
     bytes_estimate: Optional[int] = None
     bypassed: bool = False
+    check_ms: Optional[float] = None  # time the Guard took to decide
+    bytes_billed: Optional[int] = None  # actual billed bytes (BigQuery), vs bytes_estimate
 
 
 def _log_key(log_path: Path) -> bytes:
@@ -110,21 +112,29 @@ def run_query(
     user: Optional[str] = None,
     bypass_reason: Optional[str] = None,
     llm=None,
+    rewrite_wait_sec: Optional[float] = None,
 ) -> RunOutcome:
     """Guard the query, run it under the watchdog unless blocked, log it,
     and feed the duration to the threshold updater's shadow/probation.
 
     Rewrites already offered (rewrite_fingerprint in the log) are passed to
     the Guard so a run rewrite is not rewritten again. The log is read whole
-    each call — fine for a POC log, an index for a real one."""
+    each call — fine for a POC log, an index for a real one.
+    rewrite_wait_sec: see guard.decide (long-running services pass
+    customer.yaml guard.rewrite_wait_sec)."""
+    import time
+
     from .config import caps_for, load_customer
 
     customer = customer if customer is not None else load_customer()
     fp = fingerprint_query(sql)
     offered = ({r["rewrite_fingerprint"] for r in read_log(log_path) if r.get("rewrite_fingerprint")}
                if log_path is not None else None)
+    t0 = time.perf_counter()
     verdict = decide(sql, workload_class, customer=customer, backend=backend, tracer=tracer,
-                     llm=llm, bypass_reason=bypass_reason, offered_rewrites=offered)
+                     llm=llm, bypass_reason=bypass_reason, offered_rewrites=offered,
+                     rewrite_wait_sec=rewrite_wait_sec)
+    check_ms = round((time.perf_counter() - t0) * 1000, 1)
     hard_cap = float(caps_for(customer, workload_class).get("max_runtime_sec") or 0) or None
     timeout = hard_cap
     if updater is not None and hard_cap is not None:
@@ -152,6 +162,8 @@ def run_query(
                                      if verdict.rewritten_sql else None),
                 bytes_estimate=verdict.estimated_bytes,
                 bypassed=verdict.bypassed is not None,
+                check_ms=check_ms,
+                bytes_billed=execution.bytes_billed if execution else None,
             ),
             log_path,
         )

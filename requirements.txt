@@ -6,3 +6,6 @@ anthropic>=1.0       # optional LLM components (rewrite proposer, explainer, jud
 pytest>=8.0
 streamlit>=1.30      # demo UI only
 google-cloud-bigquery>=3.0  # stretch backend only
+mcp>=2.3                     # MCP server (mcp_server.py)
+opentelemetry-sdk>=1.40      # optional: trace export to Phoenix (observability.py)
+opentelemetry-exporter-otlp-proto-http>=1.40

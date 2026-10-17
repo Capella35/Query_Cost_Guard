@@ -323,6 +323,17 @@ client, the telemetry export. The query log stores:
 
 Never stored: SQL text, literal values, result rows.
 
+Traces (`runs/traces.jsonl`, and Phoenix when export is on) hold span names,
+timings and attributes: shape ids (a hash of the fingerprint), counts,
+verdicts, reasons, LLM token counts. Not the fingerprint text, SQL, prompts or
+rows; LLM calls are not auto-instrumented because an instrumentor would export
+the prompt, which holds the query. A self-hosted Phoenix keeps everything on
+the machine; a hosted endpoint is a deployment decision.
+
+The MCP server returns the caller's own information (verdicts, its query's
+fingerprint and rewrite, counts, bytes, durations) and never result rows;
+query history drops the caller id and the keyed query hash.
+
 ## 12. Decision log
 
 | Date | Decision | Why |
@@ -350,6 +361,9 @@ Never stored: SQL text, literal values, result rows.
 | 2026-10-16 | SUM/AVG over a confirmed CATEGORY is blocked too; events.sequence_number confirmed as category | Owner's decision: sequence_number restarts at 1 in every session (a step label, half of a session+step key), so adding or averaging it is meaningless; grouping, counting and MIN/MAX (session length) stay allowed. Only a person's confirmation blocks |
 | 2026-10-16 | DuckDB backend thread-safe: one cursor per thread, locked lazy setup | A shared backend (any long-running service, e.g. an MCP server) gave 76 errors and 47 wrong verdicts in 200 checks from 8 threads; after: 0 and 0 at 8 and 32 threads. BigQuery was already safe (0/0) |
 | 2026-10-16 | BigQuery check: table metadata and a column's full size cached 10 min; dry run, metadata and the join check's dry run overlap | Measured, warm, median of 8: single table 831 → 590 ms, dated join 3,101 → 613 ms (5×), same verdicts. A check now costs about one dry run. A schema change shows up within 10 minutes |
+| 2026-10-16 | MCP server with `run_query` as the only warehouse path; no result rows from any tool | AI apps get the Guard in the path instead of beside it; a model cannot skip the check, and rows stay in the warehouse. Tested end to end over stdio |
+| 2026-10-16 | Phoenix for observability, through OpenTelemetry, optional; JSONL stays the default | Owner's choice. Self-hosted, no vendor cost; tests and evals need no collector. One trace id across JSONL and Phoenix |
+| 2026-10-16 | LLM calls traced by token counts only, not auto-instrumented | An instrumentor exports the prompt, and the prompt holds the query |
 | 2026-10-16 | Rewrite verification: 2 s limit for long-running services, results remembered (passed and failed) in memory for 24 h; dry runs of identical SQL reused for 10 min | Live, one process: first check of a rewritable query 4.0 s (answer without the rewrite, verification continues), the same query again 0.01 s with the verified rewrite. Failed verifications are not re-run (cost). Nothing written to disk; the CLI and evals wait, so their results stay deterministic |
 
 ## 13. Open questions
@@ -421,7 +435,8 @@ nothing that can block wrongly without a person's confirmation.
    info, history, report) for AI apps, with `run` the only path to the
    warehouse and no raw rows returned; an agent triggered only when a query
    shape breaks its own history, writing a report, changing nothing.
-   Groundwork done: thread-safe backends, fast cached checks.
+   Groundwork done: thread-safe backends, fast cached checks. MCP server
+   BUILT (2026-10-16, `mcp_server.py`, with Phoenix tracing); the agent is next.
 6. **Independent evaluation.** Every query set so far was written by the
    assistant that wrote the rules. A set of real or hand-written queries
    (and the tricky columns for the column-kind check) from someone else,

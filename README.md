@@ -37,10 +37,11 @@ What exists in code today. "How it works" below only describes rows marked **bui
 | Deterministic rewrite catalog: repeated subquery → CTE; `DATE_TRUNC(unit, col) = X` / `CAST(col AS DATE) = X` → range on the bare column; filter after join → pushed into the derived table. No catalog entry for SELECT * or a missing date filter: any fix changes the result. Every candidate must pass `compare_results`; all but the date-range fix must also be not costlier by estimate. The date-range fix is exempt because it only restates the filter (same rows, reads no more), and DuckDB estimates the two forms inconsistently (`CAST(col AS DATE) = X` from the distinct count, a range at a flat 20%), which used to reject it. Measured on TheLook: ×39 (`orders`), ×48 (`events`) | **built** | `rewrites.py` |
 | `compare_results`: both queries on the same sampled inputs, timeout, order-insensitive / float-tolerant / NULL-consistent hash | **built** | `tools/compare_results.py`, `results.py` |
 | Escape hatch: block → warn only with `guard.allow_bypass: true` + a reason; traced; never for writes | **built** | `guard._maybe_bypass` |
-| JSONL tracing of every decision | **built** | `tracing.py` |
+| Tracing of every decision: JSONL by default (spans nested, thread-safe); optional OpenTelemetry export to a local Phoenix (`PHOENIX_COLLECTOR_ENDPOINT`), OpenInference span kinds, the JSONL trace id = the Phoenix trace id. Spans carry shape ids, counts, verdicts, reasons and LLM token counts — never SQL text, prompts or rows (LLM calls are not auto-instrumented for that reason) | **built** — export tested in-memory and against a local OTLP receiver; not yet viewed in a running Phoenix | `tracing.py`, `observability.py` |
+| MCP server (stdio): `check_query`, `run_query` (the only path to the warehouse; blocked queries never run), `get_table_info`, `get_query_history` (numbers only), `workload_report`. No result rows returned; one trace per tool call, nested under the MCP SDK's own request span | **built** — tested in-process and end to end over stdio on TheLook DuckDB; BigQuery backend selectable, not run live through it yet | `mcp_server.py` |
 | Runtime watchdog: per-query timeout (learned threshold or hard cap), DuckDB interrupt | **built** | `runtime.py` |
 | Query log (fingerprints + numbers, no raw SQL) and `get_query_history`; optional caller id, keyed hash of the exact query (repeat detection without storing literals), offered-rewrite shape, bypass flag | **built** | `runtime.py`, `tools/` |
-| Workload report (`report`): warn follow-through (did the warned user adopt the rewrite, change the query, or re-run it unchanged), cost by query shape, result-cache opportunity, spend ledger (executed / killed / blocked, bypasses, by week). Dollars are MODELED and appear only when a price is set | **built** — measured on test logs only; no real users yet | `ledger.py` |
+| Workload report (`report`): warn follow-through (did the warned user adopt the rewrite, change the query, or re-run it unchanged), cost by query shape, result-cache opportunity, spend ledger (executed / killed / blocked, bypasses, by week), Guard health (decision mix, block / flag / bypass rates, check latency p50/p95, billed ÷ estimated bytes on BigQuery), LLM usage from the trace file (calls, tokens, errors per LLM span). Dollars are MODELED and appear only when a price is set | **built** — measured on test logs only; no real users yet | `ledger.py` |
 | Investigator: regression check vs a pre-regression baseline, bounded tightening, rule-store lookup, episodic memory | **built** | `investigator.py` |
 | Threshold updater: deterministic gates → optional judge → shadow trial → enforce → probation, auto-rollback | **built** (offline-tested) | `thresholds.ThresholdUpdater` |
 | CLI: `check`, `run` (`--user`, `--bypass-reason`), `investigate`, `report` | **built** | `python -m cost_guard` |
@@ -344,6 +345,9 @@ static-only vs static+adaptive.
 │   ├── config.py             # load_customer(), caps per workload class
 │   ├── guard.py              # pre-execution decision
 │   ├── runtime.py            # guard → watchdog execution → query log
+│   ├── mcp_server.py         # MCP tools for AI apps; run_query = the only warehouse path
+│   ├── tracing.py            # JSONL spans for every decision
+│   ├── observability.py      # optional OpenTelemetry export (Phoenix)
 │   ├── investigator.py       # regression detection + bounded proposals
 │   ├── thresholds.py         # fingerprints, baselines, gates, rule store, updater
 │   ├── llm.py                # Claude rewrite proposer / explainer / judge
@@ -355,7 +359,7 @@ static-only vs static+adaptive.
 │   └── rules/static_rules.py
 ├── scripts/                  # TheLook loader, column registry build, BigQuery schema check
 ├── demo/                     # synthetic warehouse, 4-beat CLI demo, Streamlit UI
-└── tests/                    # 152 tests (TheLook-dependent ones skip without data/)
+└── tests/                    # 325 tests (TheLook-dependent ones skip without data/)
 ```
 
 ## Quickstart (local-first, no cloud)
@@ -385,6 +389,24 @@ running anything**, then: `scripts/bq_dryrun_compare.py --project $GCP_PROJECT
 --create-copies` (partitioned TheLook copies, a few GB once),
 `scripts/build_column_registry.py --bigquery-project $GCP_PROJECT` (~0.5 GB),
 `scripts/bq_live_check.py --project $GCP_PROJECT` (dry runs, free).
+
+**MCP server:** Cost Guard's tools for AI apps (Claude Code, Claude Desktop,
+any MCP client), over stdio:
+
+```bash
+claude mcp add cost-guard -e PYTHONPATH=src -- .venv/bin/python -m cost_guard.mcp_server
+# BigQuery instead of the DuckDB file: append  --backend bigquery  (GCP_PROJECT from .env)
+```
+
+`run_query` runs real queries (on BigQuery it bills); blocked queries never run
+and no tool returns result rows. Each call appends its trace to
+`runs/traces.jsonl` and returns the `trace_id`.
+
+**Phoenix (optional):** `pip install arize-phoenix && phoenix serve`, then
+start the server with `PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006`. The
+MCP request spans and the Guard's spans appear as one trace per tool call at
+http://localhost:6006. Self-hosted keeps every span on the machine; a hosted
+endpoint would receive span attributes (no SQL text or rows, see DESIGN.md §11).
 
 ## Demo (5 minutes, zero setup)
 

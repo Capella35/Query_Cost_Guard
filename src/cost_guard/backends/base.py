@@ -58,6 +58,7 @@ class ExecutionResult:
     duration_sec: float
     row_count: int = 0
     detail: str = ""
+    bytes_billed: Optional[int] = None  # BigQuery job's billed bytes; None elsewhere
 
 
 class SampledInputs(Protocol):

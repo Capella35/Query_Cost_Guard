@@ -134,6 +134,13 @@ class ClaudeLLM:
             betas=[FALLBACK_BETA],
             fallbacks="default",
         )
+        usage = getattr(resp, "usage", None)
+        if usage is not None:  # counts only — the prompt holds the query, so it is not traced
+            from .tracing import annotate
+
+            annotate(model=self.model, input_tokens=getattr(usage, "input_tokens", None),
+                     output_tokens=getattr(usage, "output_tokens", None),
+                     cache_read_tokens=getattr(usage, "cache_read_input_tokens", None))
         if resp.stop_reason == "refusal":
             return None
         return resp.parsed_output

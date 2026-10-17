@@ -202,7 +202,8 @@ class BigQueryWarehouse:
         try:
             job = self._bq().query(sql, job_config=self._job_config(**kw))
             rows = list(job.result(timeout=timeout_sec))
-            return ExecutionResult("completed", time.perf_counter() - t0, len(rows))
+            return ExecutionResult("completed", time.perf_counter() - t0, len(rows),
+                                   bytes_billed=getattr(job, "total_bytes_billed", None))
         except Exception as e:  # noqa: BLE001
             dur = time.perf_counter() - t0
             msg = str(e).splitlines()[0] if str(e) else type(e).__name__
