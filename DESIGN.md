@@ -364,10 +364,20 @@ query history drops the caller id and the keyed query hash.
 | 2026-10-16 | MCP server with `run_query` as the only warehouse path; no result rows from any tool | AI apps get the Guard in the path instead of beside it; a model cannot skip the check, and rows stay in the warehouse. Tested end to end over stdio |
 | 2026-10-16 | Phoenix for observability, through OpenTelemetry, optional; JSONL stays the default | Owner's choice. Self-hosted, no vendor cost; tests and evals need no collector. One trace id across JSONL and Phoenix |
 | 2026-10-16 | LLM calls traced by token counts only, not auto-instrumented | An instrumentor exports the prompt, and the prompt holds the query |
+| 2026-10-17 | MCP: the deployment sets the workload class (`--workload`); a caller may only pick an equal or stricter class; no bypass through MCP | Found on a blocked 3-table join: the same query as `scheduled` became a warn and would have run. A bypass is a person's decision, not a model's |
+| 2026-10-17 | Blocks carry `fix_hints`: main cause first (a table alone over the cap, a many-to-many join key, the joins' fan-out, a cartesian product), then fixes, each marked whether it changes the result; never a rewrite, never a different decision | A block listed every finding with equal weight; neither a person nor an AI could tell which change mattered. Deterministic, from the decision's own metadata: +0.7 ms on a 4.5 ms block (warm, DuckDB) |
+| 2026-10-17 | Report: block follow-through (fixed and ran / retried unchanged / still blocked / bypassed / nothing) | Measures whether hints help; counts runs only (checks are not logged) |
 | 2026-10-16 | Rewrite verification: 2 s limit for long-running services, results remembered (passed and failed) in memory for 24 h; dry runs of identical SQL reused for 10 min | Live, one process: first check of a rewritable query 4.0 s (answer without the rewrite, verification continues), the same query again 0.01 s with the verified rewrite. Failed verifications are not re-run (cost). Nothing written to disk; the CLI and evals wait, so their results stay deterministic |
 
 ## 13. Open questions
 
+- Registry distinct counts (HyperLogLog) measured against exact counts on
+  TheLook (47 columns with >= 1,000 values, 2026-10-17): -17% to +16%, not
+  the ~2% assumed. `plan_estimate.HLL_MARGIN` (1.05) is narrower than that,
+  so a registry-bounded GROUP BY estimate can run up to ~13% low (e.g.
+  products.sku 0.831). Options: a margin from the measured error (~1.2), or
+  exact counts for columns under a size limit. Not changed: it moves
+  verdicts, so it needs a decision and a pre-registered check.
 - Many users: see section 14 (daily budgets, threshold saving, log reads).
 - Resolved: the rewrite catalog emits BigQuery SQL on BigQuery (dialect per
   decision, real TIMESTAMP literals; 3a6ced9, b98a68c). Found by the

@@ -44,7 +44,7 @@ def test_run_query_returns_counts_never_rows(service):
 
 def test_blocked_and_non_read_only_queries_never_run(service):
     assert service.run_query(HUGE)["executed"] is False
-    out = service.run_query("DELETE FROM orders", bypass_reason="please")
+    out = service.run_query("DELETE FROM orders")
     assert out["decision"] == "block" and out["executed"] is False
     assert [r["status"] for r in read_log(service.log_path)] == ["blocked", "blocked"]
     # Literals and SQL text stay out of the trace file.
@@ -169,3 +169,44 @@ def test_otel_export_nests_spans_and_shares_the_trace_id(service):
     exported = json.dumps([dict(s.attributes) for s in spans]).lower()
     assert "alice" not in exported and "users.email" not in exported
     assert not observability.enabled()
+
+
+def test_caller_cannot_loosen_the_workload_class(service):
+    # The loophole: the same block becomes a warn under 'scheduled' (10x caps).
+    with pytest.raises(PermissionError, match="looser caps"):
+        service.check_query(HUGE, workload_class="scheduled")
+    with pytest.raises(PermissionError):
+        service.run_query(HUGE, workload_class="scheduled")
+    assert read_log(service.log_path) == []
+    assert service.check_query(SMALL, workload_class="interactive")["workload_class"] == "interactive"
+
+
+def test_stricter_class_is_allowed(synthetic_wh, tmp_path):
+    svc = CostGuardService(synthetic_wh, load_customer(), tmp_path / "log.jsonl", None,
+                           workload_class="scheduled")
+    assert svc.check_query(SMALL, workload_class="interactive")["workload_class"] == "interactive"
+    assert svc.check_query(SMALL)["workload_class"] == "scheduled"
+
+
+def test_unknown_server_class_fails_at_startup(synthetic_wh):
+    with pytest.raises(KeyError):
+        CostGuardService(synthetic_wh, load_customer(), workload_class="nightly")
+
+
+def test_mcp_has_no_bypass_and_returns_fix_hints(service):
+    from mcp import Client
+
+    from cost_guard.mcp_server import build_server
+
+    async def go():
+        async with Client(build_server(service)) as client:
+            tools = {t.name: t for t in (await client.list_tools()).tools}
+            res = await client.call_tool("check_query", {"sql": HUGE})
+            loose = await client.call_tool("run_query", {"sql": HUGE, "workload_class": "scheduled"})
+            return tools, res, loose
+
+    tools, res, loose = asyncio.run(go())
+    assert "bypass_reason" not in tools["run_query"].input_schema["properties"]
+    hints = res.structured_content["fix_hints"]
+    assert hints and hints[0]["kind"] == "cause"
+    assert loose.is_error and "looser caps" in loose.content[0].text

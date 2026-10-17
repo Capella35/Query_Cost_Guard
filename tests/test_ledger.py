@@ -125,3 +125,21 @@ def test_cli_report(tmp_path, capsys):
     log.write_text("\n".join(json.dumps(_rec(i, "s")) for i in range(3)) + "\n")
     assert main(["report", "--log", str(log)]) == 0
     assert json.loads(capsys.readouterr().out)["spend_ledger"]["runs"] == 3
+
+
+def test_block_followthrough_classifies_next_run():
+    B = dict(decision="block", status="blocked")
+    log = [
+        _rec(0, "a", user="u1", **B), _rec(3, "a2", user="u1"),                      # fixed
+        _rec(0, "b", user="u2", **B), _rec(1, "b", user="u2", **B),                  # retried, then nothing
+        _rec(0, "c", user="u3", **B), _rec(2, "c2", user="u3", **B),                 # still blocked, then nothing
+        _rec(0, "d", user="u4", **B), _rec(1, "d", "warn", user="u4", bypassed=True),  # bypassed
+        _rec(0, "e", user="u5", **B), _rec(90, "e2", user="u5"),                     # past the window
+        _rec(0, "f", user=None, **B),
+    ]
+    bf = build_report(log, _customer())["block_followthrough"]
+    assert (bf["fixed_and_ran"], bf["retried_unchanged"], bf["changed_still_blocked"],
+            bf["bypassed"]) == (1, 1, 1, 1)
+    assert bf["no_followup"] == 3  # u2's and u3's second blocks, u5's
+    assert bf["blocked_runs_without_user"] == 1
+    assert bf["blocked_runs_with_user"] == 7

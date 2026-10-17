@@ -47,7 +47,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-HLL_MARGIN = 1.05  # registry distinct counts are approximate (~2% error)
+# Registry distinct counts are approximate. Measured on TheLook (2026-10-17):
+# -17% to +16% vs exact per column — wider than this margin, so a GROUP BY
+# bound can run up to ~13% low. Open (DESIGN.md section 13); changing it
+# changes verdicts, so it waits for a decision.
+HLL_MARGIN = 1.05
 
 _POS = re.compile(r"^#(\d+)$")
 _WRAP = re.compile(r"^__internal_\w+\(\s*(#\d+)\s*(?:,[^()]*)?\)$")

@@ -71,7 +71,7 @@ class RegistryEntry:
     total_rows: int
     distinct_count: int  # NULLs excluded; capped at the non-NULL rows
     null_count: int
-    is_approximate: bool  # distinct_count came from HyperLogLog (~2% error)
+    is_approximate: bool  # HyperLogLog; measured on TheLook: -17% to +16% vs exact (47 columns)
     profiled_at: str  # ISO-8601 UTC
     # Value range as text, castable back to data_type. Numeric and date/time
     # columns only (NULL otherwise, or when every value is NULL).

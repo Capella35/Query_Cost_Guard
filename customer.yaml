@@ -40,7 +40,7 @@ column_registry:
   max_age_days: 35            # older entries are unverified (rule skipped, visibly)
   max_table_rows: 100000000   # size gate: larger tables are reported, not scanned
   scan_timeout_sec: 900       # per-table profiling scan
-  use_approximate: true       # HyperLogLog distinct counts (~2% error)
+  use_approximate: true       # HyperLogLog distinct counts (measured on TheLook: -17%..+16% per column)
 
 # Escape hatch (PROJECT_BRIEF): a blocked query runs only when this is true AND
 # the caller passes a bypass reason. Every bypass is recorded in the trace.

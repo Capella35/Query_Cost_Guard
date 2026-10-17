@@ -63,3 +63,17 @@ def partition_column(customer: Optional[dict], table: str) -> Optional[str]:
 
 def bypass_allowed(customer: Optional[dict]) -> bool:
     return bool(((customer or {}).get("guard") or {}).get("allow_bypass", False))
+
+
+def no_looser_than(customer: dict, requested: str, ceiling: str) -> bool:
+    """True when every cap of `requested` is at most the same cap of `ceiling`
+    — a caller may pick an equal or stricter class, never a looser one. A cap
+    the ceiling sets and the requested class leaves out counts as looser."""
+    req, top = caps_for(customer, requested), caps_for(customer, ceiling)
+    for k, limit in top.items():
+        if limit is None:
+            continue
+        mine = req.get(k)
+        if mine is None or mine > limit:
+            return False
+    return True

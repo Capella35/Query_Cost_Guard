@@ -117,6 +117,9 @@ class GuardVerdict:
     verification: Optional[str] = None  # compare_results detail for the offered rewrite
     explanation: Optional[str] = None  # plain-language LLM explanation (warn/block only)
     bypassed: Optional[str] = None  # bypass reason when an escape hatch was used
+    # Blocks only: the main cause first, then fixes, each marked whether it
+    # changes the result (fix_hints.py). Deterministic; never changes a decision.
+    fix_hints: list[dict] = field(default_factory=list)
 
 
 def is_read_only(sql: str) -> bool:
@@ -161,8 +164,11 @@ def decide(
     dialect = "bigquery" if getattr(backend, "name", None) == "bigquery" else sql_ast.DIALECT
     with tracer.trace("guard.decide", workload_class=workload_class) as tid, \
             sql_ast.using_dialect(dialect):
+        ctx: dict = {}
         verdict = _decide(sql, workload_class, customer, backend, tracer, tid, llm,
-                           offered_rewrites, rewrite_wait_sec)
+                           offered_rewrites, rewrite_wait_sec, ctx)
+        if verdict.decision == "block":
+            _add_fix_hints(sql, verdict, customer, backend, tracer, tid, ctx)
         verdict = _maybe_bypass(verdict, customer, bypass_reason, tracer, tid)
         if llm is not None and verdict.decision in ("warn", "block") and verdict.findings:
             with tracer.span(tid, "llm.explain_flag") as span:
@@ -192,8 +198,31 @@ def _maybe_bypass(verdict, customer, bypass_reason, tracer, tid) -> GuardVerdict
     return verdict
 
 
+def _add_fix_hints(sql, verdict, customer, backend, tracer, tid, ctx) -> None:
+    """Blocked verdicts get ranked causes and fixes (fix_hints.py), from the
+    metadata the decision already fetched. A failure leaves no hints, traced."""
+    from .fix_hints import fix_hints
+
+    with tracer.span(tid, "fix_hints") as span:
+        try:
+            registry = ctx.get("registry")
+            if registry is None and backend is not None and ctx.get("table_md"):
+                get = getattr(backend, "column_registry", None)
+                registry = get() if get is not None else None
+            ests = ctx.get("join_ests")
+            if ests is None and registry is not None and len(ctx.get("table_md") or {}) > 1:
+                from .join_estimate import join_estimates
+
+                ests = join_estimates(ctx["tree"], registry, ctx["max_age_days"])
+            verdict.fix_hints = fix_hints(sql, verdict, ctx.get("table_md") or {}, registry,
+                                          customer, getattr(backend, "name", None), ests)
+            span["attrs"]["hints"] = len(verdict.fix_hints)
+        except Exception as e:  # noqa: BLE001 — hints are advice; the verdict stands
+            span["attrs"]["error"] = str(e)[:200]
+
+
 def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
-            offered_rewrites=None, rewrite_wait_sec=None) -> GuardVerdict:
+            offered_rewrites=None, rewrite_wait_sec=None, ctx=None) -> GuardVerdict:
     from .column_registry import registry_settings
     from .config import caps_for, partition_column
     from .rewrites import PRUNING_ONLY_FIXERS, deterministic_rewrite
@@ -291,6 +320,8 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
         md["registry_max_age_days"] = max_age_days
         table_md[t] = md
     table_rows = {t: md.get("num_rows") for t, md in table_md.items()}
+    if ctx is not None:  # for fix hints on a block (decide -> _add_fix_hints)
+        ctx.update(tree=tree, table_md=table_md, registry=registry, max_age_days=max_age_days)
 
     # BigQuery: the join check needs its own dry run (the share of partitions a
     # date filter reads); it doesn't need the main estimate, so start it now.
@@ -395,6 +426,8 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
             span["attrs"]["estimates"] = [
                 dict(rows=e.rows, fanout=round(e.fanout, 2), filtered=e.filtered, keys=e.keys)
                 for e in ests]
+        if ctx is not None:
+            ctx["join_ests"] = ests
         fanouts = [e for e in ests if not e.filtered and e.fanout >= FANOUT_MIN_RATIO
                    and e.rows > max_rows]
         if fanouts:

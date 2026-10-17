@@ -5,7 +5,8 @@
 
 Five tools, over stdio:
 
-  check_query        Guard verdict; nothing executes (BigQuery: a free dry run)
+  check_query        Guard verdict; nothing executes (BigQuery: a free dry run).
+                     A block carries fix_hints: main cause first, then fixes.
   run_query          Guard, then execute under the watchdog — the ONLY path to
                      the warehouse this server offers. Blocked queries never run.
   get_table_info     size, partitioning, clustering of one table
@@ -13,7 +14,12 @@ Five tools, over stdio:
   workload_report    the query-log report (ledger.py) + Guard health + LLM usage
 
 Boundaries, enforced here and not left to the calling model:
-- read-only SQL only (the Guard blocks anything else, never bypassable);
+- the deployment sets the workload class (--workload): a caller may ask for an
+  equal or stricter class, never a looser one — otherwise a blocked query
+  could be retried as "scheduled" (10x the caps) and run;
+- no bypass: a blocked query stays blocked. Bypassing a cap is a person's
+  decision (CLI, with guard.allow_bypass), not something a model asks for;
+- read-only SQL only (the Guard blocks anything else);
 - no result rows ever leave the server: run_query returns status, duration,
   row count and bytes; history returns numbers, not users or query hashes;
 - the server holds one warehouse backend and exposes no other route to it.
@@ -53,13 +59,31 @@ class CostGuardService:
     every call gets its own Tracer."""
 
     def __init__(self, backend, customer: dict, log_path: str | Path = "runs/query_log.jsonl",
-                 trace_path: str | Path | None = DEFAULT_TRACES, llm=None):
+                 trace_path: str | Path | None = DEFAULT_TRACES, llm=None,
+                 workload_class: str = "interactive"):
+        from .config import caps_for
+
+        caps_for(customer, workload_class)  # unknown class fails at startup, not per call
         self.backend = backend
         self.customer = customer
+        self.workload_class = workload_class
         self.log_path = Path(log_path)
         self.trace_path = Path(trace_path) if trace_path is not None else None
         self.llm = llm
         self.rewrite_wait_sec = (customer.get("guard") or {}).get("rewrite_wait_sec")
+
+    def _workload(self, requested: Optional[str]) -> str:
+        """The class a call runs under: the server's, or a stricter one asked for."""
+        from .config import no_looser_than
+
+        if requested is None or requested == self.workload_class:
+            return self.workload_class
+        if not no_looser_than(self.customer, requested, self.workload_class):
+            raise PermissionError(
+                f"workload_class {requested!r} has looser caps than this server's "
+                f"{self.workload_class!r}; the deployment sets the class, a caller can only "
+                "pick an equal or stricter one")
+        return requested
 
     def _traced(self, tool: str, fn, **attrs) -> dict:
         tracer = Tracer()
@@ -72,9 +96,11 @@ class CostGuardService:
             if self.trace_path is not None:
                 tracer.save(self.trace_path)
 
-    def check_query(self, sql: str, workload_class: str = "interactive") -> dict:
+    def check_query(self, sql: str, workload_class: Optional[str] = None) -> dict:
         from .guard import decide
         from .thresholds import fingerprint_query
+
+        workload_class = self._workload(workload_class)
 
         def go(tracer):
             fp = fingerprint_query(sql)
@@ -85,14 +111,15 @@ class CostGuardService:
 
         return self._traced("check_query", go, workload_class=workload_class)
 
-    def run_query(self, sql: str, workload_class: str = "interactive", user: Optional[str] = None,
-                  bypass_reason: Optional[str] = None) -> dict:
+    def run_query(self, sql: str, workload_class: Optional[str] = None,
+                  user: Optional[str] = None) -> dict:
         from .runtime import run_query
+
+        workload_class = self._workload(workload_class)
 
         def go(tracer):
             out = run_query(sql, self.backend, workload_class, customer=self.customer,
-                            log_path=self.log_path, tracer=tracer, user=user,
-                            bypass_reason=bypass_reason, llm=self.llm,
+                            log_path=self.log_path, tracer=tracer, user=user, llm=self.llm,
                             rewrite_wait_sec=self.rewrite_wait_sec)
             _annotate_verdict(tracer, out.verdict, out.fingerprint)
             ex = out.execution
@@ -171,8 +198,9 @@ def _verdict_fields(v) -> dict:
         "rewrite_source": v.rewrite_source,
         "verification": v.verification,
         "explanation": v.explanation,
-        "bypassed": v.bypassed,
+        "fix_hints": v.fix_hints,  # blocks: main cause first, then fixes
         "caps": v.caps,
+        "workload_class": v.workload_class,
     }
 
 
@@ -197,38 +225,52 @@ def build_server(service: CostGuardService):
             "and blocked queries never run. Results are summaries (status, row count, "
             "bytes), never rows. Read-only SELECT/WITH queries only."),
     )
+    from mcp.server.mcpserver.exceptions import ToolError
+
     read_only = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 
+    def call(fn, *args):
+        # A refusal the caller should read and act on (a looser workload class, an
+        # unknown one) reaches the model with its message; the SDK withholds the
+        # text of any other exception (a crash) from the client.
+        try:
+            return fn(*args)
+        except (PermissionError, KeyError, ValueError) as e:
+            raise ToolError(str(e).strip("'\"")) from e
+
     @server.tool(annotations=read_only)
-    def check_query(sql: str, workload_class: str = "interactive") -> dict[str, Any]:
+    def check_query(sql: str, workload_class: Optional[str] = None) -> dict[str, Any]:
         """Check a read-only SQL query's cost WITHOUT running it. Returns the Guard's
         decision (allow | warn | rewrite | block), the reason and findings, estimated
         bytes/rows, a verified cheaper rewrite when one exists, and the query's
-        fingerprint (for get_query_history). workload_class: interactive | scheduled."""
-        return service.check_query(sql, workload_class)
+        fingerprint (for get_query_history). A block carries fix_hints: the main cause
+        first, then fixes, each marked whether it changes the result — revise the query
+        and check again. workload_class: omit to use this server's class; only an equal
+        or stricter class is accepted."""
+        return call(service.check_query, sql, workload_class)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False,
                                              idempotent_hint=False, open_world_hint=False))
-    def run_query(sql: str, workload_class: str = "interactive", user: Optional[str] = None,
-                  bypass_reason: Optional[str] = None) -> dict[str, Any]:
-        """Run a read-only SQL query through the Guard: blocked queries never run; others
-        run under a runtime limit and are logged. Returns the decision, run status,
-        duration, row COUNT and billed bytes — never result rows. Costs warehouse money
-        when it runs. user: opaque caller id. bypass_reason: only honored when the
-        deployment allows bypasses."""
-        return service.run_query(sql, workload_class, user, bypass_reason)
+    def run_query(sql: str, workload_class: Optional[str] = None,
+                  user: Optional[str] = None) -> dict[str, Any]:
+        """Run a read-only SQL query through the Guard: blocked queries never run (there
+        is no bypass here; see fix_hints to revise them); others run under a runtime
+        limit and are logged. Returns the decision, run status, duration, row COUNT and
+        billed bytes — never result rows. Costs warehouse money when it runs.
+        user: opaque caller id. workload_class: as in check_query."""
+        return call(service.run_query, sql, workload_class, user)
 
     @server.tool(annotations=read_only)
     def get_table_info(table: str) -> dict[str, Any]:
         """Size (rows, bytes), partition column, clustering and column count of a table."""
-        return service.get_table_info(table)
+        return call(service.get_table_info, table)
 
     @server.tool(annotations=read_only)
     def get_query_history(fingerprint: str, since: Optional[str] = None, limit: int = 100) -> dict[str, Any]:
         """Past runs of one query shape (the fingerprint from check_query/run_query):
         counts, statuses, median/max duration, and the most recent runs' numbers.
         since: ISO-8601 timestamp."""
-        return service.get_query_history(fingerprint, since, limit)
+        return call(service.get_query_history, fingerprint, since, limit)
 
     @server.tool(annotations=read_only)
     def workload_report(top: int = 10) -> dict[str, Any]:
@@ -236,7 +278,7 @@ def build_server(service: CostGuardService):
         follow-through, result-cache opportunity, spend ledger (MODELED dollars), Guard
         health (decision mix, block/bypass rates, check latency, estimate accuracy) and
         LLM usage."""
-        return service.workload_report(top)
+        return call(service.workload_report, top)
 
     return server
 
@@ -265,6 +307,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--db", help="DuckDB file (default: from customer.yaml)")
     p.add_argument("--project", help="BigQuery project (default: GCP_PROJECT)")
     p.add_argument("--dataset", default="thelook_ecommerce")
+    p.add_argument("--workload", default=os.environ.get("COST_GUARD_WORKLOAD", "interactive"),
+                   help="workload class for every call (callers may only pick a stricter one)")
     p.add_argument("--customer", help="path to customer.yaml (default: repo root)")
     p.add_argument("--llm", choices=["none", "claude"], default="none")
     p.add_argument("--log", default="runs/query_log.jsonl")
@@ -280,7 +324,7 @@ def main(argv: list[str] | None = None) -> int:
         llm = ClaudeLLM(backend=backend)
     if os.environ.get("PHOENIX_COLLECTOR_ENDPOINT"):
         observability.setup()
-    service = CostGuardService(backend, customer, args.log, args.traces, llm)
+    service = CostGuardService(backend, customer, args.log, args.traces, llm, args.workload)
     try:
         build_server(service).run("stdio")
     finally:

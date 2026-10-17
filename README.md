@@ -36,12 +36,13 @@ What exists in code today. "How it works" below only describes rows marked **bui
 | Column registry: a data-profiling lookup table (distinct count, NULL count, total rows, and min/max for numeric and date/time columns — not for identifier columns (`id`, `*_id`, `*_key`, `*_code`, …), which are objects, not numbers), one scan per table, stored in a local file next to the warehouse (`data/thelook.registry.duckdb`) — the build only reads the warehouse, and reading the registry is free; size gate, scan timeout, refresh modes (missing / stale / all), dropped-column cleanup; the Guard looks profiles up instead of scanning, and treats entries older than `max_age_days` as unverified | **built** — DuckDB, and BigQuery (`--bigquery-project`: catalog from the API, each table's scan dry-run first and capped by `maximum_bytes_billed`, views profiled through the view, geography/repeated columns skipped; TheLook: 7 tables, 73 columns, 0.472 GiB, file `data/bigquery/<project>.<dataset>.registry.duckdb`) | `column_registry.py`, `scripts/build_column_registry.py` |
 | Deterministic rewrite catalog: repeated subquery → CTE; `DATE_TRUNC(unit, col) = X` / `CAST(col AS DATE) = X` → range on the bare column; filter after join → pushed into the derived table. No catalog entry for SELECT * or a missing date filter: any fix changes the result. Every candidate must pass `compare_results`; all but the date-range fix must also be not costlier by estimate. The date-range fix is exempt because it only restates the filter (same rows, reads no more), and DuckDB estimates the two forms inconsistently (`CAST(col AS DATE) = X` from the distinct count, a range at a flat 20%), which used to reject it. Measured on TheLook: ×39 (`orders`), ×48 (`events`) | **built** | `rewrites.py` |
 | `compare_results`: both queries on the same sampled inputs, timeout, order-insensitive / float-tolerant / NULL-consistent hash | **built** | `tools/compare_results.py`, `results.py` |
+| Fix hints on blocks: main cause first (a table alone over the cap, a many-to-many join key from the registry, the joins' estimated fan-out, a cartesian product), then ranked fixes (aggregate before the join, a date filter with a 30-day estimate labeled "if rows are spread evenly", column list), each marked whether it changes the result. Never a rewrite, never a different decision | **built** | `fix_hints.py` |
 | Escape hatch: block → warn only with `guard.allow_bypass: true` + a reason; traced; never for writes | **built** | `guard._maybe_bypass` |
 | Tracing of every decision: JSONL by default (spans nested, thread-safe); optional OpenTelemetry export to a local Phoenix (`PHOENIX_COLLECTOR_ENDPOINT`), OpenInference span kinds, the JSONL trace id = the Phoenix trace id. Spans carry shape ids, counts, verdicts, reasons and LLM token counts — never SQL text, prompts or rows (LLM calls are not auto-instrumented for that reason) | **built** — export tested in-memory and against a local OTLP receiver; not yet viewed in a running Phoenix | `tracing.py`, `observability.py` |
-| MCP server (stdio): `check_query`, `run_query` (the only path to the warehouse; blocked queries never run), `get_table_info`, `get_query_history` (numbers only), `workload_report`. No result rows returned; one trace per tool call, nested under the MCP SDK's own request span | **built** — tested in-process and end to end over stdio on TheLook DuckDB; BigQuery backend selectable, not run live through it yet | `mcp_server.py` |
+| MCP server (stdio): `check_query`, `run_query` (the only path to the warehouse; blocked queries never run), `get_table_info`, `get_query_history` (numbers only), `workload_report`. The deployment sets the workload class (`--workload`; callers may only pick a stricter one) and there is no bypass through MCP. No result rows returned; one trace per tool call, nested under the MCP SDK's own request span | **built** — tested in-process and end to end over stdio on TheLook DuckDB; BigQuery backend selectable, not run live through it yet | `mcp_server.py` |
 | Runtime watchdog: per-query timeout (learned threshold or hard cap), DuckDB interrupt | **built** | `runtime.py` |
 | Query log (fingerprints + numbers, no raw SQL) and `get_query_history`; optional caller id, keyed hash of the exact query (repeat detection without storing literals), offered-rewrite shape, bypass flag | **built** | `runtime.py`, `tools/` |
-| Workload report (`report`): warn follow-through (did the warned user adopt the rewrite, change the query, or re-run it unchanged), cost by query shape, result-cache opportunity, spend ledger (executed / killed / blocked, bypasses, by week), Guard health (decision mix, block / flag / bypass rates, check latency p50/p95, billed ÷ estimated bytes on BigQuery), LLM usage from the trace file (calls, tokens, errors per LLM span). Dollars are MODELED and appear only when a price is set | **built** — measured on test logs only; no real users yet | `ledger.py` |
+| Workload report (`report`): warn follow-through (did the warned user adopt the rewrite, change the query, or re-run it unchanged), block follow-through (fixed and ran, retried unchanged, still blocked, bypassed, nothing), cost by query shape, result-cache opportunity, spend ledger (executed / killed / blocked, bypasses, by week), Guard health (decision mix, block / flag / bypass rates, check latency p50/p95, billed ÷ estimated bytes on BigQuery), LLM usage from the trace file (calls, tokens, errors per LLM span). Dollars are MODELED and appear only when a price is set | **built** — measured on test logs only; no real users yet | `ledger.py` |
 | Investigator: regression check vs a pre-regression baseline, bounded tightening, rule-store lookup, episodic memory | **built** | `investigator.py` |
 | Threshold updater: deterministic gates → optional judge → shadow trial → enforce → probation, auto-rollback | **built** (offline-tested) | `thresholds.ThresholdUpdater` |
 | CLI: `check`, `run` (`--user`, `--bypass-reason`), `investigate`, `report` | **built** | `python -m cost_guard` |
@@ -359,7 +360,7 @@ static-only vs static+adaptive.
 │   └── rules/static_rules.py
 ├── scripts/                  # TheLook loader, column registry build, BigQuery schema check
 ├── demo/                     # synthetic warehouse, 4-beat CLI demo, Streamlit UI
-└── tests/                    # 325 tests (TheLook-dependent ones skip without data/)
+└── tests/                    # 336 tests (TheLook-dependent ones skip without data/)
 ```
 
 ## Quickstart (local-first, no cloud)
@@ -399,7 +400,9 @@ claude mcp add cost-guard -e PYTHONPATH=src -- .venv/bin/python -m cost_guard.mc
 ```
 
 `run_query` runs real queries (on BigQuery it bills); blocked queries never run
-and no tool returns result rows. Each call appends its trace to
+(no bypass through MCP; a block's `fix_hints` say what to change) and no tool
+returns result rows. `--workload scheduled` sets the class for every call;
+callers can only ask for a stricter one. Each call appends its trace to
 `runs/traces.jsonl` and returns the `trace_id`.
 
 **Phoenix (optional):** `pip install arize-phoenix && phoenix serve`, then

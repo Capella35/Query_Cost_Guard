@@ -20,10 +20,15 @@ happened (runs/query_log.jsonl, written by runtime.run_query) and answers:
    counterfactual upper bound: the estimate of what would have run, not
    money saved — the analyst may have run a fixed version instead (that run
    is in the log and counted as executed).
-5. Guard health — decision mix and rates, Guard latency (p50/p95 of the
+5. Block follow-through — after a block, what did that user run next
+   (same window)? fixed it (a different shape that ran), retried it unchanged
+   (same shape, blocked again), changed it but still blocked, bypassed it,
+   or nothing. Checks (check_query, `cost_guard check`) are not logged, so a
+   revision checked but never run is invisible here; the next RUN is counted.
+6. Guard health — decision mix and rates, Guard latency (p50/p95 of the
    check, from check_ms), and estimate accuracy where the warehouse reports
    billed bytes (BigQuery: billed / estimated, per executed run).
-6. LLM usage — from the trace file, when one is given: calls, tokens and
+7. LLM usage — from the trace file, when one is given: calls, tokens and
    errors per LLM span (llm.*), so the "capped LLM" rule is checkable.
 
 Dollars are MODELED (customer.yaml cost_model): bytes x price_per_tb_usd
@@ -104,6 +109,42 @@ def warn_followthrough(log: list[dict], s: dict) -> dict:
         # Upper bound: "changed_to_clean" may be an unrelated next query.
         "acted_rate_upper_bound": round(acted / n, 3) if n else None,
         "ignored_rate": round(counts["reran_unchanged"] / n, 3) if n else None,
+    }
+
+
+def block_followthrough(log: list[dict], s: dict) -> dict:
+    by_user: dict[str, list[dict]] = defaultdict(list)
+    no_user = 0
+    for r in sorted(log, key=_ts):
+        if r.get("user"):
+            by_user[r["user"]].append(r)
+        elif r["status"] == "blocked":
+            no_user += 1
+    counts = dict.fromkeys(("fixed_and_ran", "retried_unchanged", "changed_still_blocked",
+                            "bypassed", "no_followup"), 0)
+    for runs in by_user.values():
+        for i, r in enumerate(runs):
+            if r["status"] != "blocked":
+                continue
+            nxt = runs[i + 1] if i + 1 < len(runs) else None
+            if nxt is None or _ts(nxt) - _ts(r) > s["followup_window"]:
+                counts["no_followup"] += 1
+            elif nxt.get("bypassed") and nxt["fingerprint"] == r["fingerprint"]:
+                counts["bypassed"] += 1
+            elif nxt["fingerprint"] == r["fingerprint"]:
+                counts["retried_unchanged"] += 1
+            elif nxt["status"] == "blocked":
+                counts["changed_still_blocked"] += 1
+            else:
+                counts["fixed_and_ran"] += 1
+    n = sum(counts.values())
+    return {
+        "blocked_runs_with_user": n,
+        "blocked_runs_without_user": no_user,
+        **counts,
+        # Upper bound: "fixed_and_ran" may be an unrelated next query.
+        "fixed_rate_upper_bound": round(counts["fixed_and_ran"] / n, 3) if n else None,
+        "retry_rate": round(counts["retried_unchanged"] / n, 3) if n else None,
     }
 
 
@@ -269,6 +310,7 @@ def build_report(log: list[dict], customer: Optional[dict] = None, top: int = 10
                       else "MODELED USD from runtime" if s["price_per_hour"]
                       else "runtime seconds and estimated rows (no price set)"),
         "warn_followthrough": warn_followthrough(log, s),
+        "block_followthrough": block_followthrough(log, s),
         "workload_by_shape": workload_by_shape(log, s, top),
         "cache_opportunity": cache_opportunity(log, s),
         "spend_ledger": spend_ledger(log, s),
