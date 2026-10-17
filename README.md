@@ -28,7 +28,7 @@ What exists in code today. "How it works" below only describes rows marked **bui
 | Component | Status | Where |
 |---|---|---|
 | Read-only classifier: one SELECT/WITH statement, no write nodes, file/network/env functions denied, fails closed on parse errors | **built** | `sql_ast.read_only_violation` |
-| Cost estimate from DuckDB's plan (`EXPLAIN` cardinalities, incl. join fan-out), corrected where the plan is provably or measurably off: GROUP BY outputs bounded by registry distinct counts (only lowers), scans whose always-true filter the planner dropped count every row, remaining range filters can be RAISED (never lowered) from the registry's min/max; joins above recomputed. Limit: DuckDB's own flat 20% range guess still runs low on skewed data (TheLook 2023–2025 window: ~26k estimated vs 68k actual); labeled `explain+corrected`; labeled table-sum fallback | **built** | `backends/duckdb_backend.py`, `plan_estimate.py` |
+| Cost estimate from DuckDB's plan (`EXPLAIN` cardinalities, incl. join fan-out), corrected where the plan is provably or measurably off, **for basic queries only** (one table; no join, CTE, subquery or UNION; the rest keep DuckDB's own estimate): GROUP BY outputs bounded by registry distinct counts (only lowers), scans whose always-true filter the planner dropped count every row, remaining range filters can be RAISED (never lowered) from the registry's min/max; joins above recomputed. Limit: DuckDB's own flat 20% range guess still runs low on skewed data (TheLook 2023–2025 window: ~26k estimated vs 68k actual); labeled `explain+corrected`; labeled table-sum fallback | **built** | `backends/duckdb_backend.py`, `plan_estimate.py` |
 | Hard caps per workload class, loaded from `customer.yaml` (rows on DuckDB, bytes on BigQuery) | **built** | `config.py`, `guard.py` |
 | 10 static rules on the sqlglot AST: SELECT * on wide tables, missing partition filter (partition column read from the warehouse — BigQuery time, ingestion-time `_PARTITIONTIME` or integer-range partitioning — with `customer.yaml` `partitioned_tables` as the fallback, e.g. DuckDB's zone-mapped date columns; a disagreement is traced as `partition_column.mismatch`), cartesian product, function on partition column (warehouse-aware: on BigQuery only wrappers measured not to prune), filter after join/HAVING without aggregate, repeated subquery, high-cardinality GROUP BY, SUM/AVG on an identifier column (by name, or near-unique per the column registry), redundant DISTINCT (GROUP BY already unique, one-row aggregate, inside IN/EXISTS/UNION), long explicit IN lists (> 100 values; threshold is a judgment call) | **built** | `rules/static_rules.py`, `sql_ast.py` |
 | Plan red flag from `EXPLAIN`: full in-memory sort of ≥ 100k rows (ORDER BY with no LIMIT — a LIMIT plans as TOP_N, a sort after GROUP BY sorts only the groups). DuckDB only; on a BigQuery dry run (no plan shape) the check is listed in `skipped_rules` | **built** | `plan_estimate.py`, `guard.py` |
@@ -364,7 +364,7 @@ static-only vs static+adaptive.
 │   └── rules/static_rules.py
 ├── scripts/                  # TheLook loader, column registry build, BigQuery schema check
 ├── demo/                     # synthetic warehouse, 4-beat CLI demo, Streamlit UI
-└── tests/                    # 346 tests (TheLook-dependent ones skip without data/)
+└── tests/                    # 356 tests (TheLook-dependent ones skip without data/)
 ```
 
 ## Quickstart (local-first, no cloud)

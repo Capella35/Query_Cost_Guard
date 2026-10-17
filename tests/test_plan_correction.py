@@ -269,3 +269,32 @@ def test_range_filter_on_an_identifier_is_not_a_value_range(thelook_wh):
                          ("orders", "num_of_item", "BIGINT", "1", "4")])
     assert thelook_wh._range_fraction(reg, "main", "orders", "user_id<500") is None
     assert thelook_wh._range_fraction(reg, "main", "orders", "num_of_item<=2") is not None
+
+
+# ---- registry corrections only for basic queries ----------------------------
+
+@pytest.mark.parametrize("sql, basic", [
+    ("SELECT status, COUNT(*) FROM orders GROUP BY status", True),
+    (WINDOW, True),
+    (SELF_JOIN, False),
+    ("SELECT * FROM users, orders", False),
+    (f"WITH w AS ({WINDOW}) SELECT * FROM w", False),
+    (f"SELECT * FROM ({WINDOW}) t", False),
+    ("SELECT order_id FROM orders WHERE user_id IN (SELECT id FROM users)", False),
+    ("SELECT 1 FROM orders UNION ALL SELECT 1 FROM orders", False),
+    ("SELECT 1", False),
+])
+def test_basic_query_is_one_select_over_one_table(sql, basic):
+    from cost_guard import sql_ast
+
+    assert sql_ast.is_basic_query(sql_ast.try_parse(sql, "duckdb")) is basic
+
+
+def test_joins_and_ctes_keep_the_plain_explain_estimate(synthetic_wh):
+    assert synthetic_wh.estimate(WINDOW).source == "explain+corrected"
+    for q in (f"WITH w AS ({WINDOW}) SELECT * FROM w", f"SELECT * FROM ({WINDOW}) t"):
+        est = synthetic_wh.estimate(q)
+        assert est.source == "explain" and est.corrections == []
+        assert "no registry corrections" in est.detail
+        # The planner's window over-estimate stands here (a known cost of the rule).
+        assert est.rows_processed > 5_000_000

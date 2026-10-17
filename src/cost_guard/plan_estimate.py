@@ -8,6 +8,12 @@ join inherits a ~100x over-estimate. The column registry knows those distinct
 counts, so this module walks the plan and corrects estimates where the
 registry gives a real bound.
 
+Scope: the DuckDB backend calls this with a registry and scan hook only for
+basic queries (one SELECT over one table: no join, CTE, subquery or UNION).
+For anything else it passes neither, and the plan's own estimates stand.
+The join rule below still matters for basic queries: DuckDB plans a window
+aggregate as GROUP BY + a join back to the table.
+
 Rules:
 1. GROUP BY (a bound — only ever lowers): output <= product over group keys
    of (registry distinct count x 1.05 for HyperLogLog error, +1 if the column

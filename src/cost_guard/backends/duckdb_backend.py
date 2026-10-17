@@ -14,7 +14,9 @@ RAISE the estimate from the registry's min/max (never lower it) — labeled
 source="explain+corrected". If
 EXPLAIN fails, the fallback is the old upper bound — the sum of referenced
 table sizes — labeled source="table_sum_fallback" because it cannot see
-fan-out. Note: DuckDB estimates range filters at a flat selectivity, so a
+fan-out. Corrections apply only to basic queries (one SELECT over one
+table: no join, CTE, subquery or UNION); everything else keeps DuckDB's own
+estimate, labeled source="explain". Note: DuckDB estimates range filters at a flat selectivity, so a
 7-day and a 2-year date window get the same estimate; the Investigator
 calibrates real runtime from history.
 """
@@ -205,14 +207,22 @@ class DuckDBWarehouse:
             plans = json.loads(rows[0][1])
         except Exception as e:  # noqa: BLE001 — any planner failure -> labeled fallback
             return self._fallback_estimate(sql, e)
-        try:
-            registry = self.column_registry()
-        except Exception:  # noqa: BLE001 — no registry: uncorrected EXPLAIN
-            registry = None
-        card = plan_cardinality(plans, registry, self.registry_max_age_days,
-                                scan_hook=self._scan_hook(registry, two_way_ranges))
+        # Registry corrections only for basic queries (one table; no join, CTE,
+        # subquery or UNION). Through joins and CTEs they got hard to trust,
+        # so those keep DuckDB's own EXPLAIN estimate, uncorrected.
+        basic = sql_ast.is_basic_query(sql_ast.try_parse(sql, "duckdb"))
+        registry, hook = None, None
+        if basic:
+            try:
+                registry = self.column_registry()
+            except Exception:  # noqa: BLE001 — no registry: uncorrected EXPLAIN
+                registry = None
+            hook = self._scan_hook(registry, two_way_ranges)
+        card = plan_cardinality(plans, registry, self.registry_max_age_days, scan_hook=hook)
         detail = (f"EXPLAIN estimate: ~{card.scanned:,} rows from scans, "
                   f"peak ~{card.peak:,} rows")
+        if not basic:
+            detail += " (join, CTE or subquery: DuckDB's estimate, no registry corrections)"
         if card.corrections:
             detail += (f" (planner peak {card.peak_uncorrected:,}; corrections: "
                        + "; ".join(card.corrections) + ")")

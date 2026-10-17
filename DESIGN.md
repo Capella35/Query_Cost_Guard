@@ -371,6 +371,7 @@ query history drops the caller id and the keyed query hash.
 | 2026-10-17 | Investigator agent: fixed steps over the MCP tools + deterministic diagnosis; one optional Claude summary (off by default, capped per day in its own usage log, cached by facts) | Owner's choice: frugal and testable; a model-chosen tool loop costs more per investigation and is harder to test. Reports hold no SQL, literals or rule findings (two rules quote the query) |
 | 2026-10-17 | Option B: flagged runs stay out of their shape's anomaly history (`customer.yaml anomaly.exclude_flagged: true`); repeated flags read as "a lasting change — a person accepts it" | Owner's choice, checked on a pre-registered online replay (held-out seeds 201–220, run once; `eval/RESULTS_replay_online.md`): catch 0.532 → 0.701, false positives 0.019 → 0.041. B catches a lasting regression to the end (creep 107/114 vs 82) but flags every recurrence of a legitimate new pattern (new_peak 40 vs 13 of 360) until a person accepts it |
 | 2026-10-17 | `accept-normal <shape_id>` (CLI only): a person accepts a shape's flagged runs so far as its new normal; append-only `accepted_normal.jsonl` next to the log; later spikes still flagged | Option B flags a lasting legitimate change every run otherwise. Not through MCP: like a bypass, a person's decision. Tested: 3 flags at a new 15x level, accepted, the next run at that level not flagged, a 30 s spike after it flagged |
+| 2026-10-17 | Registry corrections to the DuckDB estimate only for basic queries (one SELECT over one table: no join, CTE, subquery or UNION); joins, CTEs and subqueries keep DuckDB's own EXPLAIN estimate | Owner's call: the corrections had become hard to follow through joins and CTEs. Tuning suite 30/30 and regression 11/11 unchanged; 4 TheLook joins lose a small correction (~4% lower). Known cost: a window query wrapped in a CTE or subquery is back to the planner's ~22.6M-row overestimate (block) where alone it gets ~1.0M (allow). BigQuery's registry join fan-out estimate is unchanged (no EXPLAIN there) |
 | 2026-10-17 | Report: block follow-through (fixed and ran / retried unchanged / still blocked / bypassed / nothing) | Measures whether hints help; counts runs only (checks are not logged) |
 | 2026-10-16 | Rewrite verification: 2 s limit for long-running services, results remembered (passed and failed) in memory for 24 h; dry runs of identical SQL reused for 10 min | Live, one process: first check of a rewritable query 4.0 s (answer without the rewrite, verification continues), the same query again 0.01 s with the verified rewrite. Failed verifications are not re-run (cost). Nothing written to disk; the CLI and evals wait, so their results stay deterministic |
 
@@ -388,6 +389,8 @@ query history drops the caller id and the keyed query hash.
   recompute uses the margin in the unsafe direction (51 of 73 columns above
   exact); a lower bound (distinct / 1.2) fixes that but is very loose for
   small counts.
+  Since registry corrections now apply only to basic queries, this affects
+  single-table GROUP BYs and window queries only.
 - Many users: see section 14 (daily budgets, threshold saving, log reads).
 - Resolved: the rewrite catalog emits BigQuery SQL on BigQuery (dialect per
   decision, real TIMESTAMP literals; 3a6ced9, b98a68c). Found by the

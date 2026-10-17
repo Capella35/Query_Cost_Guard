@@ -174,6 +174,18 @@ def referenced_tables(tree: exp.Expression) -> list[str]:
     return out
 
 
+def is_basic_query(tree: Optional[exp.Expression]) -> bool:
+    """One SELECT over one physical table: no JOIN (comma joins included), no
+    CTE, no subquery, no UNION/INTERSECT/EXCEPT. Only these get the column
+    registry's estimate corrections; joins, CTEs and subqueries keep DuckDB's
+    own EXPLAIN estimate (the corrections got hard to trust through them)."""
+    if not isinstance(tree, exp.Select):
+        return False
+    if any(True for _ in tree.find_all(exp.Join, exp.CTE, exp.Subquery, exp.SetOperation)):
+        return False
+    return sum(1 for t in tree.find_all(exp.Table) if isinstance(t.this, exp.Identifier)) == 1
+
+
 def group_by_columns(tree: exp.Expression, table: Optional[str] = None) -> list[str]:
     """Plain column names in any GROUP BY (lowercased, qualifier dropped).
     Ordinals and expressions are skipped.
