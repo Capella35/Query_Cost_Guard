@@ -106,16 +106,21 @@ def filter_before_join(sql: str, metadata: dict) -> list[str]:
     Warehouse-aware: BigQuery pushes a filter written after a join inside a
     derived table down itself — the pushdown rewrite billed the same bytes
     on Q05, Q08 and H16 (eval/RESULTS_bq_dryrun_full.md), and the BigQuery
-    eval's B10 was a false warn from it. So on BigQuery only the HAVING
-    check remains (not measured there)."""
-    findings = sql_ast.filters_after_join(sql_ast.parse_one(sql))
+    eval's B10 was a false warn from it. HAVING without an aggregate is
+    off on BigQuery too: Q15 billed the same bytes as the WHERE form (Q30)
+    and used the same slot time (51 vs 60 slot-s, noise; live 2026-10-17)."""
     if metadata.get("engine") == "bigquery":
-        findings = [f for f in findings if f.startswith("HAVING")]
-    return findings
+        return []
+    return sql_ast.filters_after_join(sql_ast.parse_one(sql))
 
 
 def repeated_subquery_to_cte(sql: str, metadata: dict) -> list[str]:
-    """Repeated identical subqueries should become CTEs."""
+    """Repeated identical subqueries should become CTEs.
+
+    Off on BigQuery: the CTE version of Q09 billed the same bytes and used
+    the same slot time (162 vs 154 slot-s, noise; live 2026-10-17)."""
+    if metadata.get("engine") == "bigquery":
+        return []
     reps = sql_ast.repeated_subqueries(sql_ast.parse_one(sql))
     if reps:
         return [f"identical subquery repeated {reps[0][1]}x — hoist it into a CTE"]

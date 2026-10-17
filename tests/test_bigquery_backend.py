@@ -271,7 +271,7 @@ def test_guard_reads_bigquery_sql_in_the_bigquery_dialect():
 def test_filter_after_join_is_not_flagged_on_bigquery():
     """BigQuery pushes the filter down itself (pushdown rewrites billed the same
     bytes); the BigQuery eval's B10 was a false warn from this rule. HAVING
-    without an aggregate is still flagged."""
+    without an aggregate is off too (Q15: same bytes and slot time as WHERE)."""
     from cost_guard.rules.static_rules import filter_before_join
 
     q = ("SELECT t.order_id FROM (SELECT o.order_id, o.created_at, u.state FROM orders o "
@@ -279,9 +279,20 @@ def test_filter_after_join_is_not_flagged_on_bigquery():
     assert filter_before_join(q, {"engine": "duckdb"})
     assert filter_before_join(q, {"engine": "bigquery"}) == []
     having = "SELECT status, COUNT(*) FROM orders GROUP BY status HAVING status <> 'x'"
-    assert filter_before_join(having, {"engine": "bigquery"})
+    assert filter_before_join(having, {"engine": "duckdb"})
+    assert filter_before_join(having, {"engine": "bigquery"}) == []
     v = decide(q, backend=BigQueryWarehouse("proj", client=FakeClient(0)), tracer=Tracer())
     assert not any("applied after the join" in f for f in v.findings)
+
+
+def test_repeated_subquery_is_not_flagged_on_bigquery():
+    """Q09: the CTE version billed the same bytes and slot time on BigQuery."""
+    from cost_guard.rules.static_rules import repeated_subquery_to_cte
+
+    sub = "(SELECT MAX(created_at) FROM orders)"
+    q = f"SELECT {sub} AS a, {sub} AS b FROM users"
+    assert repeated_subquery_to_cte(q, {"engine": "duckdb"})
+    assert repeated_subquery_to_cte(q, {"engine": "bigquery"}) == []
 
 
 # ---- Sampled verification in a BigQuery session --------------------------------
@@ -360,9 +371,7 @@ def test_bigquery_rewrite_must_bill_fewer_bytes():
     rewrite after verification was built); a rewrite must bill fewer bytes."""
     wh = BigQueryWarehouse("proj", client=FakeClient(nbytes=1024**2))  # same bytes for any SQL
     wh.sampled = None  # verification must not even be reached
-    q = ("SELECT * FROM (SELECT user_id, COUNT(*) AS c FROM orders WHERE created_at >= '2024-01-01' "
-         "GROUP BY user_id) a JOIN (SELECT user_id, COUNT(*) AS c FROM orders "
-         "WHERE created_at >= '2024-01-01' GROUP BY user_id) b USING (user_id)")
+    q = "SELECT id FROM orders WHERE FORMAT_TIMESTAMP('%Y-%m', created_at) = '2024-01'"
     v = decide(q, backend=wh, tracer=Tracer())
     assert v.decision != "rewrite"
     assert any("bills no fewer bytes" in f for f in v.findings), v.findings
