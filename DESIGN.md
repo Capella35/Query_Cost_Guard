@@ -376,13 +376,18 @@ query history drops the caller id and the keyed query hash.
 
 ## 13. Open questions
 
-- Registry distinct counts (HyperLogLog) measured against exact counts on
-  TheLook (47 columns with >= 1,000 values, 2026-10-17): -17% to +16%, not
-  the ~2% assumed. `plan_estimate.HLL_MARGIN` (1.05) is narrower than that,
-  so a registry-bounded GROUP BY estimate can run up to ~13% low (e.g.
-  products.sku 0.831). Options: a margin from the measured error (~1.2), or
-  exact counts for columns under a size limit. Not changed: it moves
-  verdicts, so it needs a decision and a pre-registered check.
+- Registry distinct counts (HyperLogLog) vs exact on TheLook: 0.800 to 1.164
+  over all 73 columns (e.g. events.browser: 5 values, counted as 4).
+  `plan_estimate.HLL_MARGIN` (1.05) is narrower than that. Pre-registered
+  check (`eval/RESULTS_hll_margin.md`): the GROUP BY bound is below the exact
+  count on 19 of 73 columns at 1.05 and 2 at 1.20; exact counts fix it and
+  take 4.9x longer to build (0.29 s to 1.43 s), above the rule's 2x. No
+  verdict on the tuning or regression suites moves under any option. The
+  rule does not choose an option, so nothing is changed; the owner decides
+  between exact counts (cost) and a margin (still not a bound). The join
+  recompute uses the margin in the unsafe direction (51 of 73 columns above
+  exact); a lower bound (distinct / 1.2) fixes that but is very loose for
+  small counts.
 - Many users: see section 14 (daily budgets, threshold saving, log reads).
 - Resolved: the rewrite catalog emits BigQuery SQL on BigQuery (dialect per
   decision, real TIMESTAMP literals; 3a6ced9, b98a68c). Found by the
