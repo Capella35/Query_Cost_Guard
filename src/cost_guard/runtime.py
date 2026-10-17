@@ -163,8 +163,13 @@ def run_query(
     size, anomaly = None, None
     if execution is not None and execution.status == "completed":
         exclude = bool(((customer.get("anomaly") or {}).get("exclude_flagged", False)))
+        accepted = None
+        if exclude and log_path is not None:
+            from .anomaly import accepted_until
+
+            accepted = accepted_until(log_path, fp)
         size, anomaly = _anomaly_check(sql, fp, ts, verdict, execution, backend, log, tracer,
-                                       exclude)
+                                       exclude, accepted)
     if log_path is not None:
         append_log(
             LogRecord(
@@ -212,7 +217,8 @@ def _anomaly_size(sql: str, verdict, backend) -> Optional[int]:
         return None
 
 
-def _anomaly_check(sql, fp, ts, verdict, execution, backend, log, tracer, exclude_flagged=False):
+def _anomaly_check(sql, fp, ts, verdict, execution, backend, log, tracer, exclude_flagged=False,
+                   accepted=None):
     from .anomaly import check_run
     from .tracing import get_tracer
 
@@ -221,7 +227,7 @@ def _anomaly_check(sql, fp, ts, verdict, execution, backend, log, tracer, exclud
     with (tracer or get_tracer()).trace("anomaly.check"):
         size = _anomaly_size(sql, verdict, backend)
         found = check_run(log, fp, ts, size, execution.duration_sec,
-                          exclude_flagged=exclude_flagged)
+                          exclude_flagged=exclude_flagged, accepted_until=accepted)
         annotate(anomaly=found.kind if found else None,
                  history_runs=found.history_runs if found else None)
     return size, found

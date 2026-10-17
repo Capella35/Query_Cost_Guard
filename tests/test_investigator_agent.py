@@ -221,3 +221,72 @@ def test_option_b_keeps_the_bar_after_a_spike(tmp_path):
 def test_repeated_flags_read_as_a_lasting_change():
     causes, _ = diagnose("runtime", {}, {"history": {"anomalies_in_last_10": 3}})
     assert causes[0].startswith("looks like a lasting change")
+
+
+def _b():
+    return {**_customer(), "anomaly": {"exclude_flagged": True}}
+
+
+def test_accept_normal_ends_the_flags_for_a_lasting_change(tmp_path):
+    from cost_guard.anomaly import accept_normal, read_acceptances
+    from cost_guard.thresholds import fingerprint_query, shape_id
+
+    log, wh = tmp_path / "log.jsonl", FakeWarehouse()
+    _seed(log)
+    wh.next_duration = 1.5  # the shape is 15x slower from now on, legitimately
+    flags = [run_query(SQL, wh, customer=_b(), log_path=log).anomaly is not None for _ in range(3)]
+    assert flags == [True, True, True]  # option B: flagged every time
+    acc = accept_normal(log, shape_id(fingerprint_query(SQL))[:8], by="analyst-1", note="new index")
+    assert acc.flagged_runs == 3 and read_acceptances(log)[0]["by"] == "analyst-1"
+    assert run_query(SQL, wh, customer=_b(), log_path=log).anomaly is None  # the new normal
+    wh.next_duration = 30.0  # a real spike after the acceptance is still caught
+    assert run_query(SQL, wh, customer=_b(), log_path=log).anomaly is not None
+
+
+def test_accept_normal_needs_a_known_unique_shape(tmp_path):
+    from cost_guard.anomaly import accept_normal
+
+    log = tmp_path / "log.jsonl"
+    _seed(log)
+    with pytest.raises(ValueError, match="at least 6"):
+        accept_normal(log, "abc")
+    with pytest.raises(ValueError, match="no query shape"):
+        accept_normal(log, "ffffffffffff")
+
+
+def test_accept_normal_cli(tmp_path, capsys):
+    from cost_guard.__main__ import main
+    from cost_guard.thresholds import fingerprint_query, shape_id
+
+    log = tmp_path / "log.jsonl"
+    _seed(log)
+    sid = shape_id(fingerprint_query(SQL))
+    assert main(["accept-normal", sid, "--log", str(log), "--by", "me", "--note", "ok"]) == 0
+    assert "accepted " + sid in capsys.readouterr().out
+    assert main(["accept-normal", "--list", "--log", str(log)]) == 0
+    assert sid in capsys.readouterr().out
+    assert main(["accept-normal", "zzzzzzzz", "--log", str(log)]) == 1
+
+
+def test_lasting_change_note_counts_only_flags_since_acceptance(tmp_path):
+    from cost_guard.anomaly import accept_normal
+    from cost_guard.thresholds import fingerprint_query, shape_id
+
+    svc = CostGuardService(FakeWarehouse(), _b(), log_path=tmp_path / "log.jsonl",
+                           trace_path=None, investigations=False)
+    _seed(svc.log_path)
+    svc.backend.next_duration = 1.5
+    for _ in range(3):
+        svc.run_query(SQL)
+    agent = InvestigatorAgent(svc, _b() | {"investigator": {"cooldown_min": 0}}, tmp_path / "inv")
+    (*_, last) = events_from_log(read_log(svc.log_path))
+    rep = agent.investigate(last)
+    assert rep.likely_causes[0].startswith("looks like a lasting change")
+    assert rep.look_next[0].startswith("if this is the new normal: python -m cost_guard accept-normal "
+                                       + rep.shape_id)
+    accept_normal(svc.log_path, rep.shape_id)
+    later = {**last, "ts": datetime.now(timezone.utc).isoformat()}
+    rep2 = agent.investigate(later)
+    assert rep2.facts["history"]["anomalies_in_last_10"] == 0
+    assert rep2.facts["history"]["accepted_normal_at"] is not None
+    assert not rep2.likely_causes[0].startswith("looks like a lasting change")

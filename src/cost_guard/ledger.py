@@ -279,6 +279,7 @@ def guard_health(log: list[dict]) -> dict:
             "runs": sum(1 for r in log if r.get("anomaly")),
             "size": sum(1 for r in log if (r.get("anomaly") or "").startswith("adaptive anomaly: rows")),
             "runtime": sum(1 for r in log if (r.get("anomaly") or "").startswith("adaptive anomaly: runtime")),
+            "shapes_flagged": len({r["fingerprint"] for r in log if r.get("anomaly")}),
         },
         "estimate_accuracy": {
             "runs": len(ratios),

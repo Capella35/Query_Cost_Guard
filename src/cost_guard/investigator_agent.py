@@ -47,6 +47,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+from .anomaly import accepted_until
 from .memory import EpisodicMemory, Incident
 from .tracing import Tracer, annotate
 
@@ -181,7 +182,8 @@ class InvestigatorAgent:
             asdict(i) for i in self.memory.recall(fp, limit=10) if i.ts < rep.trigger_ts])
 
         rep.facts = {
-            "history": _history_facts(hist, rep.trigger, rep.trigger_ts),
+            "history": _history_facts(hist, rep.trigger, rep.trigger_ts,
+                                      accepted_until(self.service.log_path, fp)),
             "tables": {t: {k: v.get(k) for k in ("num_rows", "num_bytes", "partitioned_by")}
                        for t, v in (tinfo or {}).items()},
             "check": ({k: check.get(k) for k in ("decision", "estimated_rows", "estimated_bytes",
@@ -189,6 +191,7 @@ class InvestigatorAgent:
                       if check else None),
             "neighbours": neigh,
             "past_incidents": len(past or []),
+            "shape_id": rep.shape_id,
         }
         with tracer.span(tid, "agent.step.diagnose"):
             rep.likely_causes, rep.look_next = diagnose(rep.anomaly_kind, rep.trigger, rep.facts)
@@ -266,7 +269,8 @@ class InvestigatorAgent:
         (self.out_dir / f"{rep.id}.md").write_text(render_markdown(rep))
 
 
-def _history_facts(hist: Optional[dict], trigger: dict, trigger_ts: str) -> Optional[dict]:
+def _history_facts(hist: Optional[dict], trigger: dict, trigger_ts: str,
+                   accepted: Optional[str] = None) -> Optional[dict]:
     """The shape's runs BEFORE the trigger, in the anomaly rule's own size
     (anomaly_size: two-way rows on DuckDB, bytes on BigQuery)."""
     if not hist:
@@ -284,7 +288,10 @@ def _history_facts(hist: Optional[dict], trigger: dict, trigger_ts: str) -> Opti
             "this_run_duration_x_median": ratio(trigger.get("duration_sec"), med_dur),
             "killed_last_20": sum(1 for r in before[-20:] if r["status"] == "killed"),
             "earlier_anomalies": sum(1 for r in before if r.get("anomaly")),
-            "anomalies_in_last_10": sum(1 for r in before[-10:] if r.get("anomaly"))}
+            # Since the last acceptance only: accepted flags are the shape's normal now.
+            "anomalies_in_last_10": sum(1 for r in before[-10:] if r.get("anomaly")
+                                        and (accepted is None or r["ts"] > accepted)),
+            "accepted_normal_at": accepted}
 
 
 def diagnose(kind: str, trigger: dict, facts: dict) -> tuple[list[str], list[str]]:
@@ -330,6 +337,8 @@ def diagnose(kind: str, trigger: dict, facts: dict) -> tuple[list[str], list[str
         causes.insert(0, f"looks like a lasting change, not a one-off: {hist['anomalies_in_last_10'] + 1} "
                          "of this shape's last 11 runs were flagged — if this is the new normal, a "
                          "person should accept it (flagged runs stay out of the baseline until then)")
+        nxt.insert(0, f"if this is the new normal: python -m cost_guard accept-normal "
+                      f"{facts.get('shape_id') or '<shape_id>'} --by <you> --note <why>")
     if facts.get("past_incidents"):
         causes.append(f"recurring: {facts['past_incidents']} earlier incident(s) for this shape")
         nxt.append("a recurring shape may need a structural fix (a summary table, partitioning, "

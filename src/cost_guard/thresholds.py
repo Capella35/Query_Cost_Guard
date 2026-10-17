@@ -39,6 +39,14 @@ def fingerprint_query(sql: str) -> str:
     return _WS.sub(" ", normalized).strip()
 
 
+def shape_id(fingerprint: str) -> str:
+    """Short, stable id for a query shape — safe to put in exported spans and
+    to type on a command line (accept-normal)."""
+    import hashlib
+
+    return hashlib.sha256(fingerprint.encode()).hexdigest()[:12]
+
+
 @dataclass
 class FingerprintStats:
     fingerprint: str

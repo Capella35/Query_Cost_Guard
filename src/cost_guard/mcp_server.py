@@ -54,9 +54,7 @@ HISTORY_FIELDS = ("ts", "workload_class", "decision", "status", "duration_sec", 
                   "anomaly_size", "anomaly")
 
 
-def shape_id(fingerprint: str) -> str:
-    """Short, stable id for a query shape — safe to put in exported spans."""
-    return hashlib.sha256(fingerprint.encode()).hexdigest()[:12]
+from .thresholds import shape_id  # noqa: E402,F401 — re-exported for callers
 
 
 class CostGuardService:

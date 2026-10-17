@@ -3,6 +3,9 @@
   check "SQL"      Guard verdict only (nothing executes).
   run "SQL"        Guard, then execute under the watchdog; logs to runs/query_log.jsonl.
   investigate      Baselines from the query log -> threshold proposals.
+  accept-normal ID Accept a query shape's flagged runs so far as its new normal
+                   (anomaly option B); later spikes are still flagged. --list shows
+                   acceptances. A person's decision: not offered through MCP.
   investigate-anomalies
                    Report-only investigator agent over flagged runs in the log
                    that have no report yet (runs/investigations/); changes nothing.
@@ -60,6 +63,13 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("investigate")
     p.add_argument("--log", default="runs/query_log.jsonl")
     p.add_argument("--workload", default="interactive")
+    p = sub.add_parser("accept-normal")
+    p.add_argument("shape_id", nargs="?", help="shape id from a report or workload_report "
+                   "(a unique prefix of at least 6 characters is enough)")
+    p.add_argument("--log", default="runs/query_log.jsonl")
+    p.add_argument("--by", help="who accepts (opaque id)")
+    p.add_argument("--note", help="why this is the new normal")
+    p.add_argument("--list", action="store_true", help="show recorded acceptances")
     p = sub.add_parser("investigate-anomalies")
     p.add_argument("--log", default="runs/query_log.jsonl")
     p.add_argument("--traces", default="runs/traces.jsonl")
@@ -96,6 +106,25 @@ def main(argv: list[str] | None = None) -> int:
         from .runtime import read_log
 
         print(json.dumps(build_report(read_log(args.log), customer, args.top), indent=2))
+        return 0
+
+    if args.cmd == "accept-normal":
+        from .anomaly import accept_normal, read_acceptances
+
+        if args.list:
+            for a in read_acceptances(args.log):
+                print(f"{a['ts']}  {a['shape_id']}  {a['flagged_runs']} flagged run(s)  "
+                      f"by {a.get('by') or '?'}  {a.get('note') or ''}")
+            return 0
+        if not args.shape_id:
+            parser.error("accept-normal needs a shape id (or --list)")
+        try:
+            acc = accept_normal(args.log, args.shape_id, by=args.by, note=args.note)
+        except ValueError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        print(f"accepted {acc.shape_id}: {acc.flagged_runs} flagged run(s) up to {acc.ts} now count "
+              "as normal; runs flagged after this are still left out of the baseline")
         return 0
 
     if args.cmd == "investigate-anomalies":
