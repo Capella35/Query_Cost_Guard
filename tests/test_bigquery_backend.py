@@ -461,3 +461,36 @@ def test_blocked_query_with_limit_gets_the_limit_hint():
 def test_no_limit_hint_on_duckdb(synthetic_wh):
     v = decide("SELECT * FROM users, orders LIMIT 10", backend=synthetic_wh, tracer=Tracer())
     assert v.decision == "block" and not any("LIMIT" in h["text"] for h in v.fix_hints)
+
+
+# ---- SELECT * judged on cost, not column count ------------------------------
+
+MiB = 1024**2
+BQ_CAPS = {"workload_classes": {"interactive": {"max_bytes_scanned": 100 * MiB,
+                                                "max_rows_processed": 5_000_000,
+                                                "max_runtime_sec": 300}},
+           "partitioned_tables": {}}
+
+
+def _star(nbytes, sql="SELECT * FROM orders WHERE created_at >= '2024-01-01'", **kw):
+    wh = BigQueryWarehouse("proj", client=FakeClient(nbytes=nbytes))
+    v = decide(sql, customer=BQ_CAPS, backend=wh, tracer=Tracer(), **kw)
+    return v, [f for f in v.findings if f.startswith("SELECT *")]
+
+
+def test_select_star_flagged_at_half_the_bytes_cap():
+    v, star = _star(int(77.6 * MiB))  # TheLook: SELECT * FROM inventory_items, 78% of the cap
+    assert v.decision == "warn" and star and "78% of the interactive cap" in star[0]
+    v, star = _star(int(18.9 * MiB))  # TheLook: SELECT * FROM users, 19% of the cap
+    assert not star and v.decision == "allow"
+    # The same bytes without SELECT * are not this finding.
+    v, star = _star(int(77.6 * MiB), sql="SELECT order_id FROM orders WHERE created_at >= '2024-01-01'")
+    assert not star
+
+
+def test_select_star_flagged_on_its_shapes_runtime_after_20_runs():
+    slow = [160.0] * 20  # median 160 s: 53% of the 300 s limit
+    v, star = _star(MiB, shape_runtimes=slow)
+    assert v.decision == "warn" and "median of 20 runs" in star[0] and "53%" in star[0]
+    assert not _star(MiB, shape_runtimes=slow[:19])[1]  # too little history: silent
+    assert not _star(MiB, shape_runtimes=[100.0] * 25)[1]  # 33% of the limit

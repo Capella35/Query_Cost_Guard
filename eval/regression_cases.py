@@ -7,8 +7,11 @@ CASES = [
     {
         "id": "E01",
         "sql": "SELECT * FROM events WHERE created_at >= '2024-06-01'",
-        "expected": "warn",
-        "why": "SELECT * on wide table",
+        "expected": "allow",
+        "expected_original": "warn",
+        "label_change": ("2026-10-17: SELECT * is judged on cost, not column count (owner's "
+                         "call); this read is ~6% of the 5M-row cap, so allow"),
+        "why": "SELECT * that reads little: allowed",
     },
     {
         "id": "E02",

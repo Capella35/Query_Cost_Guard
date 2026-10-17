@@ -111,6 +111,12 @@ class RunOutcome:
     anomaly: Optional[object] = None  # anomaly.Anomaly when the run broke its shape's history
 
 
+def shape_runtimes(log: list[dict], fingerprint: str) -> list[float]:
+    """Run times of a query shape's completed runs in the log."""
+    return [r["duration_sec"] for r in log if r["fingerprint"] == fingerprint
+            and r["status"] == "completed" and r.get("duration_sec") is not None]
+
+
 def run_query(
     sql: str,
     backend,
@@ -147,7 +153,7 @@ def run_query(
     t0 = time.perf_counter()
     verdict = decide(sql, workload_class, customer=customer, backend=backend, tracer=tracer,
                      llm=llm, bypass_reason=bypass_reason, offered_rewrites=offered,
-                     rewrite_wait_sec=rewrite_wait_sec)
+                     rewrite_wait_sec=rewrite_wait_sec, shape_runtimes=shape_runtimes(log, fp))
     check_ms = round((time.perf_counter() - t0) * 1000, 1)
     hard_cap = float(caps_for(customer, workload_class).get("max_runtime_sec") or 0) or None
     timeout = hard_cap

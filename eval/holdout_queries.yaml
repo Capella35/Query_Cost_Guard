@@ -37,6 +37,8 @@
 # LABEL CHANGES (2026-10-16, after the run, approved by the owner, recorded
 # under `label_change`): H11 warn -> block (new policy: SUM/AVG over an
 # identifier is blocked). Scores are reported under both labels.
+# H07, H29 warn -> allow, role bad -> good (2026-10-17, owner's policy change:
+# SELECT * is judged on cost, not column count; each reads far below half the cap).
 
 queries:
   - id: H01
@@ -82,11 +84,17 @@ queries:
     guard_action_expected: rewrite
 
   - id: H07
-    role: bad
+    role: good
     pattern: select_star_wide_table
     description: "All columns of December order items."
     sql: "SELECT * FROM order_items WHERE created_at >= TIMESTAMP '2023-12-01'"
-    guard_action_expected: warn
+    guard_action_expected: allow
+    label_change:
+      from: warn
+      to: allow
+      from_role: bad
+      date: 2026-10-17
+      reason: "owner's policy change 2026-10-17: SELECT * is judged on cost, not column count (flagged at >= 50% of the class cap, or a median runtime >= 50% of the runtime limit after 20 runs); this query reads ~36k rows (estimate; 5M-row eval cap), far below half the cap"
 
   - id: H08
     role: good
@@ -241,11 +249,17 @@ queries:
     guard_action_expected: allow
 
   - id: H29
-    role: bad
+    role: good
     pattern: select_star_wide_table
     description: "Every column of 2024 events joined to every column of users."
     sql: "SELECT * FROM events e JOIN users u ON u.id = e.user_id WHERE e.created_at >= TIMESTAMP '2024-01-01'"
-    guard_action_expected: warn
+    guard_action_expected: allow
+    label_change:
+      from: warn
+      to: allow
+      from_role: bad
+      date: 2026-10-17
+      reason: "owner's policy change 2026-10-17: SELECT * is judged on cost, not column count (flagged at >= 50% of the class cap, or a median runtime >= 50% of the runtime limit after 20 runs); this query reads ~94k rows (actual; estimate ~586k; 5M-row eval cap), far below half the cap"
 
   - id: H30
     role: good

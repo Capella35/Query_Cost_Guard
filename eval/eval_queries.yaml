@@ -19,6 +19,8 @@
 # LABEL CHANGES (2026-10-14, made AFTER seeing Guard results, recorded per
 # query under `label_change`): Q01, Q03, Q11 rewrite -> warn (no equivalent
 # rewrite can exist); Q05 warn -> rewrite (contradicted Q08, same pattern).
+# Q01, Q11 warn -> allow, role bad -> good (2026-10-17, owner's policy change:
+# SELECT * is judged on cost, not column count; each reads far below half the cap).
 # eval/run_eval.py reports accuracy under BOTH the current and the original
 # labels, so the effect of these changes stays visible. Run on BigQuery only after
 # scripts/verify_schema.py and with caps set.
@@ -44,18 +46,19 @@ queries:
   # ---------------- Bad queries (Q01-Q15) ----------------
   - id: Q01
     pair: 1
-    role: bad
+    role: good
     pattern: select_star_wide_table
     description: "SELECT * on a wide table when only a few columns are needed."
     sql: "SELECT * FROM users WHERE country = 'Brasil' AND traffic_source = 'Search' LIMIT 200"
     expected_effect: "Column pruning cuts bytes scanned."
     rewrite_equivalent: false
-    guard_action_expected: warn
+    guard_action_expected: allow
     label_change:
       from: rewrite
-      to: warn
-      date: 2026-10-14
-      reason: "no equivalent rewrite exists: the only cheaper versions drop columns (SELECT *) or rows (adding a date filter), which changes the result; a human must choose. rewrite_equivalent was also true and is now false for the same reason"
+      to: allow
+      from_role: bad
+      date: 2026-10-17
+      reason: "two recorded changes. 2026-10-14 rewrite -> warn: no equivalent rewrite exists: the only cheaper versions drop columns (SELECT *) or rows (adding a date filter), which changes the result; a human must choose. rewrite_equivalent was also true and is now false for the same reason. 2026-10-17 warn -> allow: owner's policy change 2026-10-17: SELECT * is judged on cost, not column count (flagged at >= 50% of the class cap, or a median runtime >= 50% of the runtime limit after 20 runs); this query reads ~8k rows (estimate; 5M-row eval cap), far below half the cap"
 
 
   - id: Q02
@@ -162,18 +165,19 @@ queries:
 
   - id: Q11
     pair: 11
-    role: bad
+    role: good
     pattern: select_star_wide_table
     description: "SELECT * on the wide events table."
     sql: "SELECT * FROM events WHERE created_at >= TIMESTAMP '2024-01-01'"
     expected_effect: "Column pruning cuts bytes scanned."
     rewrite_equivalent: false
-    guard_action_expected: warn
+    guard_action_expected: allow
     label_change:
       from: rewrite
-      to: warn
-      date: 2026-10-14
-      reason: "no equivalent rewrite exists: the only cheaper versions drop columns (SELECT *) or rows (adding a date filter), which changes the result; a human must choose. rewrite_equivalent was also true and is now false for the same reason"
+      to: allow
+      from_role: bad
+      date: 2026-10-17
+      reason: "two recorded changes. 2026-10-14 rewrite -> warn: no equivalent rewrite exists: the only cheaper versions drop columns (SELECT *) or rows (adding a date filter), which changes the result; a human must choose. rewrite_equivalent was also true and is now false for the same reason. 2026-10-17 warn -> allow: owner's policy change 2026-10-17: SELECT * is judged on cost, not column count (flagged at >= 50% of the class cap, or a median runtime >= 50% of the runtime limit after 20 runs); this query reads ~103k rows (actual; estimate ~486k; 5M-row eval cap), far below half the cap"
 
 
   - id: Q12

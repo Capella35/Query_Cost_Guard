@@ -221,3 +221,25 @@ def test_load_dotenv_sets_only_missing_nonempty_and_never_overrides(tmp_path, mo
     assert os.environ["CG_A"] == "one" and os.environ["CG_C"] == "three"
     assert "CG_B" not in os.environ and os.environ["CG_D"] == "from_shell"
     assert load_dotenv(tmp_path / "missing.env") == []
+
+
+def test_run_query_gives_the_guard_the_shapes_runtimes(synthetic_wh, tmp_path, monkeypatch):
+    from cost_guard import runtime
+    from cost_guard.runtime import LogRecord, append_log
+
+    q = "SELECT * FROM users WHERE id = 7"
+    log = tmp_path / "log.jsonl"
+    for i in range(3):
+        append_log(LogRecord(ts=f"2026-10-01T09:0{i}:00+00:00", fingerprint=fingerprint_query(q),
+                             workload_class="interactive", decision="allow", status="completed",
+                             duration_sec=1.0 + i, rows_estimate=1, timeout_sec=60), log)
+    seen = {}
+    real = runtime.decide
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(runtime, "decide", spy)
+    run_query(q, synthetic_wh, log_path=log, tracer=Tracer())
+    assert seen["shape_runtimes"] == [1.0, 2.0, 3.0]

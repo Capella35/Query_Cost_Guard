@@ -24,7 +24,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
-from typing import Collection, Literal, Optional
+from typing import Collection, Literal, Optional, Sequence
 
 from . import sql_ast
 from .thresholds import fingerprint_query
@@ -43,6 +43,11 @@ _POOL = ThreadPoolExecutor(max_workers=16, thread_name_prefix="cost-guard")
 # process only (keyed by a hash of query + rewrite; nothing on disk), so the
 # same query checked again gets its verified rewrite at once and a failed one
 # is not re-run. A one-shot CLI process has no "later": it waits.
+# SELECT * (owner's call, 2026-10-17): flagged on cost, not column count.
+SELECT_STAR_COST_SHARE = 0.5  # estimate >= half the class cap (bytes on BigQuery)
+SELECT_STAR_RUNTIME_SHARE = 0.5  # or median runtime >= half the class runtime limit
+SELECT_STAR_MIN_RUNS = 20  # runs of history before the runtime half applies (= anomaly cold start)
+
 VERIFY_MEMORY_TTL_SEC = 24 * 3600
 VERIFY_MEMORY_MAX = 10_000
 _VERIFY_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="cost-guard-verify")
@@ -140,6 +145,7 @@ def decide(
     bypass_reason: Optional[str] = None,
     offered_rewrites: Optional[Collection[str]] = None,
     rewrite_wait_sec: Optional[float] = None,
+    shape_runtimes: Optional[Sequence[float]] = None,
 ) -> GuardVerdict:
     """Guard pipeline: read-only check -> cost estimate -> static rules
     (per referenced table, with column profiles) -> hard caps for the
@@ -155,6 +161,8 @@ def decide(
     rewrite_wait_sec: how long to wait for a rewrite's verification; None
     (default) waits until it is done. For long-running services, see
     _verify (customer.yaml guard.rewrite_wait_sec).
+    shape_runtimes: run times (seconds) of this query shape's completed runs,
+    from the query log; used by the SELECT * check (see _select_star_finding).
     """
     from .config import load_customer
     from .tracing import get_tracer
@@ -166,7 +174,7 @@ def decide(
             sql_ast.using_dialect(dialect):
         ctx: dict = {}
         verdict = _decide(sql, workload_class, customer, backend, tracer, tid, llm,
-                           offered_rewrites, rewrite_wait_sec, ctx)
+                           offered_rewrites, rewrite_wait_sec, ctx, shape_runtimes)
         if verdict.decision == "block":
             _add_fix_hints(sql, verdict, customer, backend, tracer, tid, ctx)
         verdict = _maybe_bypass(verdict, customer, bypass_reason, tracer, tid)
@@ -221,8 +229,44 @@ def _add_fix_hints(sql, verdict, customer, backend, tracer, tid, ctx) -> None:
             span["attrs"]["error"] = str(e)[:200]
 
 
+def _select_star_finding(tree, estimate, caps, workload_class,
+                         shape_runtimes) -> Optional[str]:
+    """SELECT * is judged on what it costs, not on how many columns the table
+    has (owner's call, 2026-10-17): it is flagged when the estimate is at
+    least SELECT_STAR_COST_SHARE of the class cap (BigQuery: dry-run bytes vs
+    the bytes cap; DuckDB: rows vs the rows cap), or when the shape's median
+    runtime over at least SELECT_STAR_MIN_RUNS completed runs is at least
+    SELECT_STAR_RUNTIME_SHARE of the class runtime limit. Nothing predicts a
+    runtime before a run (no EXPLAIN on BigQuery; a dry run has no time), so
+    the runtime half needs the shape's own history and is silent without it."""
+    import statistics
+
+    stars = sorted(sql_ast.star_tables(tree))
+    if not stars:
+        return None
+    what = f"SELECT * on {', '.join(stars)}"
+    fix = " — list only the columns you need"
+    if estimate is not None:
+        if estimate.source == "dry_run":
+            used, cap, unit = estimate.estimated_bytes_scanned, caps.get("max_bytes_scanned"), "bytes"
+        else:
+            used, cap, unit = estimate.rows_processed, caps.get("max_rows_processed"), "rows"
+        if used and cap and used >= SELECT_STAR_COST_SHARE * cap:
+            return (f"{what} reads ~{used:,} {unit}, {used / cap:.0%} of the {workload_class} "
+                    f"cap of {cap:,}{fix}")
+    limit = caps.get("max_runtime_sec")
+    runs = [d for d in (shape_runtimes or []) if d is not None]
+    if limit and len(runs) >= SELECT_STAR_MIN_RUNS:
+        median = statistics.median(runs)
+        if median >= SELECT_STAR_RUNTIME_SHARE * limit:
+            return (f"{what} usually runs {median:.1f} s (median of {len(runs)} runs), "
+                    f"{median / limit:.0%} of the {workload_class} limit of {limit:g} s{fix}")
+    return None
+
+
 def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
-            offered_rewrites=None, rewrite_wait_sec=None, ctx=None) -> GuardVerdict:
+            offered_rewrites=None, rewrite_wait_sec=None, ctx=None,
+            shape_runtimes=None) -> GuardVerdict:
     from .column_registry import registry_settings
     from .config import caps_for, partition_column
     from .rewrites import PRUNING_ONLY_FIXERS, deterministic_rewrite
@@ -381,6 +425,10 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
                 f"full in-memory sort of ~{sorted_rows:,} rows (ORDER BY with no LIMIT) — "
                 "add a LIMIT, or drop the ORDER BY if the consumer re-sorts"
             )
+    star = _select_star_finding(tree, estimate, caps, workload_class, shape_runtimes)
+    if star:
+        with tracer.span(tid, "select_star.costly"):
+            findings.append(star)
     findings = list(dict.fromkeys(findings))  # same finding can fire per table
     skipped.extend(no_profile)
     if skipped:

@@ -57,3 +57,24 @@ Recorded per query under `label_change`; these scores are **the verdicts of this
 | blocks missed | 0/4 | 1/5 |
 
 - **H11**: warn -> block (got warn)
+
+## Label changes after this run (2026-10-17, owner's policy change)
+
+`SELECT *` is now judged on cost, not on the table's column count: flagged at
+>= 50% of the class cap, or when the shape's median runtime is >= 50% of the
+runtime limit after 20 runs. H07 (~36k rows) and H29 (~94k actual rows) read
+far below half the 5M-row cap, so warn -> allow, role bad -> good. Re-scored
+from the same stored run, nothing re-run; this run's Guard warned, as the
+policy then said. **The original-label score, 29/30, remains the headline.**
+
+| | original labels | current labels |
+|---|---|---|
+| exact | 29/30 | 26/30 |
+| bad flagged | 16/16 | 14/14 |
+| good flagged | 1/14 | 3/16 |
+| good blocked | 0/14 | 0/16 |
+| blocks missed | 0/4 | 1/5 |
+
+- **H07**: warn -> allow (got warn)
+- **H11**: warn -> block (got warn)
+- **H29**: warn -> allow (got warn)

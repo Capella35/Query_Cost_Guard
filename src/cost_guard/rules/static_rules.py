@@ -16,7 +16,6 @@ import re
 from .. import sql_ast
 from ..column_registry import HIGH_CARDINALITY_RATIO  # noqa: F401 — distinct/rows above = near-unique
 
-WIDE_COLUMN_THRESHOLD = 8
 MAX_IN_LIST_ITEMS = 100  # judgment call: above this, a join is the better shape
 LARGE_TABLE_ROWS = 100_000
 
@@ -26,18 +25,6 @@ def group_by_columns(sql: str, table: str | None = None) -> list[str]:
     those that can belong to it (see sql_ast.group_by_columns)."""
     tree = sql_ast.try_parse(sql)
     return sql_ast.group_by_columns(tree, table) if tree is not None else []
-
-
-def no_select_star_on_wide_tables(sql: str, metadata: dict) -> list[str]:
-    """No SELECT * on wide tables."""
-    cols = metadata.get("column_count") or 0
-    table = (metadata.get("table") or "").lower()
-    if cols >= WIDE_COLUMN_THRESHOLD and table in sql_ast.star_tables(sql_ast.parse_one(sql)):
-        return [
-            f"SELECT * on wide table '{metadata.get('table')}' "
-            f"({cols} columns) — list only the columns you need"
-        ]
-    return []
 
 
 def require_partition_filter(sql: str, metadata: dict) -> list[str]:
@@ -280,7 +267,6 @@ def no_long_in_list(sql: str, metadata: dict) -> list[str]:
 
 
 ALL_RULES = [
-    no_select_star_on_wide_tables,
     require_partition_filter,
     no_cross_join_without_condition,
     no_function_on_partition_column,

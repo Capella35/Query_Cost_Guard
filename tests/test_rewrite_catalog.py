@@ -72,7 +72,7 @@ def test_pushdown_refuses_unsafe_shapes(sql):
 def test_select_star_and_missing_filter_get_no_rewrite(synthetic_wh):
     """No equivalent rewrite exists: dropping columns or adding a date
     filter changes the result."""
-    for q in ("SELECT * FROM events WHERE created_at >= '2024-06-01'",
+    for q in ("SELECT * FROM events WHERE created_at >= '2023-06-01'",  # ~79% of the 1M cap
               "SELECT event_type, COUNT(*) FROM events GROUP BY event_type"):
         v = decide(q, backend=synthetic_wh, tracer=Tracer())
         assert v.decision == "warn" and v.rewritten_sql is None

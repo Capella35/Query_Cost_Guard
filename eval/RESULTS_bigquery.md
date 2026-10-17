@@ -96,3 +96,24 @@ Recorded per query under `label_change`; these scores are **the verdicts of this
 
 - **B21**: rewrite -> allow (got warn)
 - **B26**: warn -> block (got warn)
+
+## Label changes after this run (2026-10-17, owner's policy change)
+
+`SELECT *` is now judged on cost, not on the table's column count: flagged at
+>= 50% of the class cap, or when the shape's median runtime is >= 50% of the
+runtime limit after 20 runs. B24 reads 18.9 MiB (dry run), 19% of the 100 MiB
+interactive cap, so warn -> allow, role bad -> good. Re-scored from the same
+stored run, nothing re-run. **The original-label score, 24/30, remains the
+headline.**
+
+| | original labels | current labels |
+|---|---|---|
+| exact | 24/30 | 22/30 |
+| bad flagged | 15/16 | 13/14 |
+| good flagged | 1/14 | 3/16 |
+| good blocked | 0/14 | 0/16 |
+| blocks missed | 1/6 | 2/7 |
+
+- **B21**: rewrite -> allow (got warn)
+- **B24**: warn -> allow (got warn)
+- **B26**: warn -> block (got warn)

@@ -4,7 +4,7 @@
 Builds a synthetic e-commerce warehouse in DuckDB (/tmp) and walks through
 four beats:
 
-  [1] INVISIBLE COST — SELECT * on a wide table       -> WARN
+  [1] INVISIBLE COST — SELECT * on a big read         -> WARN
   [2] RUNAWAY JOIN   — accidental cartesian product    -> BLOCK
   [3] SAFE REWRITE   — repeated subquery -> CTE        -> REWRITE (sample-verified)
   [4] THE LOOP       — Investigator learns a threshold from history
@@ -51,7 +51,7 @@ def main() -> None:
 
     # ---- [1] INVISIBLE COST -------------------------------------------------
     beat(1, "INVISIBLE COST — the analyst can't see what this scans")
-    q1 = "SELECT * FROM events WHERE created_at >= '2024-06-01'"
+    q1 = "SELECT * FROM events WHERE created_at >= '2023-06-01'"
     est = wh.estimate(q1)
     print(f"  estimate: {est.detail}")
     show(q1, decide(q1, backend=wh))

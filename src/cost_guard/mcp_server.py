@@ -122,9 +122,12 @@ class CostGuardService:
         workload_class = self._workload(workload_class)
 
         def go(tracer):
+            from .runtime import read_log, shape_runtimes
+
             fp = fingerprint_query(sql)
             v = decide(sql, workload_class, customer=self.customer, backend=self.backend,
-                       tracer=tracer, llm=self.llm, rewrite_wait_sec=self.rewrite_wait_sec)
+                       tracer=tracer, llm=self.llm, rewrite_wait_sec=self.rewrite_wait_sec,
+                       shape_runtimes=shape_runtimes(read_log(self.log_path), fp))
             _annotate_verdict(tracer, v, fp)
             return {**_verdict_fields(v), "fingerprint": fp, "rules_fired": _rules_fired(tracer)}
 

@@ -67,6 +67,8 @@
 # error: BigQuery prunes through EXTRACT(YEAR), measured after the run); B26
 # warn -> block (new policy: SUM/AVG over an identifier is blocked). Scores
 # are reported under both labels.
+# B24 warn -> allow, role bad -> good (2026-10-17, owner's policy change:
+# SELECT * is judged on cost, not column count; each reads far below half the cap).
 # Unqualified table names resolve to the job's default dataset
 # (cost_guard_thelook); some queries name it explicitly, with backticks, as
 # BigQuery users do.
@@ -244,11 +246,17 @@ queries:
 
   # ----------------------------------------------------------------- warn --
   - id: B24
-    role: bad
+    role: good
     pattern: select_star
     description: "SELECT * on users (16 columns) — every column billed."
     sql: "SELECT * FROM users WHERE country = 'Japan'"
-    guard_action_expected: warn
+    guard_action_expected: allow
+    label_change:
+      from: warn
+      to: allow
+      from_role: bad
+      date: 2026-10-17
+      reason: "owner's policy change 2026-10-17: SELECT * is judged on cost, not column count (flagged at >= 50% of the class cap, or a median runtime >= 50% of the runtime limit after 20 runs); this query reads 18.9 MiB (dry run), 19% of the 100 MiB interactive cap, far below half the cap"
 
   - id: B25
     role: bad

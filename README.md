@@ -30,7 +30,8 @@ What exists in code today. "How it works" below only describes rows marked **bui
 | Read-only classifier: one SELECT/WITH statement, no write nodes, file/network/env functions denied, fails closed on parse errors | **built** | `sql_ast.read_only_violation` |
 | Cost estimate from DuckDB's plan (`EXPLAIN` cardinalities, incl. join fan-out), corrected where the plan is provably or measurably off, **for basic queries only** (one table; no join, CTE, subquery or UNION; the rest keep DuckDB's own estimate): GROUP BY outputs bounded by registry distinct counts (only lowers), scans whose always-true filter the planner dropped count every row, remaining range filters can be RAISED (never lowered) from the registry's min/max; joins above recomputed. Limit: DuckDB's own flat 20% range guess still runs low on skewed data (TheLook 2023–2025 window: ~26k estimated vs 68k actual); labeled `explain+corrected`; labeled table-sum fallback | **built** | `backends/duckdb_backend.py`, `plan_estimate.py` |
 | Hard caps per workload class, loaded from `customer.yaml` (rows on DuckDB, bytes on BigQuery) | **built** | `config.py`, `guard.py` |
-| 10 static rules on the sqlglot AST: SELECT * on wide tables, missing partition filter (partition column read from the warehouse — BigQuery time, ingestion-time `_PARTITIONTIME` or integer-range partitioning — with `customer.yaml` `partitioned_tables` as the fallback, e.g. DuckDB's zone-mapped date columns; a disagreement is traced as `partition_column.mismatch`), cartesian product, function on partition column (warehouse-aware: on BigQuery only wrappers measured not to prune), filter after join/HAVING without aggregate, repeated subquery, high-cardinality GROUP BY, SUM/AVG on an identifier column (by name, or near-unique per the column registry), redundant DISTINCT (GROUP BY already unique, one-row aggregate, inside IN/EXISTS/UNION), long explicit IN lists (> 100 values; threshold is a judgment call) | **built** | `rules/static_rules.py`, `sql_ast.py` |
+| 9 static rules on the sqlglot AST: missing partition filter (partition column read from the warehouse — BigQuery time, ingestion-time `_PARTITIONTIME` or integer-range partitioning — with `customer.yaml` `partitioned_tables` as the fallback, e.g. DuckDB's zone-mapped date columns; a disagreement is traced as `partition_column.mismatch`), cartesian product, function on partition column (warehouse-aware: on BigQuery only wrappers measured not to prune), filter after join/HAVING without aggregate, repeated subquery, high-cardinality GROUP BY, SUM/AVG on an identifier column (by name, or near-unique per the column registry), redundant DISTINCT (GROUP BY already unique, one-row aggregate, inside IN/EXISTS/UNION), long explicit IN lists (> 100 values; threshold is a judgment call) | **built** | `rules/static_rules.py`, `sql_ast.py` |
+| `SELECT *` judged on cost, not column count: flagged when the estimate is ≥ 50% of the class cap (dry-run bytes on BigQuery, rows on DuckDB), or when the shape's median runtime over ≥ 20 logged runs is ≥ 50% of the class runtime limit (nothing predicts runtime before a run, so this half needs history) | **built** | `guard.py` (`_select_star_finding`) |
 | Plan red flag from `EXPLAIN`: full in-memory sort of ≥ 100k rows (ORDER BY with no LIMIT — a LIMIT plans as TOP_N, a sort after GROUP BY sorts only the groups). DuckDB only; on a BigQuery dry run (no plan shape) the check is listed in `skipped_rules` | **built** | `plan_estimate.py`, `guard.py` |
 | Skipped-rule reporting on every verdict and trace | **built** | `GuardVerdict.skipped_rules` |
 | Column registry: a data-profiling lookup table (distinct count, NULL count, total rows, and min/max for numeric and date/time columns — not for identifier columns (`id`, `*_id`, `*_key`, `*_code`, …), which are objects, not numbers), one scan per table, stored in a local file next to the warehouse (`data/thelook.registry.duckdb`) — the build only reads the warehouse, and reading the registry is free; size gate, scan timeout, refresh modes (missing / stale / all), dropped-column cleanup; the Guard looks profiles up instead of scanning, and treats entries older than `max_age_days` as unverified | **built** — DuckDB, and BigQuery (`--bigquery-project`: catalog from the API, each table's scan dry-run first and capped by `maximum_bytes_billed`, views profiled through the view, geography/repeated columns skipped; TheLook: 7 tables, 73 columns, 0.472 GiB, file `data/bigquery/<project>.<dataset>.registry.duckdb`) | `column_registry.py`, `scripts/build_column_registry.py` |
@@ -143,8 +144,8 @@ DuckDB; labels fixed before the Guard ran; full table in
 |---|---|
 | exact action match, **original labels** | 26/30 (87%) |
 | exact action match, current labels (4 changed after seeing results) | 30/30 |
-| bad queries flagged (warn/rewrite/block) | 15/15 |
-| good queries flagged (false positives) | 0/15 (0 blocked, 0 warned) |
+| bad queries flagged (warn/rewrite/block), current labels | 13/13 |
+| good queries flagged (false positives), current labels | 0/17 (0 blocked, 0 warned) |
 | rewrites offered | 4 (Q05, Q07, Q08, Q09) — all 4 equivalent on the full data |
 
 **Label changes, made after seeing results** (recorded per query under
@@ -153,6 +154,9 @@ scores every run, and the original 26/30 is the honest headline):
 - Q01, Q11 (`SELECT *`) and Q03 (no date filter): rewrite → warn. No
   equivalent rewrite exists — dropping columns or adding a date filter
   changes the result, so a human has to choose.
+- Q01, Q11 again (2026-10-17): warn → allow, role bad → good. Policy
+  change: `SELECT *` is judged on cost, and both read far below half the
+  cap.
 - Q05: warn → rewrite. Same pattern as Q08 (filter after a join inside a
   subquery), which was labeled rewrite; the two labels contradicted each
   other.
@@ -208,8 +212,9 @@ catalog emits BigQuery types.
 **Held-out set** (`eval/holdout_queries.yaml`, 30 queries): queries and
 labels committed 2026-10-14 **before any Guard run** on them, with the
 labeling guide in the file header. **Run once on 2026-10-14: 29/30** (28/30
-under the current labels: H11 relabeled warn → block after a later policy
-change, SUM/AVG over an identifier is now blocked)
+under the labels of 2026-10-16, 26/30 under the current ones: H11 relabeled
+warn → block after a later policy change, SUM/AVG over an identifier is now
+blocked; H07, H29 warn → allow, `SELECT *` judged on cost)
 ([`eval/RESULTS_holdout.md`](eval/RESULTS_holdout.md)) — catch rate 16/16,
 1 false positive of 14 (H28, a false *warn*: a near-unique GROUP BY inside a
 CTE the outer query re-aggregates; no false blocks), 3/3 rewrites equivalent
@@ -225,8 +230,9 @@ results, not independent of the author.
 queries, labeling guide and caps committed **before any Guard run** on them
 (`4a2fc50`); caps scaled to TheLook's ~0.5 GB (100 MiB interactive bytes,
 `eval/eval_caps_bigquery.yaml`). **Run once on 2026-10-16, dry runs only:
-24/30** (23/30 under the current labels: B21 rewrite → allow, a labeling
-error; B26 warn → block, the identifier policy) ([`eval/RESULTS_bigquery.md`](eval/RESULTS_bigquery.md)) — 0 good
+24/30** (22/30 under the current labels: B21 rewrite → allow, a labeling
+error; B26 warn → block, the identifier policy; B24 warn → allow, `SELECT *`
+judged on cost) ([`eval/RESULTS_bigquery.md`](eval/RESULTS_bigquery.md)) — 0 good
 queries blocked, 1 of 14 warned (B10: the filter-after-join rule fires
 although BigQuery pushes filters down itself), bad queries flagged 15/16, but
 **14/16 for the right reasons**: B19 was flagged only by a bug the run
@@ -364,7 +370,7 @@ static-only vs static+adaptive.
 │   └── rules/static_rules.py
 ├── scripts/                  # TheLook loader, column registry build, BigQuery schema check
 ├── demo/                     # synthetic warehouse, 4-beat CLI demo, Streamlit UI
-└── tests/                    # 358 tests (TheLook-dependent ones skip without data/)
+└── tests/                    # 361 tests (TheLook-dependent ones skip without data/)
 ```
 
 ## Quickstart (local-first, no cloud)

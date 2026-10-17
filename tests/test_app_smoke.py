@@ -19,12 +19,12 @@ def test_app_guard_warn_flow():
     at.run()
     assert not at.exception, at.exception
 
-    # Default query is the SELECT * preset -> Run Guard -> WARN verdict.
+    # Default query is the SELECT * preset (a big read) -> Run Guard -> WARN verdict.
     at.button("run_guard").click().run()
     assert not at.exception, at.exception
     texts = [m.value for m in at.markdown]
     assert any("WARN" in t for t in texts), texts
-    assert any("wide table" in t for t in texts), texts
+    assert any("SELECT * on events" in t for t in texts), texts
 
 
 def test_app_investigator_flow():

@@ -32,7 +32,7 @@ st.caption(
 
 
 PRESETS = {
-    "SELECT * on wide table": "SELECT * FROM events WHERE created_at >= '2024-06-01'",
+    "SELECT * on a big read": "SELECT * FROM events WHERE created_at >= '2023-06-01'",
     "Accidental cartesian join": "SELECT * FROM users, orders",
     "Repeated subquery": (
         "SELECT * FROM\n"
@@ -68,7 +68,7 @@ tab_guard, tab_loop = st.tabs(
 with tab_guard:
     st.subheader("Try a query")
     if "query" not in st.session_state:
-        st.session_state.query = PRESETS["SELECT * on wide table"]
+        st.session_state.query = PRESETS["SELECT * on a big read"]
 
     cols = st.columns(len(PRESETS))
     for (label, q), col in zip(PRESETS.items(), cols):
