@@ -40,6 +40,54 @@ These carry the design. A change that breaks one needs a decision-log entry
 7. **Keep customer data in the customer's environment.** Logs hold query
    shapes and numbers, never SQL text or literal values; result comparison
    returns pass/fail and a hash, never rows.
+8. **Decide before the query runs.** Verdicts come from pre-run evidence:
+   dry-run bytes, registry estimates and the query log. The watchdog
+   timeout and `maximum_bytes_billed` are backstops, not the policy. "The
+   warehouse handles it" or "it bills nothing" is not a reason to allow:
+   the T08 live test (a filtered fan-out join) produced 122.5M rows in
+   14.3 s and billed 10 MiB, so neither a kill nor the bill would have
+   stopped it.
+
+### Policy priorities
+
+Owner's order (2026-10-17). When two goals conflict, the higher one wins:
+
+1. **Never a wrong answer.** A rewrite must return the same rows.
+2. **No false blocks on good queries.** Analysts stop trusting a guard that
+   blocks good work.
+3. **Catch runaways before they run:** bytes over the cap, cartesian
+   products, join fan-out.
+4. **Total spend at volume.** Cost is per query × how often it runs. Billed
+   bytes on BigQuery are at least 10 MiB per table read, so a "cheap" query
+   run 10,000 times is a real line on the bill.
+5. **The Guard's own cost and speed.** Dry runs are free; rewrite
+   verification bills (~30 MiB each, remembered per query shape); a check
+   takes about one dry run.
+
+### When the Guard and the policy disagree
+
+The policy is the labeling guide (the header of `eval/bq_validation.yaml`,
+repeated in `eval/bq_test.yaml`) plus the decision log (section 12). A code
+choice that departs from the guide is written into the guide as an
+exception, never only in a docstring. For each disagreement:
+
+1. **Find the cause first**, from the trace: the findings, the estimate and
+   the metadata the Guard used. Classify it only after that.
+2. **Classify it:**
+   - **Bug.** The code doesn't do what the policy says. Fix the code and add
+     a test; the policy is unchanged.
+   - **Guide wrong.** The policy text is wrong or stale. Change the guide
+     with the owner's approval, record the label change (`label_from` /
+     `label_change`) and report both scores.
+   - **Deliberate difference.** The code departs from the guide on purpose.
+     The owner decides which wins; the result goes into the decision log
+     and the guide the same day.
+   - **Missing feature.** The policy is right and not built yet. Backlog it
+     and report the miss.
+3. **Who decides.** Bugs may be fixed directly, and said so. Anything that
+   changes what blocks or warns is the owner's call.
+4. **Scores.** A run-once result is never changed. A fix after it makes
+   that set a tuning set; only a fresh set measures the fix.
 
 ## 3. Architecture: three points in time
 
