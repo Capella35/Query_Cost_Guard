@@ -127,3 +127,44 @@ def test_format_timestamp_ranges_in_bigquery_sql():
         assert "CAST('2024-01-01 00:00:00' AS TIMESTAMP)" in out and "DATETIME" not in out
         assert suggest_sargable_rewrite(
             "SELECT 1 FROM order_items WHERE FORMAT_TIMESTAMP('%Y-%m', created_at) = '2023-6'") is None
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT order_id FROM orders WHERE EXTRACT(year FROM created_at) = 2024 AND EXTRACT(month FROM created_at) = 2",
+    "SELECT order_id FROM orders WHERE EXTRACT(month FROM created_at) = 12 AND status = 'complete' "
+    "AND EXTRACT(year FROM created_at) = 2023",
+    "SELECT order_id FROM orders WHERE 2024 = EXTRACT(year FROM created_at) AND 3 = EXTRACT(month FROM created_at) "
+    "AND EXTRACT(day FROM created_at) = 15",
+    # Impossible dates match nothing; so must the rewrite.
+    "SELECT order_id FROM orders WHERE EXTRACT(year FROM created_at) = 2024 AND EXTRACT(month FROM created_at) = 13",
+    "SELECT order_id FROM orders WHERE EXTRACT(year FROM created_at) = 2023 AND EXTRACT(month FROM created_at) = 2 "
+    "AND EXTRACT(day FROM created_at) = 30",
+])
+def test_year_and_month_combine_into_one_range(synthetic_wh, sql):
+    """T15: EXTRACT(YEAR) = Y AND EXTRACT(MONTH) = M (and DAY) on one column is
+    one range on the bare column; same rows on the full synthetic data."""
+    out = suggest_sargable_rewrite(sql)
+    assert out is not None and "EXTRACT(YEAR" not in out.upper()
+    assert _same(synthetic_wh, sql, out)
+
+
+def test_year_and_month_combine_in_bigquery_sql():
+    with sql_ast.using_dialect("bigquery"):
+        out = suggest_sargable_rewrite(
+            "SELECT order_id, status FROM orders WHERE EXTRACT(YEAR FROM created_at) = 2025 "
+            "AND EXTRACT(MONTH FROM created_at) = 6")
+    assert "EXTRACT" not in out
+    assert "created_at >= CAST('2025-06-01 00:00:00' AS TIMESTAMP)" in out
+    assert "created_at < CAST('2025-07-01 00:00:00' AS TIMESTAMP)" in out
+
+
+@pytest.mark.parametrize("sql", [
+    # Different columns: no single range for either month.
+    "SELECT o.order_id FROM orders o JOIN users u ON u.id = o.user_id "
+    "WHERE EXTRACT(year FROM o.created_at) = 2024 AND EXTRACT(month FROM u.created_at) = 2",
+    # OR: not a conjunction.
+    "SELECT order_id FROM orders WHERE EXTRACT(year FROM created_at) = 2024 OR EXTRACT(month FROM created_at) = 2",
+])
+def test_month_without_its_year_is_not_combined(sql):
+    out = suggest_sargable_rewrite(sql)
+    assert out is None or "EXTRACT(MONTH" in out.upper()

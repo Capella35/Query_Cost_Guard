@@ -253,6 +253,65 @@ def _sargable(cmp: exp.Expression) -> Optional[exp.Expression]:
     return None
 
 
+def _date_part(cmp: exp.Expression) -> Optional[tuple[str, str, exp.Column, int]]:
+    """(column key, unit, column, value) for `EXTRACT(unit FROM col) = N`."""
+    if not isinstance(cmp, exp.EQ):
+        return None
+    for fn, x in ((cmp.this, cmp.expression), (cmp.expression, cmp.this)):
+        if (isinstance(fn, exp.Extract) and isinstance(fn.expression, exp.Column)
+                and isinstance(x, exp.Literal) and not x.is_string):
+            try:
+                return fn.expression.sql(), fn.this.name.upper(), fn.expression, int(x.this)
+            except ValueError:
+                return None
+    return None
+
+
+def _combine_date_parts(conjs: list[exp.Expression]) -> Optional[list[exp.Expression]]:
+    """EXTRACT(YEAR ...) = Y AND EXTRACT(MONTH ...) = M [AND EXTRACT(DAY ...) = D]
+    on one column, ANDed in the same WHERE -> one range on the bare column
+    (T15). MONTH or DAY alone is no single range and is left alone. Exact: the
+    parts of a timestamp are those of its calendar date (UTC on BigQuery, as
+    are the range's literals). An impossible date (month 13, Feb 30) matches
+    no row; it is left as written. None when nothing combines."""
+    by_col: dict[str, dict[str, tuple[int, int]]] = {}
+    cols: dict[str, exp.Column] = {}
+    for i, c in enumerate(conjs):
+        part = _date_part(c)
+        if part is None:
+            continue
+        key, unit, col, value = part
+        units = by_col.setdefault(key, {})
+        if unit in units:  # the same part twice: leave the column alone
+            units["DUP"] = (-1, 0)
+        units[unit] = (i, value)
+        cols[key] = col
+    replace: dict[int, exp.Expression] = {}
+    drop: set[int] = set()
+    for key, units in by_col.items():
+        if "DUP" in units or "YEAR" not in units or "MONTH" not in units:
+            continue
+        (iy, y), (im, m) = units["YEAR"], units["MONTH"]
+        try:
+            lo = datetime(y, m, 1)
+        except ValueError:
+            continue
+        hi = (lo.replace(day=28) + timedelta(days=4)).replace(day=1)
+        used = {im}
+        if "DAY" in units:
+            idd, d = units["DAY"]
+            try:
+                lo = datetime(y, m, d)
+            except ValueError:
+                continue
+            hi, used = lo + timedelta(days=1), used | {idd}
+        replace[iy] = exp.Paren(this=_range(cols[key], lo, hi))
+        drop |= used
+    if not replace:
+        return None
+    return [replace.get(i, c) for i, c in enumerate(conjs) if i not in drop]
+
+
 def suggest_sargable_rewrite(sql: str) -> Optional[str]:
     """Replace `DATE_TRUNC(unit, col) = X` / `CAST(col AS DATE) = X` WHERE
     conjuncts with an equivalent range on the bare column. None when there
@@ -263,6 +322,10 @@ def suggest_sargable_rewrite(sql: str) -> Optional[str]:
     tree = tree.copy()
     changed = False
     for where in list(tree.find_all(exp.Where)):
+        combined = _combine_date_parts(sql_ast.conjuncts(where))
+        if combined is not None:
+            where.set("this", exp.and_(*combined))
+            changed = True
         for conj in sql_ast.conjuncts(where):
             new = _sargable(conj)
             if new is not None:
