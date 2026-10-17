@@ -7,7 +7,9 @@
 # 2026-10-14) were written in DuckDB SQL and adapted with to_bigquery();
 # B01-B30 were written for BigQuery (run once 2026-10-16). All 90 have been
 # run, so none is held out any more. `label_from` records a label changed for
-# BigQuery, with the measured reason. `bytes_mib` is the dry run at build time.
+# BigQuery when this set was built, with the measured reason. `label_change`
+# records a label changed AFTER this set was run; run_eval.py scores both the
+# original and the current labels. `bytes_mib` is the dry run at build time.
 #
 # CAPS: eval/eval_caps_bigquery.yaml, interactive — 100 MiB bytes, 5,000,000
 # rows for join fan-out, 300 s runtime.
@@ -801,7 +803,13 @@ queries:
     prunes.
   sql: SELECT order_id, sale_price FROM order_items WHERE FORMAT_TIMESTAMP('%Y-%m', created_at) = '2023-06'
   bytes_mib: 4.16
-  guard_action_expected: rewrite
+  label_change:
+    from: rewrite
+    to: warn
+    date: '2026-10-17'
+    reason: 'owner''s policy 2026-10-17: a rewrite must BILL fewer bytes (BigQuery bills at least 10 MiB per table);
+      dry run 4.155 -> 0.034 MiB read, 10 -> 10 MiB billed, so no rewrite; the unprunable wrapper still warns'
+  guard_action_expected: warn
   role: bad
 - id: B23
   source: eval/bq_queries.yaml
@@ -810,7 +818,13 @@ queries:
     equivalent.
   sql: SELECT COUNT(*) AS n FROM orders WHERE created_at + INTERVAL 1 DAY >= TIMESTAMP '2023-12-02'
   bytes_mib: 0.96
-  guard_action_expected: rewrite
+  label_change:
+    from: rewrite
+    to: warn
+    date: '2026-10-17'
+    reason: 'owner''s policy 2026-10-17: a rewrite must BILL fewer bytes (BigQuery bills at least 10 MiB per table);
+      dry run 0.958 -> 0.713 MiB read, 10 -> 10 MiB billed, so no rewrite; the unprunable wrapper still warns'
+  guard_action_expected: warn
   role: bad
 - id: B24
   source: eval/bq_queries.yaml
@@ -852,10 +866,14 @@ queries:
   sql: SELECT id, user_id, event_type, created_at FROM events WHERE created_at >= TIMESTAMP '2023-01-01' AND created_at
     < TIMESTAMP '2024-01-01' ORDER BY created_at
   bytes_mib: 7.82
-  label_from:
-    label: warn
-    reason: 'sort with no LIMIT is cheap at this size: live runs 2026-10-17 sorting 284,310 rows took 9.3 slot-s
-      / 1.4 s vs 7.0 slot-s / 0.6 s with LIMIT 1000, same 10 MiB billed'
+  label_change:
+    from: warn
+    to: allow
+    date: '2026-10-17'
+    reason: 'owner''s choice after the first validation run: sort with no LIMIT is cheap at this size; live runs
+      2026-10-17 sorting 284,310 rows took 9.3 slot-s / 1.4 s vs 7.0 slot-s / 0.6 s with LIMIT 1000, same 10 MiB
+      billed'
+    from_role: bad
   guard_action_expected: allow
   role: good
 - id: B29

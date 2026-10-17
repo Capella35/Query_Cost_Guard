@@ -45,8 +45,18 @@ RELABELS = {
     "H06": ("allow", "CAST(created_at AS DATE) = X prunes on BigQuery: 0.0 MiB; no fewer-bytes equivalent"),
     "H25": ("allow", "TIMESTAMP_TRUNC(created_at, MONTH) = X prunes on BigQuery: 0.2 MiB; no fewer-bytes equivalent"),
     "Q15": ("allow", "HAVING on a group column bills the same as the WHERE form (Q30): 1.84 MiB each, so no waste on BigQuery"),
-    "B28": ("allow", "sort with no LIMIT is cheap at this size: live runs 2026-10-17 sorting 284,310 rows took 9.3 slot-s / 1.4 s vs 7.0 slot-s / 0.6 s with LIMIT 1000, same 10 MiB billed"),
 }
+
+# Label changes made AFTER this set was run (2026-10-17 first run): recorded
+# as `label_change` (from / to / date / reason, from_role when the role
+# changes), so run_eval.py scores both the original and the current labels.
+# id -> (new label, date, reason)
+POST_RUN_RELABELS = {
+    "B28": ("allow", "2026-10-17", "owner's choice after the first validation run: sort with no LIMIT is cheap at this size; live runs 2026-10-17 sorting 284,310 rows took 9.3 slot-s / 1.4 s vs 7.0 slot-s / 0.6 s with LIMIT 1000, same 10 MiB billed"),
+    "B22": ("warn", "2026-10-17", "owner's policy 2026-10-17: a rewrite must BILL fewer bytes (BigQuery bills at least 10 MiB per table); dry run 4.155 -> 0.034 MiB read, 10 -> 10 MiB billed, so no rewrite; the unprunable wrapper still warns"),
+    "B23": ("warn", "2026-10-17", "owner's policy 2026-10-17: a rewrite must BILL fewer bytes (BigQuery bills at least 10 MiB per table); dry run 0.958 -> 0.713 MiB read, 10 -> 10 MiB billed, so no rewrite; the unprunable wrapper still warns"),
+}
+ROLE = {"allow": "good"}
 
 HEADER = """\
 # BigQuery VALIDATION set: every existing eval query (Q, H, B), BigQuery SQL,
@@ -58,7 +68,9 @@ HEADER = """\
 # 2026-10-14) were written in DuckDB SQL and adapted with to_bigquery();
 # B01-B30 were written for BigQuery (run once 2026-10-16). All 90 have been
 # run, so none is held out any more. `label_from` records a label changed for
-# BigQuery, with the measured reason. `bytes_mib` is the dry run at build time.
+# BigQuery when this set was built, with the measured reason. `label_change`
+# records a label changed AFTER this set was run; run_eval.py scores both the
+# original and the current labels. `bytes_mib` is the dry run at build time.
 #
 # CAPS: eval/eval_caps_bigquery.yaml, interactive — 100 MiB bytes, 5,000,000
 # rows for join fan-out, 300 s runtime.
@@ -126,13 +138,24 @@ def main() -> None:
             elif entry["bytes_mib"] > CAP_MIB and label != "block":
                 raise SystemExit(f"{q['id']}: {entry['bytes_mib']} MiB is over the cap but "
                                  f"labeled {label}; decide it in RELABELS")
+            role = "good" if label == "allow" else "bad"
+            if q["id"] in POST_RUN_RELABELS:
+                new, date, why = POST_RUN_RELABELS[q["id"]]
+                assert new != label, q["id"]
+                change = {"from": label, "to": new, "date": date, "reason": why}
+                new_role = ROLE.get(new, "bad")
+                if new_role != role:
+                    change["from_role"] = role
+                entry["label_change"] = change
+                label, role = new, new_role
             entry["guard_action_expected"] = label
-            entry["role"] = "good" if label == "allow" else "bad"
+            entry["role"] = role
             out.append(entry)
     path = ROOT / "eval" / "bq_validation.yaml"
     body = yaml.safe_dump({"queries": out}, sort_keys=False, width=110, allow_unicode=True)
     path.write_text(HEADER + "\n" + body)
-    print(f"{len(out)} queries -> {path.relative_to(ROOT)} ({len(RELABELS)} relabeled for BigQuery)")
+    print(f"{len(out)} queries -> {path.relative_to(ROOT)} ({len(RELABELS)} relabeled for BigQuery, "
+          f"{len(POST_RUN_RELABELS)} label changes after a run)")
 
 
 if __name__ == "__main__":
