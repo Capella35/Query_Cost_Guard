@@ -144,11 +144,27 @@ def test_group_by_columns_per_table():
     tree = sql_ast.parse_one("SELECT u.id, COUNT(*) FROM users u JOIN events e "
                              "ON e.state = u.state GROUP BY u.id, status")
     assert sql_ast.group_by_columns(tree) == ["id", "status"]  # all tables: unchanged
-    assert sql_ast.group_by_columns(tree, "users") == ["id", "status"]
-    assert sql_ast.group_by_columns(tree, "events") == ["status"]  # u.id is not events.id
-    # derived-table qualifiers can't be resolved without a schema: kept
+    assert sql_ast.group_by_columns(tree, "users") == ["id"]  # unqualified status: unresolved
+    assert sql_ast.group_by_columns(tree, "events") == []  # u.id is not events.id
+    only_events = lambda t, c: t == "events" and c == "status"  # noqa: E731
+    assert sql_ast.group_by_columns(tree, "events", has_column=only_events) == ["status"]
+    assert sql_ast.group_by_columns(tree, "users", has_column=only_events) == ["id"]
+    # through a derived table or CTE whose output is a plain column
     sub = sql_ast.parse_one("SELECT t.id FROM (SELECT id FROM events) t GROUP BY t.id")
     assert sql_ast.group_by_columns(sub, "events") == ["id"]
+    cte = sql_ast.parse_one("WITH r AS (SELECT user_id AS u FROM orders) SELECT u, COUNT(*) FROM r GROUP BY u")
+    assert sql_ast.group_by_columns(cte, "orders") == ["u"] and sql_ast.group_by_columns(cte, "events") == []
+
+
+def test_group_by_column_is_judged_in_its_own_scope():
+    """H28's shape: the CTE groups orders.user_id; the outer query reads
+    events. user_id belongs to orders only, though events has a user_id too."""
+    tree = sql_ast.parse_one(
+        "WITH r AS (SELECT user_id, COUNT(*) AS n FROM orders GROUP BY user_id) "
+        "SELECT e.event_type, AVG(r.n) FROM r JOIN events e ON e.user_id = r.user_id GROUP BY e.event_type")
+    has = lambda t, c: c in {"orders": {"user_id"}, "events": {"user_id", "event_type"}}[t]  # noqa: E731
+    assert sql_ast.group_by_columns(tree, "orders", has_column=has) == ["user_id"]
+    assert sql_ast.group_by_columns(tree, "events", has_column=has) == ["event_type"]
 
 
 def test_group_by_qualified_column_is_judged_on_its_own_table(tmp_path):

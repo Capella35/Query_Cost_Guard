@@ -139,8 +139,9 @@ def no_high_cardinality_groupby(sql: str, metadata: dict) -> list[str]:
     if not metadata.get("large"):
         return []
     findings = []
-    for col in group_by_columns(sql, metadata.get("table")):
-        p = metadata.get("column_profiles", {}).get(col)
+    # The Guard profiles only the GROUP BY columns that come from this table
+    # (sql_ast.group_by_columns: a column is judged with its own table).
+    for col, p in (metadata.get("column_profiles") or {}).items():
         if p is None or not p.row_count:
             continue
         if p.approx_distinct / p.row_count >= HIGH_CARDINALITY_RATIO:

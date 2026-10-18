@@ -186,28 +186,62 @@ def is_basic_query(tree: Optional[exp.Expression]) -> bool:
     return sum(1 for t in tree.find_all(exp.Table) if isinstance(t.this, exp.Identifier)) == 1
 
 
-def group_by_columns(tree: exp.Expression, table: Optional[str] = None) -> list[str]:
+def group_by_columns(tree: exp.Expression, table: Optional[str] = None,
+                     has_column=None) -> list[str]:
     """Plain column names in any GROUP BY (lowercased, qualifier dropped).
     Ordinals and expressions are skipped.
 
-    With `table`: only the columns that can belong to it. A column qualified
-    by ANOTHER physical table's name or alias is left out (`GROUP BY u.id`
-    is not `events.id`); unqualified columns and those qualified by a
-    subquery or CTE alias are kept, since resolving them needs the schema."""
-    other: set[str] = set()
-    if table is not None:
-        mine = table_aliases(tree, table)
-        other = {t.alias_or_name.lower() for t in tree.find_all(exp.Table)
-                 if isinstance(t.this, exp.Identifier)} - mine
+    With `table`: only the columns that come from THAT table — a column is
+    judged with its own table, never by name alone (owner's rule,
+    2026-10-18). Resolved per SELECT scope (column_source): a qualified
+    column by its alias in that scope; an unqualified one by the scope's only
+    relation, or among several by `has_column(table, column)` when exactly
+    one has it; through a derived table or CTE whose output is a plain
+    column. Anything unresolved belongs to no table."""
+    ctes = cte_bodies(tree)
     cols: list[str] = []
-    for g in tree.find_all(exp.Group):
-        for e in g.expressions:
+    for sel in tree.find_all(exp.Select):
+        group = sel.args.get("group")
+        if group is None:
+            continue
+        for e in group.expressions:
             if not isinstance(e, exp.Column) or e.name.lower() in cols:
                 continue
-            if e.table and e.table.lower() in other:
-                continue
-            cols.append(e.name.lower())
+            if table is None or column_source(sel, e, ctes, has_column) == table.lower():
+                cols.append(e.name.lower())
     return cols
+
+
+def column_source(sel: exp.Select, col: exp.Column, ctes: dict, has_column=None,
+                  depth: int = 0) -> Optional[str]:
+    """The physical table a column in `sel` reads from, or None."""
+    if depth > 4:
+        return None
+    rels = {_rel_name(r): r for r, _ in _relations(sel)}
+    name = col.name.lower()
+    if col.table:
+        rel = rels.get(col.table.lower())
+    elif len(rels) == 1:
+        rel = next(iter(rels.values()))
+    else:
+        physical = [r for r in rels.values()
+                    if isinstance(r, exp.Table) and r.name.lower() not in ctes]
+        if len(physical) != len(rels) or has_column is None:
+            return None  # a derived table could also have it: ambiguous
+        owners = [r for r in physical if has_column(r.name.lower(), name)]
+        rel = owners[0] if len(owners) == 1 else None
+    if rel is None:
+        return None
+    if isinstance(rel, exp.Table) and rel.name.lower() not in ctes:
+        return rel.name.lower()
+    body = ctes.get(rel.name.lower()) if isinstance(rel, exp.Table) else (
+        rel.this if isinstance(rel, exp.Subquery) else None)
+    if not isinstance(body, exp.Select):
+        return None
+    for p in body.expressions:
+        if p.alias_or_name.lower() == name and isinstance(p.unalias(), exp.Column):
+            return column_source(body, p.unalias(), ctes, has_column, depth + 1)
+    return None
 
 
 def repeated_subqueries(tree: exp.Expression, min_len: int = 20) -> list[tuple[str, int]]:
@@ -294,7 +328,10 @@ def redundant_distincts(tree: exp.Expression) -> list[str]:
        the select list (directly, by alias, or by ordinal);
     2. the select list is all aggregates with no GROUP BY — one row;
     3. duplicates are irrelevant where the SELECT sits: an IN (...) or
-       EXISTS (...) subquery, or an arm of a deduplicating UNION.
+       EXISTS (...) subquery, or an arm of a deduplicating UNION;
+    4. it reads one derived table (no join) whose GROUP BY keys are all
+       selected as plain columns: the derived table's rows are already
+       unique on them, and a WHERE only removes rows (T21).
 
     Skipped: DISTINCT ON, ROLLUP/CUBE/GROUPING SETS (subtotal rows can
     collide with real NULL keys), window functions.
@@ -316,6 +353,10 @@ def redundant_distincts(tree: exp.Expression) -> list[str]:
             continue
         group = sel.args.get("group")
         projections = sel.expressions
+        if group is None and _unique_derived_table(sel):
+            out.append("SELECT DISTINCT over a derived table whose GROUP BY already makes "
+                       "these columns unique; drop DISTINCT")
+            continue
         if group is None:
             if projections and all(
                 e.unalias().find(exp.AggFunc) is not None and not isinstance(e.unalias(), exp.Column)
@@ -339,6 +380,37 @@ def redundant_distincts(tree: exp.Expression) -> list[str]:
             out.append(f"SELECT DISTINCT is redundant: GROUP BY {cols} already makes every "
                        "row unique; drop DISTINCT (the engine may already skip it)")
     return list(dict.fromkeys(out))
+
+
+def _unique_derived_table(sel: exp.Select) -> bool:
+    """Case 4 of redundant_distincts: FROM (SELECT ... GROUP BY keys) with no
+    join, and every key's output column selected as a plain column."""
+    from_ = sel.args.get("from_")
+    if from_ is None or sel.args.get("joins") or not isinstance(from_.this, exp.Subquery):
+        return False
+    inner = from_.this.this
+    if not isinstance(inner, exp.Select) or inner.args.get("group") is None:
+        return False
+    group = inner.args["group"]
+    if group.find(exp.Rollup, exp.Cube, exp.GroupingSets) is not None or not group.expressions:
+        return False
+    names = {}  # inner expression SQL -> its output name
+    for i, e in enumerate(inner.expressions, start=1):
+        names[e.unalias().sql(dialect=DIALECT).lower()] = e.alias_or_name.lower()
+        names[str(i)] = e.alias_or_name.lower()
+    keys = []
+    for k in group.expressions:
+        name = names.get(k.sql(dialect=DIALECT).lower())
+        if name is None and isinstance(k, exp.Column) and not k.table:
+            name = k.name.lower() if k.name.lower() in names.values() else None
+        if not name:
+            return False
+        keys.append(name)
+    selected = {e.name.lower() for e in sel.expressions
+                if isinstance(e, exp.Column) and e.name}
+    if any(not isinstance(e, exp.Column) for e in sel.expressions):
+        return False
+    return set(keys) <= selected
 
 
 def long_in_lists(tree: exp.Expression, max_items: int) -> list[tuple[str, int]]:

@@ -344,6 +344,15 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
                 registry = get() if get is not None else None
             except Exception:  # noqa: BLE001 — missing registry = visible skip
                 registry = None
+    def _has_column(table: str, column: str) -> bool:
+        """Does `table` have `column` (from its metadata)? For resolving an
+        unqualified GROUP BY column in a join to its own table."""
+        try:
+            fut = md_futures.get(table)
+            return fut is not None and column in [c.lower() for c in fut.result().get("columns", [])]
+        except Exception:  # noqa: BLE001 — no metadata: can't tell
+            return False
+
     for t in tables:
         if backend is None:
             no_md[t] = "no backend"
@@ -371,7 +380,7 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
         # (profiled once, refreshed on a schedule) — a lookup, never a scan.
         profiles = {}
         table_cols = [c.lower() for c in md.get("columns", [])]
-        for col in sql_ast.group_by_columns(tree, t):
+        for col in sql_ast.group_by_columns(tree, t, has_column=_has_column):
             if col not in table_cols:
                 continue
             entry = registry.lookup(t, col) if registry is not None else None
