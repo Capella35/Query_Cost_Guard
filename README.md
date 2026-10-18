@@ -405,7 +405,7 @@ estimates and measured runtime; every dollar figure stays labeled as modeled.
 `.env.example`; `.env` is gitignored and read by `cost_guard.config.load_dotenv`,
 a shell variable wins), then `eval/run_column_kinds.py`,
 `eval/run_eval.py --llm claude` and `eval/run_judge_eval.py --llm claude`.
-Model: `claude-opus-5-5`. These runs spend real API credit.
+Model: `claude-haiku-5-5`, Anthropic's cheapest (since 2026-10-18; earlier LLM results above were measured with `claude-opus-5-5`). These runs spend real API credit, about $0.0003 per call.
 
 **BigQuery:** set a bytes-billed cap and a timeout on the project **before
 running anything**, then: `scripts/bq_dryrun_compare.py --project $GCP_PROJECT

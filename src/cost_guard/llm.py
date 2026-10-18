@@ -19,7 +19,9 @@ Where the LLM earns its place, and where it is fenced in:
 
 NullLLM (interfaces.py) is the no-LLM mode: zero model calls.
 
-Model: claude-opus-5-5 with server-side refusal fallbacks enabled
+Model: claude-haiku-5-5, Anthropic's cheapest (owner's choice 2026-10-18,
+over Opus 5.5 and over adding Gemini 2.5 Flash-Lite: about $0.0003 per call,
+$0.10 / $0.50 per 1M tokens), with server-side refusal fallbacks enabled
 (fallbacks="default"); a refusal on the final response is treated as "no
 output" — no rewrite, no explanation, judge holds.
 """
@@ -31,7 +33,7 @@ from pydantic import BaseModel
 
 from .interfaces import RewriteProposal
 
-MODEL = "claude-opus-5-5"
+MODEL = "claude-haiku-5-5"
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 
