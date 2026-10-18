@@ -385,7 +385,7 @@ static-only vs static+adaptive.
 │   ├── tools/                # compare_results, run_sample_query, metadata, history, estimate
 │   └── rules/static_rules.py
 ├── scripts/                  # TheLook loader, column registry build, BigQuery schema check
-├── demo/                     # synthetic warehouse, 4-beat CLI demo, Streamlit UI
+├── demo/                     # synthetic warehouse, 4-beat CLI demo
 └── tests/                    # 361 tests (TheLook-dependent ones skip without data/)
 ```
 
@@ -458,7 +458,6 @@ threshold from history.
 
 ```bash
 PYTHONPATH=src .venv/bin/python demo/demo.py
-.venv/bin/streamlit run demo/app.py     # interactive UI
 ```
 
 ## Roadmap
