@@ -42,7 +42,13 @@ from typing import Optional
 from .backends.base import ColumnProfile
 
 REGISTRY_TABLE = "column_registry"
-HIGH_CARDINALITY_RATIO = 0.5  # Guard rule: distinct/rows at or above = near-unique
+# Guard rule: distinct/rows at or above = near-unique. 0.8 (owner's call
+# 2026-10-18; was 0.5): the guide warns on GROUP BY a UNIQUE key, and at 0.5
+# a normal per-buyer count (orders.user_id 0.63, ~1.6 orders per buyer) was a
+# false warn (H28, T32). Not 0.95: distinct counts are approximate (HLL), and
+# truly unique columns are recorded at 0.90-0.96 on DuckDB (0.993-1.0 on the
+# BigQuery registry); 0.8 clears the worst measured HLL error (-17%).
+HIGH_CARDINALITY_RATIO = 0.8
 DEFAULTS = {
     "max_age_days": 35,  # older entries are unverified
     "max_table_rows": 100_000_000,  # size gate: larger tables are not scanned
