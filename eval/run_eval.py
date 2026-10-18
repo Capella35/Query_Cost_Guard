@@ -22,10 +22,11 @@ under eval/eval_caps_bigquery.yaml. Dry runs, plus small capped sample queries
 when a rewrite is verified; run once, like holdout.
 
 BigQuery is the target (2026-10-17); DuckDB stays for the unit tests only.
---suite bq-validation: all 90 earlier queries in BigQuery SQL, labeled for
-BigQuery (eval/bq_validation.yaml, scripts/build_bq_validation.py) — the set
-to tune on, rerun freely. --suite bq-test: the pre-registered test set
-(eval/bq_test.yaml) — run ONCE, after tuning.
+--suite bq-validation: the BigQuery-native queries (B01-B30, T01-T40),
+labeled for BigQuery (eval/bq_validation.yaml, scripts/build_bq_validation.py)
+— the set to tune on, rerun freely. --suite bq-test: the first pre-registered
+test set (eval/bq_test.yaml), run once 2026-10-17 and since merged into
+validation; kept as the record of that run.
 
 --suite regression runs the 11 inline cases on the synthetic warehouse
 (also covered by tests/test_guard_regression.py). Those were written next
@@ -72,7 +73,7 @@ SUITE_FILES = {
     "bigquery": ("bq_queries.yaml", "RESULTS_bigquery.md",
                  "pre-registered BigQuery TheLook queries"),
     "bq-validation": ("bq_validation.yaml", "RESULTS_bq_validation.md",
-                      "BigQuery validation set (all 90 earlier queries)"),
+                      "BigQuery validation set (BigQuery-native B and T queries)"),
     "bq-test": ("bq_test.yaml", "RESULTS_bq_test.md", "pre-registered BigQuery test set"),
 }
 RUN_ONCE = ("holdout", "bigquery", "bq-test")  # held-out / pre-registered: first run is the result

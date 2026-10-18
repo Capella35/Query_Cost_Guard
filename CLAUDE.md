@@ -79,12 +79,15 @@ settings.
 - **Eval integrity.**
   - Labels are changed only openly: `label_from` / `label_change` with the
     measured reason, in a separate commit, with both scores reported.
-  - `eval/bq_test.yaml` (pre-registered `ddf0030`) and the other run-once sets
-    (`holdout`, `bigquery`) are never rerun silently. `run_eval.py` refuses
+  - The BigQuery evals are BigQuery-native only: validation = B01–B30 +
+    T01–T40. `eval/bq_test.yaml` (pre-registered `ddf0030`, run once, 35/40)
+    and the other run-once sets (`holdout`, `bigquery`) are never rerun
+    silently. `run_eval.py` refuses
     without `--rerun`, and a fix made after seeing a set's misses makes it a
     tuning set.
-  - `eval/bq_validation.yaml` is generated: edit `RELABELS` / `HEADER` in
-    `scripts/build_bq_validation.py`, not the YAML. Its header holds the
+  - `eval/bq_validation.yaml` is generated: edit `RELABELS` (labels set at
+    build time), `POST_RUN_RELABELS` (changes after a run, scored both ways) or
+    `HEADER` in `scripts/build_bq_validation.py`, not the YAML. Its header holds the
     labeling guide.
   - Evals use frozen caps (`eval/eval_caps*.yaml`), not `customer.yaml`.
 - **LLM is frugal and fenced.** Deterministic first; the model only handles edge

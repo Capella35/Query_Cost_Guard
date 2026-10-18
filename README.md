@@ -134,8 +134,8 @@ only** (free, offline, ~30 s). The eval is split in two, on BigQuery:
 
 | Set | Queries | Use | Result |
 |---|---|---|---|
-| Validation, `eval/bq_validation.yaml` | 90: every earlier query (Q, H, B) in BigQuery SQL, labeled for BigQuery (guide v2; 11 relabeled with the measured reason, e.g. Q11 over the cap because the copy has data to 2026) | tune on it, rerun freely (`--suite bq-validation`) | **86/90**, 0 false blocks ([`eval/RESULTS_bq_validation.md`](eval/RESULTS_bq_validation.md)). Misses: Q09 and Q15 warn for patterns that cost nothing extra on BigQuery (repeated subquery, HAVING on a group column), H28 near-unique GROUP BY inside a CTE, B28 a sort a dry run cannot see |
-| Test, `eval/bq_test.yaml` | 40 new queries, labeled from the guide and data facts only, committed (`ddf0030`) before any Guard run on it or on the validation set | run ONCE after tuning (`--suite bq-test`) | not run yet |
+| Validation, `eval/bq_validation.yaml` | 70 BigQuery-native queries: B01–B30 and T01–T40 (the old test set, merged 2026-10-17 after fixes followed its misses). The DuckDB-era Q and H queries left the BigQuery evals the same day | tune on it, rerun freely (`--suite bq-validation`) | **68/70** current labels, **60/70** original labels (8 recorded label changes), 0 false blocks ([`eval/RESULTS_bq_validation.md`](eval/RESULTS_bq_validation.md)). Misses: T32 near-unique GROUP BY inside a CTE (H28's pattern, owner undecided); T14 a correct rewrite rejected because the 10% sample held no row of its few-day window (inconclusive) |
+| First test, `eval/bq_test.yaml` | 40 new BigQuery queries, labeled from the guide and data facts only, committed (`ddf0030`) before any Guard run | run ONCE 2026-10-17 | **35/40**, catch 0.917, 1 false block (T27) ([`eval/RESULTS_bq_test.md`](eval/RESULTS_bq_test.md)). Fixes for T27, T08 and T15 followed, so it is now part of validation; a fresh pool will be pre-registered and split at random |
 
 The sections below are the earlier DuckDB-era evals, kept as history.
 
