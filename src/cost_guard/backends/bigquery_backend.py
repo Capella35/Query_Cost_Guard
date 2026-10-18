@@ -229,8 +229,14 @@ class BigQueryWarehouse:
         t0 = time.perf_counter()
         try:
             job = self._bq().query(sql, job_config=self._job_config(max_bytes_billed, **kw))
-            rows = list(job.result(timeout=timeout_sec))
-            return ExecutionResult("completed", time.perf_counter() - t0, len(rows),
+            # The row COUNT only: BigQuery reports total_rows, so fetch no rows.
+            # list(result) downloaded every row to count them (the agent eval's
+            # 208M-row join kept the server busy for minutes after the job ended).
+            it = job.result(timeout=timeout_sec, max_results=0)
+            n = getattr(it, "total_rows", None)
+            if n is None:
+                n = sum(1 for _ in it)
+            return ExecutionResult("completed", time.perf_counter() - t0, int(n),
                                    bytes_billed=getattr(job, "total_bytes_billed", None))
         except Exception as e:  # noqa: BLE001
             dur = time.perf_counter() - t0

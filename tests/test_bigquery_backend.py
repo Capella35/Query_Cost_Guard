@@ -25,7 +25,7 @@ class FakeClient:
 
     def query(self, sql, job_config=None):
         self.configs.append(job_config)
-        return SimpleNamespace(total_bytes_processed=self.nbytes, result=lambda timeout=None: [])
+        return SimpleNamespace(total_bytes_processed=self.nbytes, result=lambda timeout=None, **kw: [])
 
     def get_table(self, ref):
         view = ref.rsplit(".", 1)[-1] in self.views
@@ -200,14 +200,14 @@ class RegistryClient:
         if "value_count" in sql:  # orders: order_id, status, created_at have <= 1000 distinct
             rows = [(1, "Complete", 700), (1, "Cancelled", 300), (0, "7", 2)]
             return SimpleNamespace(total_bytes_processed=self.dry_bytes,
-                                   result=lambda timeout=None: rows)
+                                   result=lambda timeout=None, **kw: rows)
         if ".orders`" in sql:
             row = (1000, 990, 1000, "1", "1000", 5, 1000, None, None,
                    600, 1000, "2019-01-01 00:00:00+00", "2024-01-01 00:00:00+00")
         else:
             row = (100000, 98000, 100000, "1", "100000")
         return SimpleNamespace(total_bytes_processed=self.dry_bytes,
-                               result=lambda timeout=None: [row])
+                               result=lambda timeout=None, **kw: [row])
 
 
 def test_bigquery_registry_build_and_lookup(tmp_path):
@@ -328,7 +328,7 @@ class SessionClient:
         self.jobs.append((sql, job_config))
         assert job_config.maximum_bytes_billed and job_config.default_dataset is None
         if job_config.create_session:
-            return SimpleNamespace(result=lambda timeout=None: [],
+            return SimpleNamespace(result=lambda timeout=None, **kw: [],
                                    session_info=SimpleNamespace(session_id="s1"))
         assert job_config.connection_properties[0].value == "s1"
         if sql.startswith("SELECT (SELECT COUNT"):
@@ -339,7 +339,7 @@ class SessionClient:
             raise RuntimeError("boom")
         else:
             rows = [{"n": 3}]
-        return SimpleNamespace(result=lambda timeout=None: [
+        return SimpleNamespace(result=lambda timeout=None, **kw: [
             _Row(tuple(r.values()) if isinstance(r, dict) else r) for r in rows])
 
 
@@ -585,7 +585,7 @@ def test_rewrite_gate_compares_billed_bytes(monkeypatch, orig_mib, cand_mib, off
         def query(self, sql, job_config=None):
             self.configs.append(job_config)
             mib = orig_mib if "FORMAT_TIMESTAMP" in sql or "STRFTIME" in sql else cand_mib
-            return SimpleNamespace(total_bytes_processed=mib * 1024**2, result=lambda timeout=None: [])
+            return SimpleNamespace(total_bytes_processed=mib * 1024**2, result=lambda timeout=None, **kw: [])
 
     monkeypatch.setattr(cr, "compare_results",
                         lambda a, b, backend=None: SimpleNamespace(passed=True, detail="same rows"))

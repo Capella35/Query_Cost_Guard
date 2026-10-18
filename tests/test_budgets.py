@@ -68,7 +68,7 @@ class Client:
         if not job_config.dry_run:
             self.ran.append(job_config.maximum_bytes_billed)
         return SimpleNamespace(total_bytes_processed=2 * 1024**3, total_bytes_billed=2 * 1024**3,
-                               result=lambda timeout=None: [], job_id="j", num_dml_affected_rows=None,
+                               result=lambda timeout=None, **kw: [], job_id="j", num_dml_affected_rows=None,
                                slot_millis=1, cache_hit=False)
 
     def get_table(self, ref):
