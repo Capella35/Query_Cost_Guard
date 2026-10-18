@@ -357,3 +357,31 @@ def test_range_filter_without_complete_counts_stays_traced():
     (e,) = _est("SELECT a.id FROM users a JOIN users b ON a.gender = b.gender "
                 "WHERE a.gender > 'F'", _age_registry())
     assert e.filtered
+
+
+def _source_registry():
+    reg = ColumnRegistry([
+        RegistryEntry("ds", "users", c, "STRING", 100_000, ndv, 0, True, NOW)
+        for c, ndv in (("id", 99_651), ("traffic_source", 5), ("country", 15), ("city", 7_915))
+    ], default_schema="ds")
+    reg.add_value_counts([("ds", "users", "country", "Spain", 3_992)])
+    return reg
+
+
+def test_inequality_on_a_unique_column_keeps_the_estimate():
+    """Agent eval A04: 'every OTHER user of the same traffic source'. a.id != b.id
+    removes each Spanish user's pair with itself: at most 3,992 rows."""
+    (e,) = _est("SELECT a.id, b.id FROM users a JOIN users b ON a.traffic_source = b.traffic_source "
+                "WHERE a.country = 'Spain' AND a.id != b.id", _source_registry())
+    assert not e.filtered and e.rows == 3_992 * 100_000 // 5 - 3_992
+
+
+def test_other_inequalities_stay_traced():
+    reg = _source_registry()
+    # not unique on either side: how many pairs it removes is unknown
+    (e,) = _est("SELECT a.id FROM users a JOIN users b ON a.traffic_source = b.traffic_source "
+                "WHERE a.city <> b.city", reg)
+    assert e.filtered
+    # the join key itself: contradicts the equality, the estimate means nothing
+    (e,) = _est("SELECT a.id FROM users a JOIN users b ON a.id = b.id WHERE a.id <> b.id", reg)
+    assert e.filtered

@@ -47,6 +47,17 @@ one column are combined into one range first, not multiplied. Added
 let through). Not min/max interpolation: an even spread over the range can be
 far off on skewed data, and acting on such a guess risks false blocks.
 
+`a.col != b.col` between two relations, where col is near-unique (distinct /
+rows >= 0.95) on at least one side and is not a key of their join, removes
+only pairs whose values are equal: at most one per row of the other side, so
+at most the smaller side's rows; the estimate subtracts that and stays acted
+on. Added 2026-10-18 after the agent eval: a model wrote "pair each Spanish
+user with every OTHER user of the same traffic source" as
+`... ON a.traffic_source = b.traffic_source WHERE a.country = 'Spain' AND
+a.id != b.id`; the inequality made the estimate filtered (traced only) and a
+~208M-row join ran. Any other inequality between relations still marks it
+filtered.
+
 `filtered`: some other predicate in the scope is neither a join-key equality
 nor one of the filters above (a range on any other column, LIKE, a join
 condition on an expression). The estimate ignores those, so it can be far too high: Q28
@@ -72,6 +83,10 @@ from . import sql_ast
 # rows; HyperLogLog error alone can push its estimate a few % above that.
 # 2x is a judgment call, not a measured threshold.
 FANOUT_MIN_RATIO = 2.0
+# `a.col != b.col` is bounded (see the docstring) when col is at least this
+# unique on one side; the same 0.95 the identifier check uses (HLL counts put
+# truly unique BigQuery columns at 0.993-1.0).
+NEQ_UNIQUE_RATIO = 0.95
 
 
 @dataclass
@@ -266,6 +281,7 @@ def _scope_estimate(select, rels, ctes, registry, max_age_days, pcols=None,
         if join.args.get("using"):
             using[idx] = [c.name.lower() for c in join.args["using"]]
     edges: list[tuple[int, str, int, str]] = []  # (rel i, col, rel j, col)
+    neq: list[tuple[int, str, int, str]] = []  # a.col != b.col between two relations
     filtered = False
     on_partition: dict[int, list[exp.Expression]] = {}  # rel -> its partition-column filters
     value_share: dict[int, float] = {}  # rel -> share of rows its value filters keep
@@ -281,6 +297,14 @@ def _scope_estimate(select, rels, ctes, registry, max_age_days, pcols=None,
             ib = aliases.index(b.table.lower()) if b.table.lower() in aliases else None
             if ia is not None and ib is not None and ia != ib:
                 edges.append((ia, a.name.lower(), ib, b.name.lower()))
+                continue
+        if (isinstance(p, exp.NEQ) and isinstance(p.this, exp.Column)
+                and isinstance(p.expression, exp.Column)):
+            a, b = p.this, p.expression
+            ia = aliases.index(a.table.lower()) if a.table.lower() in aliases else None
+            ib = aliases.index(b.table.lower()) if b.table.lower() in aliases else None
+            if ia is not None and ib is not None and ia != ib:
+                neq.append((ia, a.name.lower(), ib, b.name.lower()))
                 continue
         owners = {c.table.lower() for c in cols}
         if (partition_fraction is not None and len(owners) == 1 and owners <= set(aliases)
@@ -358,5 +382,18 @@ def _scope_estimate(select, rels, ctes, registry, max_age_days, pcols=None,
         elif side == "FULL":
             joined = max(joined, rows, table_rows[k])
         rows = joined
+    # a.col != b.col (see the docstring): removes at most the smaller side's
+    # rows when col is near-unique on a side and is not a key of their join.
+    for i, ci, j, cj in neq:
+        keys = {(x, cx) for x, cx, y, cy in edges if {x, y} == {i, j}} | \
+               {(y, cy) for x, cx, y, cy in edges if {x, y} == {i, j}}
+        unique = any(
+            (d := ndv(k, c)) is not None and (e := registry.lookup(tables[k], c)) is not None
+            and e.total_rows and d / e.total_rows >= NEQ_UNIQUE_RATIO
+            for k, c in ((i, ci), (j, cj)))
+        if unique and (i, ci) not in keys and (j, cj) not in keys:
+            rows = max(0, rows - min(table_rows[i], table_rows[j]))
+        else:
+            filtered = True
     return JoinEstimate(rows=rows, largest_input=max(table_rows), filtered=filtered,
                         tables=tables, keys=keys_used)
