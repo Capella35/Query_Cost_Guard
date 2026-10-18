@@ -70,7 +70,7 @@ class JudgmentOut(BaseModel):
     reason: str
 
 
-REWRITE_SYSTEM = """You rewrite analytics SQL (DuckDB dialect) to be cheaper \
+REWRITE_SYSTEM = """You rewrite analytics SQL ({dialect}) to be cheaper \
 while returning EXACTLY the same result set: same rows, same columns, same \
 column order, same ORDER BY semantics. You are given the query, the static-rule \
 findings that flagged it, and the columns of each table it reads.
@@ -85,11 +85,26 @@ If no rewrite preserves the result exactly (for example, the query genuinely \
 needs all history, or SELECT * output is what the caller consumes), set \
 preserves_results to false and return the original SQL unchanged. Do not \
 invent columns or tables. Your rewrite will be executed and compared against \
-the original; a rewrite that changes the result is rejected."""
+the original; a rewrite that changes the result is rejected.{dialect_notes}"""
+
+# The dialect the Guard is checking in (sql_ast.current_dialect()), named in
+# the rewrite prompt. Until 2026-10-18 the prompt always said DuckDB, and on
+# BigQuery a proposal used `created_at - INTERVAL 1 MONTH` (P25), which
+# BigQuery rejects; the notes are those measured failures.
+DIALECTS = {
+    "bigquery": ("BigQuery GoogleSQL dialect",
+                 "\n\nBigQuery rules: TIMESTAMP +/- INTERVAL accepts units up to DAY only "
+                 "(no MONTH or YEAR: use DATE_SUB / DATE_ADD on a DATE, or TIMESTAMP_SUB "
+                 "with DAY or HOUR); compare a TIMESTAMP column with TIMESTAMP literals, "
+                 "not DATE ones."),
+    "duckdb": ("DuckDB dialect", ""),
+}
 
 EXPLAIN_SYSTEM = """You explain to a data analyst, in 2-4 plain sentences, why \
-their query was flagged by a cost guard and what to change. The findings are \
-authoritative — do not contradict them or add new ones. No preamble."""
+their query was flagged by a cost guard and what to change. You are given the \
+decision and its reason first, then the findings and the fixes the guard \
+suggests. They are authoritative: explain the reason first (it is why the query \
+was blocked or warned), do not contradict them or add new ones. No preamble."""
 
 JUDGE_SYSTEM = """You review proposed per-query-shape runtime thresholds for a \
 warehouse cost guard. A threshold kills queries of that shape that run longer \
@@ -204,8 +219,11 @@ class ClaudeLLM:
         return "\n".join(lines) or "(none)"
 
     def propose_rewrite(self, sql: str, findings: list[str]) -> Optional[RewriteProposal]:
+        from . import sql_ast
+
+        name, notes = DIALECTS.get(sql_ast.current_dialect(), DIALECTS["duckdb"])
         out = self._parse(
-            REWRITE_SYSTEM,
+            REWRITE_SYSTEM.format(dialect=name, dialect_notes=notes),
             f"Query:\n{sql}\n\nFindings:\n"
             + "\n".join(f"- {f}" for f in findings)
             + f"\n\nTables and columns:\n{self._columns(sql)}",
@@ -217,9 +235,11 @@ class ClaudeLLM:
                                explanation=out.explanation)
 
     def explain_flag(self, sql: str, findings: list[str]) -> str:
+        """`findings`: what the Guard decided and why — guard.explain_inputs()
+        puts the decision and reason first, then findings and fix hints."""
         out = self._parse(
             EXPLAIN_SYSTEM,
-            f"Query:\n{sql}\n\nFindings:\n" + "\n".join(f"- {f}" for f in findings),
+            f"Query:\n{sql}\n\nGuard verdict:\n" + "\n".join(f"- {f}" for f in findings),
             ExplanationOut,
         )
         if out is None:

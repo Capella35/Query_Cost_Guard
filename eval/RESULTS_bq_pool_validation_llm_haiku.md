@@ -14,6 +14,27 @@ Run: `run_eval.py --suite bq-pool-validation --llm claude --phoenix --phoenix-co
   part) and failed verification. The rewrite prompt says "DuckDB dialect" (a prompt bug).
   The 3 rewrites offered came from the deterministic catalog.
 
+## Rerun after the two prompt fixes (2026-10-18)
+
+Results JSON `eval/results/bq-pool-validation_20261018_060232.json`. Fixes: the rewrite
+prompt names the dialect in use (BigQuery GoogleSQL, with the two measured rules: no
+MONTH/YEAR interval on TIMESTAMP, TIMESTAMP literals for TIMESTAMP columns); the explainer
+gets the decision and reason first, then findings and up to three fix hints, and is also
+called for cap blocks without findings.
+
+| | First run | After the fix |
+|---|---|---|
+| Explanations stating the real reason | 13 / 16 | **16 / 16** |
+| Unexplained warns/blocks | 2 (P01, P08) | 0 |
+| LLM rewrites offered | 0 / 9 (correct) | 0 / 9 (correct; P34, P36 checked: no fewer bytes billed) |
+| Proposals invalid on BigQuery | 1 (P25) | 0 |
+| Calls / tokens in / out | 23 / 13,675 / 5,037 | 25 / 16,875 / 6,606 |
+| Cost (MODELED) | $0.0039 | $0.0050 |
+| Mean time per call | ~1.9 s | ~3.5 s |
+
+Verdicts 31/31 in both (the model never decides). On this set the model adds readable
+explanations, not rewrites: every rewrite offered came from the deterministic catalog.
+
 Below: the run's own summary.
 
 # Guard eval: BigQuery pool, validation half

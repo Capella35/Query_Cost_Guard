@@ -181,13 +181,24 @@ def decide(
         if verdict.decision == "block":
             _add_fix_hints(sql, verdict, customer, backend, tracer, tid, ctx)
         verdict = _maybe_bypass(verdict, customer, bypass_reason, tracer, tid)
-        if llm is not None and verdict.decision in ("warn", "block") and verdict.findings:
+        if llm is not None and verdict.decision in ("warn", "block"):
             with tracer.span(tid, "llm.explain_flag") as span:
                 try:
-                    verdict.explanation = llm.explain_flag(sql, verdict.findings)
+                    verdict.explanation = llm.explain_flag(sql, explain_inputs(verdict))
                 except Exception as e:  # noqa: BLE001 — explanation is optional
                     span["attrs"]["error"] = str(e)[:200]
         return verdict
+
+
+def explain_inputs(verdict) -> list[str]:
+    """What the explainer is told: the decision and its reason first (a cap
+    block has a reason and no findings: P01, P08 went unexplained, P03's
+    explanation missed the cap), then findings the reason doesn't already
+    state, then up to three of the block's fix hints."""
+    items = [f"decision: {verdict.decision}; reason: {verdict.reason}"]
+    items += [f for f in verdict.findings if f not in verdict.reason]
+    items += [f"suggested fix: {h['text']}" for h in verdict.fix_hints if h.get("kind") == "fix"][:3]
+    return items
 
 
 def _maybe_bypass(verdict, customer, bypass_reason, tracer, tid) -> GuardVerdict:
