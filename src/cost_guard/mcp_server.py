@@ -66,7 +66,8 @@ class CostGuardService:
     def __init__(self, backend, customer: dict, log_path: str | Path = "runs/query_log.jsonl",
                  trace_path: str | Path | None = DEFAULT_TRACES, llm=None,
                  workload_class: str = "interactive", investigations: bool = True,
-                 investigation_dir: str | Path | None = None, agent_llm=None):
+                 investigation_dir: str | Path | None = None, agent_llm=None,
+                 user: Optional[str] = None):
         from concurrent.futures import ThreadPoolExecutor
 
         from .config import caps_for
@@ -91,6 +92,21 @@ class CostGuardService:
         self.trace_path = Path(trace_path) if trace_path is not None else None
         self.llm = llm
         self.rewrite_wait_sec = (customer.get("guard") or {}).get("rewrite_wait_sec")
+        # The deployment's user (--user): budgets are charged to it, and a
+        # caller can't name someone else. None = no trusted identity.
+        self.user = user
+
+    def _user(self, requested: Optional[str]) -> Optional[str]:
+        """The user a call is logged as: the deployment's, which a caller may
+        repeat but not replace; without one, the caller's opaque id (logged,
+        never trusted for budgets)."""
+        if self.user is None:
+            return requested
+        if requested is not None and requested != self.user:
+            raise PermissionError(
+                "this server runs as a fixed user set by the deployment; a caller can't "
+                "pass another user id (budgets are charged to the deployment's user)")
+        return self.user
 
     def _workload(self, requested: Optional[str]) -> str:
         """The class a call runs under: the server's, or a stricter one asked for."""
@@ -127,11 +143,14 @@ class CostGuardService:
             from .runtime import read_log, shape_runtimes, shape_volume
 
             fp = fingerprint_query(sql)
+            from .budgets import budget_state
+
             log = read_log(self.log_path)
             v = decide(sql, workload_class, customer=self.customer, backend=self.backend,
                        tracer=tracer, llm=self.llm, rewrite_wait_sec=self.rewrite_wait_sec,
                        shape_runtimes=shape_runtimes(log, fp),
-                       shape_volume=shape_volume(log, fp, volume_settings(self.customer)["window_hours"]))
+                       shape_volume=shape_volume(log, fp, volume_settings(self.customer)["window_hours"]),
+                       budget=budget_state(log, self.customer, self.user, workload_class))
             _annotate_verdict(tracer, v, fp)
             return {**_verdict_fields(v), "fingerprint": fp, "rules_fired": _rules_fired(tracer)}
 
@@ -142,6 +161,7 @@ class CostGuardService:
         from .runtime import run_query
 
         workload_class = self._workload(workload_class)
+        user = self._user(user)
 
         started: dict = {}
 
@@ -157,7 +177,8 @@ class CostGuardService:
         def go(tracer):
             out = run_query(sql, self.backend, workload_class, customer=self.customer,
                             log_path=self.log_path, tracer=tracer, user=user, llm=self.llm,
-                            rewrite_wait_sec=self.rewrite_wait_sec, on_anomaly=on_anomaly)
+                            rewrite_wait_sec=self.rewrite_wait_sec, on_anomaly=on_anomaly,
+                            budget_user=self.user)
             _annotate_verdict(tracer, out.verdict, out.fingerprint)
             ex = out.execution
             from .tracing import annotate
@@ -216,7 +237,15 @@ class CostGuardService:
 
         def go(tracer):
             traces = read_traces(self.trace_path) if self.trace_path is not None else None
-            rep = build_report(read_log(self.log_path), self.customer, top, traces=traces)
+            log = read_log(self.log_path)
+            rep = build_report(log, self.customer, top, traces=traces)
+            # Budgets: only this server's own user's scopes, never other users' ids.
+            if rep.pop("budgets", None) is not None:
+                from .budgets import budget_state
+
+                st = budget_state(log, self.customer, self.user, self.workload_class)
+                rep["budget"] = {"period_start": st.period_start, "skipped": st.skipped,
+                                 "scopes": [vars(s) for s in st.scopes]}
             for row in rep.get("workload_by_shape", []):  # shape text stays local; ids travel
                 if row.get("fingerprint"):
                     row["shape_id"] = shape_id(row["fingerprint"])
@@ -255,6 +284,7 @@ def _verdict_fields(v) -> dict:
         "verification": v.verification,
         "explanation": v.explanation,
         "fix_hints": v.fix_hints,  # blocks: main cause first, then fixes
+        "budget": v.budget,  # the stricter budget scope's figures (MODELED), when budgets are on
         "caps": v.caps,
         "workload_class": v.workload_class,
     }
@@ -313,7 +343,8 @@ def build_server(service: CostGuardService):
         is no bypass here; see fix_hints to revise them); others run under a runtime
         limit and are logged. Returns the decision, run status, duration, row COUNT and
         billed bytes — never result rows. Costs warehouse money when it runs.
-        user: opaque caller id. workload_class: as in check_query."""
+        user: opaque caller id; when the server runs as a fixed user (budgets), omit
+        it or pass that same id. workload_class: as in check_query."""
         return call(service.run_query, sql, workload_class, user)
 
     @server.tool(annotations=read_only)
@@ -374,6 +405,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--workload", default=os.environ.get("COST_GUARD_WORKLOAD", "interactive"),
                    help="workload class for every call (callers may only pick a stricter one)")
     p.add_argument("--customer", help="path to customer.yaml (default: repo root)")
+    p.add_argument("--user", default=os.environ.get("COST_GUARD_USER"),
+                   help="the user every call runs as (budgets are charged to it); callers "
+                        "can't pass another. Unset: user and team budgets are skipped")
     p.add_argument("--llm", choices=["none", "claude"], default="none")
     p.add_argument("--log", default="runs/query_log.jsonl")
     p.add_argument("--traces", default=str(DEFAULT_TRACES))
@@ -398,7 +432,8 @@ def main(argv: list[str] | None = None) -> int:
 
         agent_llm = llm or ClaudeLLM(backend=backend)
     service = CostGuardService(backend, customer, args.log, args.traces, llm, args.workload,
-                               investigations=not args.no_investigations, agent_llm=agent_llm)
+                               investigations=not args.no_investigations, agent_llm=agent_llm,
+                               user=args.user)
     try:
         build_server(service).run("stdio")
     finally:

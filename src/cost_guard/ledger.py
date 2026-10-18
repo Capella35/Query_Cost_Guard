@@ -326,4 +326,9 @@ def build_report(log: list[dict], customer: Optional[dict] = None, top: int = 10
     }
     if traces is not None:
         rep["llm_usage"] = llm_usage(traces)
+    from .budgets import status as budget_status
+
+    budgets = budget_status(log, customer)  # every configured budget: the operator's view
+    if budgets is not None:
+        rep["budgets"] = budgets
     return rep

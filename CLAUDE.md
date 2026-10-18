@@ -60,8 +60,9 @@ Three points in time (`DESIGN.md` §3):
 2. **During the run: `runtime.run_query()`.** Executes only non-blocked queries,
    with the class's runtime cap (or a learned lower limit) as `job_timeout_ms`
    and its bytes cap as `maximum_bytes_billed`. It reads the query log first,
-   so history-based rules (SELECT * runtime, the volume rule) get their input
-   from there. Appends a literal-free record to `runs/query_log.jsonl`.
+   so history-based rules (SELECT * runtime, the volume rule, spend budgets in
+   `budgets.py`) get their input from there. Budgets are charged to the
+   deployment's user (MCP `--user`), never to a caller-supplied id. Appends a literal-free record to `runs/query_log.jsonl`.
 3. **After the run:** `anomaly.py` compares the run with its shape's history;
    `investigator_agent.py` writes report-only investigations; `thresholds.py`
    holds learned limits, which can only tighten below the hard caps, through

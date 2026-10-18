@@ -106,8 +106,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("sql")
         p.add_argument("--workload", default="interactive")
         p.add_argument("--llm", choices=["none", "claude"], default="none")
+        p.add_argument("--user", help="who runs it (opaque id; budgets are charged to it)")
         if name == "run":
-            p.add_argument("--user", help="opaque caller id (pseudonymize upstream)")
             p.add_argument("--bypass-reason", help="run a cost-blocked query anyway "
                            "(only when customer.yaml guard.allow_bypass is true)")
     p = sub.add_parser("report")
@@ -144,11 +144,15 @@ def main(argv: list[str] | None = None) -> int:
         return _registry(args, customer)
 
     if args.cmd == "check":
+        from .budgets import budget_state
         from .guard import decide
+        from .runtime import DEFAULT_LOG, read_log
 
         backend = _backend(args, customer)
         v = decide(args.sql, args.workload, customer=customer, backend=backend,
-                   llm=_llm(args, backend))
+                   llm=_llm(args, backend),
+                   budget=budget_state(read_log(DEFAULT_LOG), customer, args.user,
+                                       args.workload))
         print(json.dumps(asdict(v), indent=2, default=str))
         return 2 if v.decision == "block" else 0
 

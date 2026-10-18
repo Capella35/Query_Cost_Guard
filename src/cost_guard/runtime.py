@@ -171,6 +171,7 @@ def run_query(
     llm=None,
     rewrite_wait_sec: Optional[float] = None,
     on_anomaly: Optional[Callable[[dict], None]] = None,
+    budget_user: Optional[str] = "",
 ) -> RunOutcome:
     """Guard the query, run it under the watchdog unless blocked, log it,
     and feed the duration to the threshold updater's shadow/probation.
@@ -181,9 +182,13 @@ def run_query(
     rewrite_wait_sec: see guard.decide (long-running services pass
     customer.yaml guard.rewrite_wait_sec).
     on_anomaly: called with the anomaly event (a dict; it includes the SQL,
-    in memory only — never logged) when a completed run breaks its history."""
+    in memory only — never logged) when a completed run breaks its history.
+    budget_user: the TRUSTED identity budgets are charged to (budgets.py);
+    "" (default) = `user`, for callers whose `user` is trusted (the CLI);
+    None = no trusted identity (user and team budgets are skipped visibly)."""
     import time
 
+    from .budgets import budget_state
     from .config import caps_for, load_customer, volume_settings
 
     customer = customer if customer is not None else load_customer()
@@ -195,11 +200,16 @@ def run_query(
     verdict = decide(sql, workload_class, customer=customer, backend=backend, tracer=tracer,
                      llm=llm, bypass_reason=bypass_reason, offered_rewrites=offered,
                      rewrite_wait_sec=rewrite_wait_sec, shape_runtimes=shape_runtimes(log, fp),
-                     shape_volume=shape_volume(log, fp, volume_settings(customer)["window_hours"]))
+                     shape_volume=shape_volume(log, fp, volume_settings(customer)["window_hours"]),
+                     budget=budget_state(log, customer, user if budget_user == "" else budget_user,
+                                         workload_class))
     check_ms = round((time.perf_counter() - t0) * 1000, 1)
     caps = caps_for(customer, workload_class)
     hard_cap = float(caps.get("max_runtime_sec") or 0) or None
-    bytes_ceiling = None if verdict.bypassed else (int(caps.get("max_bytes_scanned") or 0) or None)
+    # A cost-cap bypass lifts the bytes ceiling; a budget approval does not
+    # (budget_only_block): the per-query caps still hold.
+    lifted = verdict.bypassed and not verdict.budget_only_block
+    bytes_ceiling = None if lifted else (int(caps.get("max_bytes_scanned") or 0) or None)
     timeout = hard_cap
     if updater is not None and hard_cap is not None:
         timeout = updater.rules.threshold(fp, hard_cap)

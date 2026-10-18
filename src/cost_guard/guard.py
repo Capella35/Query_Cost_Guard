@@ -125,6 +125,11 @@ class GuardVerdict:
     # Blocks only: the main cause first, then fixes, each marked whether it
     # changes the result (fix_hints.py). Deterministic; never changes a decision.
     fix_hints: list[dict] = field(default_factory=list)
+    # Spend budgets (budgets.py): the stricter scope's figures, MODELED.
+    budget: Optional[dict] = None
+    # Blocked by the budget alone: an approval (bypass) keeps the per-query
+    # caps (runtime keeps the bytes ceiling), unlike a cost-cap bypass.
+    budget_only_block: bool = False
 
 
 def is_read_only(sql: str) -> bool:
@@ -147,6 +152,7 @@ def decide(
     rewrite_wait_sec: Optional[float] = None,
     shape_runtimes: Optional[Sequence[float]] = None,
     shape_volume=None,
+    budget=None,
 ) -> GuardVerdict:
     """Guard pipeline: read-only check -> cost estimate -> static rules
     (per referenced table, with column profiles) -> hard caps for the
@@ -166,6 +172,8 @@ def decide(
     from the query log; used by the SELECT * check (see _select_star_finding).
     shape_volume: runtime.ShapeVolume, this shape's recent executed runs from
     the query log; used by the volume rule (see _volume_finding).
+    budget: budgets.BudgetState for the deployment's user and this class
+    (spend this period, from the query log); None = no budget check.
     """
     from .config import load_customer
     from .tracing import get_tracer
@@ -178,7 +186,9 @@ def decide(
         ctx: dict = {}
         verdict = _decide(sql, workload_class, customer, backend, tracer, tid, llm,
                            offered_rewrites, rewrite_wait_sec, ctx, shape_runtimes, shape_volume)
-        if verdict.decision == "block":
+        if budget is not None:
+            verdict = _apply_budget(sql, verdict, budget, customer, tracer, tid)
+        if verdict.decision == "block" and not verdict.budget_only_block:
             _add_fix_hints(sql, verdict, customer, backend, tracer, tid, ctx)
         verdict = _maybe_bypass(verdict, customer, bypass_reason, tracer, tid)
         if llm is not None and verdict.decision in ("warn", "block"):
@@ -188,6 +198,57 @@ def decide(
                 except Exception as e:  # noqa: BLE001 — explanation is optional
                     span["attrs"]["error"] = str(e)[:200]
         return verdict
+
+
+def _apply_budget(sql, verdict, budget, customer, tracer, tid) -> GuardVerdict:
+    """Spend budgets (budgets.py), owner's choice 2026-10-18: warn at
+    warn_at x limit, block over the limit, the stricter scope deciding. This
+    query's cost is its dry-run bytes, raised to BigQuery's per-table minimum."""
+    from . import budgets
+
+    if budget.skipped:
+        verdict.skipped_rules.append(f"budget: {budget.skipped}")
+    if not budget.scopes or "non-read-only statement" in verdict.findings:
+        return verdict
+    tree = sql_ast.try_parse(sql)
+    tables = len(sql_ast.referenced_tables(tree)) if tree is not None else 1
+    this = budgets.query_cost_usd(verdict.estimated_bytes, tables, customer)
+    warn_at = budgets.settings(customer)["warn_at"]
+    level, scope, projected = budgets.judge(budget, this, warn_at)
+    share = projected / scope.limit_usd if scope.limit_usd else float("inf")
+    verdict.budget = {"kind": scope.kind, "name": scope.name, "limit_usd": scope.limit_usd,
+                      "spent_usd": scope.spent_usd, "this_query_usd": round(this, 8),
+                      "projected_usd": round(projected, 6), "share": round(share, 4),
+                      "period_start": budget.period_start, "level": level}
+    with tracer.span(tid, "budget.check", **{k: v for k, v in verdict.budget.items()
+                                             if k != "name"}):
+        pass  # the scope's name (a user id) stays out of the trace
+    text = (f"{scope.kind} budget '{scope.name}': ${scope.spent_usd:,.4f} of "
+            f"${scope.limit_usd:,.2f} spent this month (MODELED); this query adds "
+            f"~${this:,.6f} -> {share:.0%}")
+    if level == "block":
+        msg = f"over the {text} — the budget resets on the 1st of the month"
+        verdict.findings.append(msg)
+        if verdict.decision != "block":
+            verdict.decision, verdict.reason = "block", msg
+            verdict.budget_only_block = True
+            verdict.fix_hints = [
+                {"kind": "cause", "text": msg, "changes_result": None},
+                {"kind": "fix", "text": "wait for the reset on the 1st, or ask the budget owner "
+                 "for a recorded approval (a bypass with a reason; the per-query caps still apply)",
+                 "changes_result": False},
+                {"kind": "fix", "text": "make the query cheaper: list only the columns you need, "
+                 "add a partition filter", "changes_result": None}]
+        else:
+            verdict.reason += f"; {msg}"
+    elif level == "warn":
+        msg = f"at {share:.0%} of the {text}"
+        verdict.findings.append(msg)
+        if verdict.decision == "allow":
+            verdict.decision, verdict.reason = "warn", msg
+        else:
+            verdict.reason += f"; {msg}"
+    return verdict
 
 
 def explain_inputs(verdict) -> list[str]:

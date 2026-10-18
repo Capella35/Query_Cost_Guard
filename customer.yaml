@@ -83,6 +83,25 @@ volume:
   min_runs: 20
   warn_usd_per_window: 5.0
 
+# Spend budgets (budgets.py; owner's choice 2026-10-18), checked before a query
+# runs: spent this calendar month (UTC) + this query's dry-run cost. Warn at
+# warn_at x limit, block over the limit; a query counts toward its user and
+# each team the user is in, and the stricter decides. A class listed under
+# `classes` (scheduled jobs) has its own budget and does not count toward
+# users or teams. Approval at the hard limit = a bypass with a reason
+# (guard.allow_bypass), recorded; the per-query caps still apply. The user is
+# the deployment's (CLI --user, MCP server --user), never a caller's claim.
+# MODELED dollars. The limits below are the fictional pilot's starting values.
+budgets:
+  enabled: true
+  warn_at: 0.8
+  user_usd: 50                  # every user, per month
+  users: {}                     # per-user overrides, e.g. {alice: 100}
+  teams:
+    analytics: {usd: 500, members: []}   # add user ids to share a team budget
+  classes:
+    scheduled: 1000             # scheduled jobs: their own monthly budget
+
 # Modeled cost figures. Label every dollar number derived from this as MODELED.
 cost_model:
   price_per_tb_usd: 6.25
