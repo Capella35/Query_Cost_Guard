@@ -388,6 +388,26 @@ The MCP server returns the caller's own information (verdicts, its query's
 fingerprint and rewrite, counts, bytes, durations) and never result rows;
 query history drops the caller id and the keyed query hash.
 
+### Requirement: scheduled column-registry refresh
+
+A deployment MUST run `python -m cost_guard registry refresh` on a schedule
+(`--mode stale`). The Guard's join, GROUP BY and value-filter estimates read
+the registry; its entries go unverified after `max_age_days` (35) and the
+rules that need them are then skipped, so without a schedule the Guard
+slowly loses those checks. Views on outside data drift faster: TheLook's
+`users`, `products`, `distribution_centers` are views on Google's public
+dataset, regenerated daily (Colombia 21 → 10 users in two days).
+
+Not scheduled in this project yet (owner's call, 2026-10-18): the refresh is
+run on demand, and the scheduler is chosen when needed — launchd/cron on one
+machine, or Cloud Scheduler → a Cloud Run job with the registry file in a
+bucket where the Guard runs. A plain scheduler, not an agent: the refresh is
+deterministic. Cost, dry-run measured: a full re-profile bills ~668 MiB
+($0.004 MODELED); a stale-mode run on a fresh registry processes 0 bytes.
+`cost_guard registry status` (or the MCP tool `registry_status`) shows each
+table's age and the last run; a running Guard reloads the file when it
+changes.
+
 ## 12. Decision log
 
 | Date | Decision | Why |
@@ -438,7 +458,7 @@ query history drops the caller id and the keyed query hash.
 | 2026-10-18 | Near-unique GROUP BY: threshold 0.5 → 0.8, and a GROUP BY column is judged only with the table it comes from (resolved per SELECT scope, through derived tables and CTEs; unresolved = no table); redundant DISTINCT also covers a DISTINCT over a derived table already grouped on those columns | Owner's calls. At 0.5 a per-buyer count (`orders.user_id`, 79,570 / 125,584 = 0.63, ~1.6 orders per buyer) was a false warn (H28, T32); the guide warns on a UNIQUE key. Not 0.95: HLL counts put truly unique DuckDB columns at 0.90–0.96 (BigQuery registry 0.993–1.0); 0.8 clears the worst measured error (−17%). Before, every GROUP BY counted for every table with that column name. T21 had warned only through the 0.5 rule; its DISTINCT is now caught directly. Validation 69/70 → 70/70 (62/70 original labels) |
 | 2026-10-18 | Fresh BigQuery pool pre-registered: `eval/bq_pool.yaml`, 62 queries (52 by the assistant, P01–P52; 10 by the owner, P53–P62), split by `scripts/split_bq_pool.py` (seed 20261018, stratified by label) into 31 validation + 31 test, each 12 allow / 9 warn / 7 block / 3 rewrite. Suites `bq-pool-validation` (tune freely) and `bq-pool-test` (run once) | Labels from guide v3 and data facts only (dry-run bytes, registry counts, exact join output rows from per-key counts, ~110 MiB billed; a hand-written equivalent per rewrite case); no Guard verdict seen before this commit. Expected hard cases on record: P09 (fan-out under a range filter, the guide's known exception), P11 (rare value, an even-spread estimate predicts ~333M rows, truth 1.05M). The assistant wrote both the Guard's rules and P01–P52, so they are not independent; P53–P62 are |
 | 2026-10-18 | Column registry stores value counts: rows per value for every column with ≤ 1,000 distinct values (the most common 1,000 at most), one extra scan per table at build time; the join estimate uses count / rows for a listed `col = value` / `IN` value and keeps 1/ndv for any other | First pool validation run: 30/31, the one miss P11 a false block (priority 2): `country = 'Colombia'` estimated as 1/15 of users (~333M output rows), really 10 users (500,420 rows). Classified a missing feature (the registry had distinct counts, not per-value counts). Owner approved. Filled into the BigQuery registry without re-profiling (`--mode missing`, 126 MiB processed); column profiles unchanged. Found while checking: users, products, distribution_centers are views on Google's public TheLook and drift daily (Colombia 21 → 10 users), so view-based registry entries and pool facts age; pool facts remeasured, every label held. Pool validation 30/31 → 31/31 (now a tuning half); 70-query validation unchanged (70/70, 62/70 original). The test half is still unrun |
-| 2026-10-18 | Registry refresh on a schedule: `scripts/schedule/refresh_registry.sh` (`--mode stale`) run daily by launchd (`install_launchd.sh`, not installed until the owner says so); every build appends a row to `registry_runs`; backends reload the registry when its file's mtime changes (a failed read keeps the copy in memory); MCP tool `registry_status` (per-table age / stale, last run) | Owner's call (steps 1 and 3; per-table refresh ages, step 2, not taken). A plain scheduler, not an agent or skill: the refresh is a deterministic script, and an LLM would add cost and a way to go off-script. Cost, dry-run measured: a full re-profile bills ~668 MiB ($0.004 MODELED; events 470 MiB); stale mode re-profiles only after max_age_days (35), so most runs bill 0 (measured: 0 bytes on a fresh registry). Known gap: the views (users, products, distribution_centers) drift daily but are refreshed only every 35 days |
+| 2026-10-18 | Registry refresh: a CLI command `cost_guard registry refresh|status`, run on demand; a scheduled refresh is a deployment REQUIREMENT (§11), not scheduled here (owner's call: "we can decide when needed"; a launchd job was written in f6a1ca4 and removed, uninstalled). Every build appends a row to `registry_runs`; backends reload the registry when its file's mtime changes (a failed read keeps the copy in memory); MCP tool `registry_status` (per-table age / stale, last run) | Owner's calls (per-table refresh ages not taken). A plain scheduler when one is chosen, not an agent or skill: the refresh is a deterministic script, and an LLM would add cost and a way to go off-script. Cost, dry-run measured: a full re-profile bills ~668 MiB ($0.004 MODELED; events 470 MiB); stale mode re-profiles only after max_age_days (35), so most runs bill 0 (measured: 0 bytes on a fresh registry). Known gap: the views (users, products, distribution_centers) drift daily but are refreshed only every 35 days |
 | 2026-10-16 | Rewrite verification: 2 s limit for long-running services, results remembered (passed and failed) in memory for 24 h; dry runs of identical SQL reused for 10 min | Live, one process: first check of a rewritable query 4.0 s (answer without the rewrite, verification continues), the same query again 0.01 s with the verified rewrite. Failed verifications are not re-run (cost). Nothing written to disk; the CLI and evals wait, so their results stay deterministic |
 
 ## 13. Open questions
@@ -518,7 +538,9 @@ nothing that can block wrongly without a person's confirmation.
 4. **Most common values per column in the registry.** Join estimates
    assume evenly spread keys and ran 57× low on a `city` join. Approach:
    top-k values and their shares per column at registry build time; use
-   them for the skewed part of a join.
+   them for the skewed part of a join. Partly done 2026-10-18: value counts
+   (columns with ≤ 1,000 distinct values) now set the share a `col = value`
+   filter keeps; join KEYS are still assumed evenly spread.
 5. **MCP server and a report-only investigator agent**, if the project is
    to be agentic: Cost Guard's tools (check, run through the Guard, table
    info, history, report) for AI apps, with `run` the only path to the

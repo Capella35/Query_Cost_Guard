@@ -214,3 +214,14 @@ def test_backend_reloads_the_registry_when_the_file_changes(tmp_path):
     os.utime(path, (t, t))  # a later mtime, whatever the clock resolution
     again = wh.column_registry()
     assert again is not first and again.value_count("events", "promo", "x") == 4_098
+
+
+def test_cli_registry_refresh_and_status(tmp_path, capsys):
+    from cost_guard.__main__ import main
+
+    db = _db(tmp_path)
+    assert main(["--db", db, "registry", "status"]) == 1  # not built yet
+    assert main(["--db", db, "registry", "refresh"]) == 0
+    out = capsys.readouterr().out
+    assert "profiled events, tiny" in out and "last refresh:" in out
+    assert main(["--db", db, "registry", "status"]) == 0

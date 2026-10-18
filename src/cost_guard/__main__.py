@@ -11,6 +11,12 @@
                    that have no report yet (runs/investigations/); changes nothing.
   report           Workload report from the query log: warn follow-through,
                    cost by query shape, result-cache opportunity, spend ledger.
+  registry status  Column registry freshness per table + the last refresh run
+                   (reads the local file; no warehouse query).
+  registry refresh Rebuild the column registry now (--mode stale|missing|all).
+                   A REQUIRED, scheduled job in a deployment (DESIGN.md §11);
+                   here it runs when the owner decides. --backend bigquery uses
+                   GCP_PROJECT from .env; each scan is dry-run first and capped.
 
 The warehouse is the DuckDB file from customer.yaml (warehouse.duckdb.db_path)
 unless --db is given. --llm claude enables the LLM explainer/rewrite proposer
@@ -37,6 +43,53 @@ def _llm(args, backend):
 
         return ClaudeLLM(backend=backend)
     return None
+
+
+def _registry(args, customer) -> int:
+    import os
+
+    from . import column_registry as cr
+
+    settings = cr.registry_settings(customer)
+    if args.backend == "bigquery":
+        project = args.project or os.environ.get("GCP_PROJECT")
+        if not project:
+            print("--backend bigquery needs --project or GCP_PROJECT", file=sys.stderr)
+            return 2
+        path, schema = cr.bigquery_registry_path(project, args.dataset), args.dataset
+    else:
+        db = args.db or customer["warehouse"]["duckdb"]["db_path"]
+        path, schema = cr.default_registry_path(db), "main"
+    if args.action == "refresh":
+        if args.backend == "bigquery":
+            rep = cr.build_bigquery_registry(project, args.dataset, None, settings, args.mode,
+                                             registry_path=path,
+                                             maximum_bytes_billed=args.max_bytes_billed)
+        else:
+            rep = cr.build_registry(db, None, settings, args.mode, registry_path=path)
+        print(f"registry refresh ({args.mode}): profiled {', '.join(rep.profiled) or 'nothing'}"
+              f"; value counts {', '.join(rep.value_counted) or 'none'}"
+              f"; {rep.bytes_processed / 2**20:.1f} MiB processed")
+        for label, items in (("up to date", rep.up_to_date), ("over the size gate", rep.oversized),
+                             ("FAILED", rep.failed)):
+            if items:
+                print(f"  {label}: {', '.join(items)}")
+        if rep.failed:
+            return 1
+    st = cr.registry_status(path, schema, settings["max_age_days"])
+    if not st["built"]:
+        print(f"no registry at {path}: run `registry refresh`")
+        return 1
+    print(f"{path} (stale after {st['max_age_days']} days)")
+    print(f"  {'table':<24}{'rows':>12}{'cols':>6}{'value-counted':>15}{'age (days)':>12}")
+    for t in st["tables"]:
+        print(f"  {t['table']:<24}{t['rows']:>12,}{t['columns']:>6}{t['value_counted_columns']:>15}"
+              f"{t['age_days']:>12}{'  STALE' if t['stale'] else ''}")
+    last = st["last_run"]
+    print(f"  last refresh: {last['finished_at']} ({last['mode']}), "
+          f"{last['bytes_processed'] / 2**20:.1f} MiB" + (f", failed: {last['failed']}" if last["failed"] else "")
+          if last else "  last refresh: not recorded")
+    return 1 if st["stale_tables"] else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -75,8 +128,20 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--traces", default="runs/traces.jsonl")
     p.add_argument("--llm", choices=["none", "claude"], default="none",
                    help="optional summary, within customer.yaml investigator.llm_max_per_day")
+    p = sub.add_parser("registry")
+    p.add_argument("action", choices=["status", "refresh"])
+    p.add_argument("--backend", choices=["duckdb", "bigquery"], default="duckdb")
+    p.add_argument("--project", help="BigQuery project (default: GCP_PROJECT)")
+    p.add_argument("--dataset", default="cost_guard_thelook")
+    p.add_argument("--mode", choices=["missing", "stale", "all"], default="stale",
+                   help="refresh: stale (default) re-profiles only tables older than max_age_days")
+    p.add_argument("--max-bytes-billed", type=int, default=2 * 1024**3,
+                   help="refresh, BigQuery: per-scan cap; a table over it is reported, not scanned")
     args = parser.parse_args(argv)
     customer = load_customer(args.customer)
+
+    if args.cmd == "registry":
+        return _registry(args, customer)
 
     if args.cmd == "check":
         from .guard import decide
