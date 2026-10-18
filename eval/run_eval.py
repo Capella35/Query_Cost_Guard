@@ -27,6 +27,9 @@ labeled for BigQuery (eval/bq_validation.yaml, scripts/build_bq_validation.py)
 — the set to tune on, rerun freely. --suite bq-test: the first pre-registered
 test set (eval/bq_test.yaml), run once 2026-10-17 and since merged into
 validation; kept as the record of that run.
+--suite bq-pool-validation / bq-pool-test: the fresh pool (eval/bq_pool.yaml,
+pre-registered 2026-10-18), split by scripts/split_bq_pool.py. Tune on the
+validation half; the test half is run ONCE.
 
 --suite regression runs the 11 inline cases on the synthetic warehouse
 (also covered by tests/test_guard_regression.py). Those were written next
@@ -75,12 +78,17 @@ SUITE_FILES = {
     "bq-validation": ("bq_validation.yaml", "RESULTS_bq_validation.md",
                       "BigQuery validation set (BigQuery-native B and T queries)"),
     "bq-test": ("bq_test.yaml", "RESULTS_bq_test.md", "pre-registered BigQuery test set"),
+    "bq-pool-validation": ("bq_pool.yaml", "RESULTS_bq_pool_validation.md",
+                           "BigQuery pool, validation half"),
+    "bq-pool-test": ("bq_pool.yaml", "RESULTS_bq_pool_test.md",
+                     "BigQuery pool, test half (pre-registered)"),
 }
-RUN_ONCE = ("holdout", "bigquery", "bq-test")  # held-out / pre-registered: first run is the result
-BQ_SUITES = ("bigquery", "bq-validation", "bq-test")  # BigQuery dry runs, eval_caps_bigquery.yaml
+SUITE_SPLIT = {"bq-pool-validation": "validation", "bq-pool-test": "test"}  # one file, two halves
+RUN_ONCE = ("holdout", "bigquery", "bq-test", "bq-pool-test")  # held-out / pre-registered: first run is the result
+BQ_SUITES = ("bigquery", "bq-validation", "bq-test", "bq-pool-validation", "bq-pool-test")  # BigQuery dry runs, eval_caps_bigquery.yaml
 
 
-def load_thelook_cases(filename: str = "eval_queries.yaml") -> list[dict]:
+def load_thelook_cases(filename: str = "eval_queries.yaml", split: str | None = None) -> list[dict]:
     data = yaml.safe_load((ROOT / "eval" / filename).read_text())
     return [
         {
@@ -96,7 +104,12 @@ def load_thelook_cases(filename: str = "eval_queries.yaml") -> list[dict]:
             "why": q["description"],
         }
         for q in data["queries"]
+        if split is None or q["split"] == split
     ]
+
+
+def load_suite_cases(suite: str) -> list[dict]:
+    return load_thelook_cases(SUITE_FILES[suite][0], SUITE_SPLIT.get(suite))
 
 
 def load_regression_cases() -> list[dict]:
@@ -135,7 +148,8 @@ def full_check(wh, original: str, rewrite: str) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--suite", choices=["thelook", "holdout", "bigquery", "bq-validation", "bq-test", "regression"],
+    ap.add_argument("--suite", choices=["thelook", "holdout", "bigquery", "bq-validation", "bq-test",
+                             "bq-pool-validation", "bq-pool-test", "regression"],
                     default="thelook")
     ap.add_argument("--rerun", action="store_true",
                     help="holdout/bigquery: run again although it has been run (recorded as a rerun)")
@@ -166,14 +180,14 @@ def main() -> None:
         if not args.project:
             raise SystemExit("--suite bigquery needs --project")
         wh = BigQueryWarehouse(args.project, args.dataset, maximum_bytes_billed=20 * 1024**3)
-        cases = load_thelook_cases(SUITE_FILES[args.suite][0])
+        cases = load_suite_cases(args.suite)
     elif args.suite in SUITE_FILES:
         from cost_guard.backends.duckdb_backend import DuckDBWarehouse
 
         if not Path(args.db).exists():
             raise SystemExit(f"{args.db} missing — run scripts/load_thelook_duckdb.py first")
         wh = DuckDBWarehouse(args.db)
-        cases = load_thelook_cases(SUITE_FILES[args.suite][0])
+        cases = load_suite_cases(args.suite)
     else:
         from warehouse import build_synthetic_warehouse
 
@@ -308,7 +322,7 @@ def rescore(results_json: Path, suite: str) -> dict:
     the verdicts are the ones that run produced; nothing is executed."""
     run = json.loads(results_json.read_text())
     verdicts = {r["id"]: r["got"] for r in run["cases"]}
-    cases = load_thelook_cases(SUITE_FILES[suite][0])
+    cases = load_suite_cases(suite)
     changed = [c for c in cases if c["label_change"]]
 
     def original_role(c):

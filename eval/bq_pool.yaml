@@ -1,0 +1,741 @@
+# BigQuery POOL (2026-10-18): fresh BigQuery-native queries for a new
+# validation / test split. Labels are set from the labeling guide below and
+# data facts only; NO Guard verdict on any of these queries was seen before
+# this file was committed.
+#
+# PROVENANCE AND LIMITS (read before quoting any number from this pool)
+# - Written by the AI assistant that also wrote the Guard's rules, so it is
+#   not independent of them (queries written by the owner are marked
+#   `author: owner`).
+# - Facts used for labels: dry runs (bytes read; billed = max(read, 10 MiB
+#   per table)), the column registry (row / distinct / NULL counts), and
+#   exact join output rows from per-key counts (sum over keys of left x
+#   right; a few small real queries, stats only, ~110 MiB billed in total).
+#   A rewrite label rests on a hand-written equivalent range and its dry run
+#   (`equivalent`, `equivalent_mib`).
+# - Owner queries (P53-P62, 2026-10-18): the owner's SQL; only whitespace was
+#   added where the paste joined words (e.g. `cntFROM`).
+# - Split: at registration, a seeded random split stratified by label into
+#   `split: validation` and `split: test` (scripts/split_bq_pool.py, seed
+#   20261018, fixed before any Guard verdict): 31 + 31, each 12 allow /
+#   9 warn / 7 block / 3 rewrite. Validation is tuned on (--suite
+#   bq-pool-validation); test is run ONCE (--suite bq-pool-test).
+#
+# CAPS: eval/eval_caps_bigquery.yaml, interactive - 100 MiB bytes, 5,000,000
+# rows for join fan-out.
+#
+# LABELING GUIDE v3 (BigQuery; 2026-10-18): the rules of eval/bq_validation.yaml's header. Precedence: block > rewrite > warn > allow.
+#   block   - a non-read-only statement; bytes read above the cap (100 MiB);
+#             a cartesian product of two tables with more than 1,000 rows
+#             each; a join that multiplies rows past 5,000,000 output rows
+#             (a low-cardinality or many-to-many non-key join), with or
+#             without filters; SUM/AVG of an identifier.
+#             EXCEPTION (Guard, 2026-10-17): the fan-out estimate applies
+#             date-partition filters and `col = value` / `col IN (values)`;
+#             under any other filter (a range, LIKE, a join on an expression)
+#             it is only traced, so such a fan-out is a known miss.
+#   rewrite - an EQUIVALENT query (same rows and columns) that BILLS fewer
+#             bytes (billed = max(bytes read, 10 MiB per table), 2026-10-17)
+#             and can be produced mechanically. BigQuery prunes through
+#             CAST(col AS DATE), DATE(col), TIMESTAMP_TRUNC, DATE_TRUNC(DATE(col)),
+#             TIMESTAMP_ADD/SUB, DATE_ADD/SUB, EXTRACT(YEAR|DATE) and
+#             FORMAT_TIMESTAMP('%Y-%m-%d', col): NOT rewrite cases. EXTRACT of
+#             other parts, FORMAT_TIMESTAMP('%Y-%m', ...) and col + INTERVAL
+#             defeat pruning; with an equivalent range, that is a rewrite case.
+#   warn    - wasteful, risky or wrong with no equivalent fix, under the cap:
+#             SELECT * reading >= 50% of the cap (column count does not
+#             matter); no filter on the partition column of a partitioned
+#             table (orders, order_items, events, inventory_items); GROUP BY a
+#             unique key; DISTINCT that
+#             cannot remove anything; an IN list of more than 100 values;
+#             NOT IN over a column that can be NULL.
+#   allow   - under the cap and none of the above. A filter after a join
+#             inside a derived table, a CTE or subquery used twice, and HAVING
+#             on a group column are NOT waste on BigQuery (measured: same
+#             bytes), so on their own they are allow. So is a sort with no
+#             LIMIT under the cap (owner's choice 2026-10-17, B28 measured).
+# role: good = labeled allow; bad = anything else.
+
+queries:
+- id: P01
+  split: validation
+  author: assistant
+  pattern: bytes_cap
+  description: 'Three wide event columns since 2019: the filter covers all the data.'
+  sql: SELECT session_id, uri, ip_address FROM events WHERE created_at >= TIMESTAMP '2019-01-01'
+  guard_action_expected: block
+  role: bad
+  fact: dry run 192.3 MiB, over the 100 MiB cap
+  bytes_mib: 192.275
+- id: P02
+  split: test
+  author: assistant
+  pattern: bytes_cap_unprunable
+  description: 'Every column of every June: EXTRACT(MONTH) alone defeats pruning.'
+  sql: SELECT * FROM events WHERE EXTRACT(MONTH FROM created_at) = 6
+  guard_action_expected: block
+  role: bad
+  fact: dry run 367.2 MiB, over the cap (block outranks the wrapper's warn)
+  bytes_mib: 367.192
+- id: P03
+  split: validation
+  author: assistant
+  pattern: bytes_cap_no_filter
+  description: Five event columns, no filter.
+  sql: SELECT user_id, uri, city, state, browser FROM events
+  guard_action_expected: block
+  role: bad
+  fact: dry run 130.8 MiB, over the cap
+  bytes_mib: 130.809
+- id: P04
+  split: test
+  author: assistant
+  pattern: non_read_only
+  description: DELETE.
+  sql: DELETE FROM orders WHERE status = 'Cancelled'
+  guard_action_expected: block
+  role: bad
+  fact: non-read-only
+  bytes_mib: 6.48
+- id: P05
+  split: validation
+  author: assistant
+  pattern: non_read_only
+  description: UPDATE.
+  sql: UPDATE order_items SET status = 'Returned' WHERE id = 1
+  guard_action_expected: block
+  role: bad
+  fact: non-read-only
+  bytes_mib: 13.006
+- id: P06
+  split: validation
+  author: assistant
+  pattern: cartesian
+  description: Comma join of orders and inventory items with no linking predicate.
+  sql: SELECT o.order_id, i.id FROM orders o, inventory_items i WHERE o.status = 'Returned' AND i.created_at >=
+    TIMESTAMP '2026-10-01'
+  guard_action_expected: block
+  role: bad
+  fact: 'cartesian: orders 125,584 rows, inventory_items 490,650 rows, both > 1,000'
+  bytes_mib: 2.235
+- id: P07
+  split: validation
+  author: assistant
+  pattern: cartesian_filtered
+  description: 'Japanese users crossed with women''s products: filters don''t make a cartesian product safe.'
+  sql: SELECT u.id AS user_id, p.id AS product_id FROM users u CROSS JOIN products p WHERE u.country = 'Japan' AND
+    p.department = 'Women'
+  guard_action_expected: block
+  role: bad
+  fact: 'cartesian: users 100,000 and products 29,120 rows, both > 1,000'
+  bytes_mib: 2.102
+- id: P08
+  split: validation
+  author: assistant
+  pattern: join_fanout_value_filter
+  description: Spanish users paired with every user of the same traffic source.
+  sql: SELECT a.id, b.id AS same_source_user FROM users a JOIN users b ON a.traffic_source = b.traffic_source WHERE
+    a.country = 'Spain'
+  guard_action_expected: block
+  role: bad
+  fact: true output 205,825,330 rows (per-key counts), past 5,000,000
+  bytes_mib: 2.498
+- id: P09
+  split: test
+  author: assistant
+  pattern: join_fanout_range_filter
+  description: 'Users aged 30-31 paired with every user of the same gender: a range filter.'
+  sql: SELECT a.id, b.id AS same_gender_user FROM users a JOIN users b ON a.gender = b.gender WHERE a.age BETWEEN
+    30 AND 31
+  guard_action_expected: block
+  role: bad
+  fact: 'true output 169,859,951 rows, past 5,000,000 (guide exception: the Guard only traces fan-out under a range
+    filter, a known miss)'
+  bytes_mib: 1.812
+- id: P10
+  split: test
+  author: assistant
+  pattern: join_fanout_rare_value
+  description: Polish users (259) paired with every user of the same gender.
+  sql: SELECT a.id, b.id AS same_gender_user FROM users a JOIN users b ON a.gender = b.gender WHERE a.country =
+    'Poland'
+  guard_action_expected: block
+  role: bad
+  fact: true output 12,949,251 rows, past 5,000,000
+  bytes_mib: 1.996
+- id: P11
+  split: validation
+  author: assistant
+  pattern: join_rare_value_under_cap
+  description: 'Colombian users (21) paired with every user of the same gender: a rare value.'
+  sql: SELECT a.id, b.id AS same_gender_user FROM users a JOIN users b ON a.gender = b.gender WHERE a.country =
+    'Colombia'
+  guard_action_expected: allow
+  role: good
+  fact: true output 1,049,679 rows, under 5,000,000 (an even-spread estimate would say ~333M)
+  bytes_mib: 1.996
+- id: P12
+  split: test
+  author: assistant
+  pattern: join_value_filter_under_cap
+  description: Belgian users paired with neighbours in the same city.
+  sql: SELECT a.id, b.id AS neighbor FROM users a JOIN users b ON a.city = b.city WHERE a.country = 'Belgium'
+  guard_action_expected: allow
+  role: good
+  fact: true output 10,643 rows, under the cap; 2.8 MiB
+  bytes_mib: 2.754
+- id: P13
+  split: test
+  author: assistant
+  pattern: many_to_many_under_cap
+  description: 'Order items matched to stock of the same product since 2025: many-to-many, under the cap.'
+  sql: SELECT i.product_category, COUNT(*) AS pairs FROM order_items oi JOIN inventory_items i ON i.product_id =
+    oi.product_id WHERE oi.created_at >= TIMESTAMP '2025-01-01' AND i.created_at >= TIMESTAMP '2025-01-01' GROUP
+    BY i.product_category
+  guard_action_expected: allow
+  role: good
+  fact: true output 820,261 rows, under 5,000,000; 6.6 MiB
+  bytes_mib: 6.578
+- id: P14
+  split: test
+  author: assistant
+  pattern: many_to_many_filtered_under_cap
+  description: 2026 orders matched to the same buyer's 2026 items.
+  sql: SELECT COUNT(*) AS pairs FROM orders o JOIN order_items oi ON oi.user_id = o.user_id WHERE o.created_at >=
+    TIMESTAMP '2026-01-01' AND oi.created_at >= TIMESTAMP '2026-01-01'
+  guard_action_expected: allow
+  role: good
+  fact: true output 104,444 rows, under the cap; 1.6 MiB
+  bytes_mib: 1.641
+- id: P15
+  split: test
+  author: assistant
+  pattern: sum_of_identifier
+  description: SUM of order ids.
+  sql: SELECT status, SUM(order_id) AS total FROM orders WHERE created_at >= TIMESTAMP '2026-01-01' GROUP BY status
+  guard_action_expected: block
+  role: bad
+  fact: SUM of an identifier
+  bytes_mib: 1.098
+- id: P16
+  split: validation
+  author: assistant
+  pattern: avg_of_identifier
+  description: AVG of user ids.
+  sql: SELECT traffic_source, AVG(user_id) AS avg_user FROM events WHERE created_at >= TIMESTAMP '2026-09-01' GROUP
+    BY traffic_source
+  guard_action_expected: block
+  role: bad
+  fact: AVG of an identifier
+  bytes_mib: 3.34
+- id: P17
+  split: test
+  author: assistant
+  pattern: rewrite_format_month
+  description: One month of events via FORMAT_TIMESTAMP('%Y-%m').
+  sql: SELECT uri, event_type FROM events WHERE FORMAT_TIMESTAMP('%Y-%m', created_at) = '2026-03'
+  guard_action_expected: rewrite
+  role: bad
+  fact: 89.8 MiB read and billed; the equivalent range reads 1.75 MiB, bills 10 MiB
+  bytes_mib: 89.772
+  equivalent: SELECT uri, event_type FROM events WHERE created_at >= TIMESTAMP '2026-03-01' AND created_at < TIMESTAMP
+    '2026-04-01'
+  equivalent_mib: 1.754
+- id: P18
+  split: test
+  author: assistant
+  pattern: rewrite_format_year
+  description: One year of events via FORMAT_TIMESTAMP('%Y').
+  sql: SELECT city, browser FROM events WHERE FORMAT_TIMESTAMP('%Y', created_at) = '2025'
+  guard_action_expected: rewrite
+  role: bad
+  fact: 62.1 MiB billed; the equivalent range bills 11.3 MiB
+  bytes_mib: 62.142
+  equivalent: SELECT city, browser FROM events WHERE created_at >= TIMESTAMP '2025-01-01' AND created_at < TIMESTAMP
+    '2026-01-01'
+  equivalent_mib: 11.296
+- id: P19
+  split: validation
+  author: assistant
+  pattern: rewrite_interval_recent
+  description: Recent events via created_at + INTERVAL 3 HOUR >= X.
+  sql: SELECT ip_address FROM events WHERE created_at + INTERVAL 3 HOUR >= TIMESTAMP '2026-10-14 00:00:00'
+  guard_action_expected: rewrite
+  role: bad
+  fact: 53.7 MiB billed; created_at >= X - 3 h reads 0.41, bills 10 MiB
+  bytes_mib: 53.724
+  equivalent: SELECT ip_address FROM events WHERE created_at >= TIMESTAMP '2026-10-13 21:00:00'
+  equivalent_mib: 0.414
+- id: P20
+  split: validation
+  author: assistant
+  pattern: rewrite_year_month
+  description: September 2026 via EXTRACT(YEAR) and EXTRACT(MONTH).
+  sql: SELECT traffic_source, event_type FROM events WHERE EXTRACT(YEAR FROM created_at) = 2026 AND EXTRACT(MONTH
+    FROM created_at) = 9
+  guard_action_expected: rewrite
+  role: bad
+  fact: 13.7 MiB billed (BigQuery prunes on the YEAR part only); the month range bills 10 MiB
+  bytes_mib: 13.662
+  equivalent: SELECT traffic_source, event_type FROM events WHERE created_at >= TIMESTAMP '2026-09-01' AND created_at
+    < TIMESTAMP '2026-10-01'
+  equivalent_mib: 1.815
+- id: P21
+  split: validation
+  author: assistant
+  pattern: rewrite_year_month_day
+  description: One day via EXTRACT(YEAR), EXTRACT(MONTH) and EXTRACT(DAY).
+  sql: SELECT uri, ip_address FROM events WHERE EXTRACT(YEAR FROM created_at) = 2026 AND EXTRACT(MONTH FROM created_at)
+    = 8 AND EXTRACT(DAY FROM created_at) = 15
+  guard_action_expected: rewrite
+  role: bad
+  fact: 24.6 MiB billed; the day range reads 0.08, bills 10 MiB
+  bytes_mib: 24.642
+  equivalent: SELECT uri, ip_address FROM events WHERE created_at >= TIMESTAMP '2026-08-15' AND created_at < TIMESTAMP
+    '2026-08-16'
+  equivalent_mib: 0.075
+- id: P22
+  split: test
+  author: assistant
+  pattern: rewrite_interval_before
+  description: The earliest events via created_at - INTERVAL 1 DAY < X.
+  sql: SELECT postal_code FROM events WHERE created_at - INTERVAL 1 DAY < TIMESTAMP '2020-01-01'
+  guard_action_expected: rewrite
+  role: bad
+  fact: 36.7 MiB billed; created_at < X + 1 day reads 2.3, bills 10 MiB
+  bytes_mib: 36.658
+  equivalent: SELECT postal_code FROM events WHERE created_at < TIMESTAMP '2020-01-02'
+  equivalent_mib: 2.345
+- id: P23
+  split: test
+  author: assistant
+  pattern: unprunable_small_table
+  description: 'One month of orders via FORMAT_TIMESTAMP(''%Y-%m''): a small table.'
+  sql: SELECT order_id, status FROM orders WHERE FORMAT_TIMESTAMP('%Y-%m', created_at) = '2026-05'
+  guard_action_expected: warn
+  role: bad
+  fact: 3.1 MiB read; the range reads 0.1; both bill 10 MiB, so no rewrite; the wrapper defeats pruning
+  bytes_mib: 3.144
+  equivalent: SELECT order_id, status FROM orders WHERE created_at >= TIMESTAMP '2026-05-01' AND created_at < TIMESTAMP
+    '2026-06-01'
+  equivalent_mib: 0.1
+- id: P24
+  split: test
+  author: assistant
+  pattern: unprunable_no_single_range
+  description: Every December via EXTRACT(MONTH) alone.
+  sql: SELECT event_type, COUNT(*) AS n FROM events WHERE EXTRACT(MONTH FROM created_at) = 12 GROUP BY event_type
+  guard_action_expected: warn
+  role: bad
+  fact: no single equivalent range (adding a year changes the result); 39.1 MiB, no pruning
+  bytes_mib: 39.124
+- id: P25
+  split: validation
+  author: assistant
+  pattern: unprunable_month_arithmetic
+  description: 'created_at + INTERVAL 1 MONTH >= X: month arithmetic.'
+  sql: SELECT browser FROM events WHERE created_at + INTERVAL 1 MONTH >= TIMESTAMP '2026-10-15'
+  guard_action_expected: warn
+  role: bad
+  fact: not exactly invertible to a range; 36.9 MiB, no pruning
+  bytes_mib: 36.895
+- id: P26
+  split: test
+  author: assistant
+  pattern: result_changing_fix
+  description: Cost of sold stock by category, no date filter.
+  sql: SELECT product_category, SUM(cost) AS cost FROM inventory_items WHERE sold_at IS NOT NULL GROUP BY product_category
+  guard_action_expected: warn
+  role: bad
+  fact: no filter on inventory_items' partition column; a date filter would change the result
+  bytes_mib: 10.925
+- id: P27
+  split: test
+  author: assistant
+  pattern: missing_partition_filter
+  description: Cart events by browser, no date filter.
+  sql: SELECT browser, COUNT(*) AS n FROM events WHERE event_type = 'cart' GROUP BY browser
+  guard_action_expected: warn
+  role: bad
+  fact: no filter on events' partition column; 39.0 MiB
+  bytes_mib: 39.007
+- id: P28
+  split: validation
+  author: assistant
+  pattern: filter_on_other_date_column
+  description: Orders by status filtered on shipped_at, not created_at.
+  sql: SELECT status, COUNT(*) AS n FROM orders WHERE shipped_at >= TIMESTAMP '2026-01-01' GROUP BY status
+  guard_action_expected: warn
+  role: bad
+  fact: no filter on orders' partition column (created_at)
+  bytes_mib: 1.852
+- id: P29
+  split: validation
+  author: assistant
+  pattern: select_star_costly
+  description: SELECT * on 2026 events.
+  sql: SELECT * FROM events WHERE created_at >= TIMESTAMP '2026-01-01'
+  guard_action_expected: warn
+  role: bad
+  fact: 87.5 MiB, at least 50% of the cap and under it
+  bytes_mib: 87.546
+- id: P30
+  split: validation
+  author: assistant
+  pattern: select_star_costly
+  description: SELECT * on all inventory items.
+  sql: SELECT * FROM inventory_items WHERE created_at >= TIMESTAMP '2019-01-01'
+  guard_action_expected: warn
+  role: bad
+  fact: 77.6 MiB, at least 50% of the cap
+  bytes_mib: 77.61
+- id: P31
+  split: validation
+  author: assistant
+  pattern: group_by_unique_key
+  description: GROUP BY inventory_items.id.
+  sql: SELECT id, COUNT(*) AS n FROM inventory_items WHERE created_at >= TIMESTAMP '2026-01-01' GROUP BY id
+  guard_action_expected: warn
+  role: bad
+  fact: 'a unique key: 487,232 distinct of 490,650 rows (registry estimate)'
+  bytes_mib: 1.449
+- id: P32
+  split: test
+  author: assistant
+  pattern: group_by_unique_key_view
+  description: GROUP BY users.street_address (users is a view).
+  sql: SELECT street_address, COUNT(*) AS n FROM users GROUP BY street_address
+  guard_action_expected: warn
+  role: bad
+  fact: 'unique: 100,000 distinct of 100,000 rows'
+  bytes_mib: 2.334
+- id: P33
+  split: test
+  author: assistant
+  pattern: group_by_unique_key
+  description: GROUP BY order_items.id.
+  sql: SELECT id, SUM(sale_price) AS revenue FROM order_items WHERE created_at >= TIMESTAMP '2026-09-01' GROUP BY
+    id
+  guard_action_expected: warn
+  role: bad
+  fact: 'a unique key: 181,501 distinct of 181,553 rows'
+  bytes_mib: 0.43
+- id: P34
+  split: validation
+  author: assistant
+  pattern: redundant_distinct
+  description: DISTINCT over a GROUP BY that already makes rows unique.
+  sql: SELECT DISTINCT country, COUNT(*) AS n FROM users GROUP BY country
+  guard_action_expected: warn
+  role: bad
+  fact: DISTINCT cannot remove anything
+  bytes_mib: 0.947
+- id: P35
+  split: test
+  author: assistant
+  pattern: redundant_distinct_in
+  description: DISTINCT inside IN (...).
+  sql: SELECT id, name FROM products WHERE id IN (SELECT DISTINCT product_id FROM order_items WHERE created_at >=
+    TIMESTAMP '2026-10-01')
+  guard_action_expected: warn
+  role: bad
+  fact: 'membership ignores duplicates: DISTINCT cannot change the result'
+  bytes_mib: 1.781
+- id: P36
+  split: validation
+  author: assistant
+  pattern: long_in_list
+  description: IN list of 150 user ids.
+  sql: SELECT id, email FROM users WHERE id IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+    20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46,
+    47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73,
+    74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100,
+    101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122,
+    123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144,
+    145, 146, 147, 148, 149, 150)
+  guard_action_expected: warn
+  role: bad
+  fact: more than 100 values
+  bytes_mib: 3.253
+- id: P37
+  split: test
+  author: assistant
+  pattern: not_in_with_nulls
+  description: NOT IN over events.user_id.
+  sql: SELECT COUNT(*) AS never_active FROM users WHERE id NOT IN (SELECT user_id FROM events WHERE created_at >=
+    TIMESTAMP '2026-10-01')
+  guard_action_expected: warn
+  role: bad
+  fact: 'events.user_id has 1,125,187 NULLs: NOT IN over a nullable column'
+  bytes_mib: 1.861
+- id: P38
+  split: test
+  author: assistant
+  pattern: two_step_aggregation
+  description: 'Average and max events per session in October: two-step aggregation.'
+  sql: WITH s AS (SELECT session_id, COUNT(*) AS n FROM events WHERE created_at >= TIMESTAMP '2026-10-01' GROUP
+    BY session_id) SELECT AVG(n) AS avg_events, MAX(n) AS max_events FROM s
+  guard_action_expected: allow
+  role: good
+  fact: 'session_id: 682,166 distinct of 2,425,610 rows (28%), not a unique key; 3.3 MiB'
+  bytes_mib: 3.268
+- id: P39
+  split: validation
+  author: assistant
+  pattern: group_by_non_unique_key
+  description: 'Order totals: GROUP BY order_items.order_id.'
+  sql: SELECT order_id, SUM(sale_price) AS order_total FROM order_items WHERE created_at >= TIMESTAMP '2026-01-01'
+    GROUP BY order_id
+  guard_action_expected: allow
+  role: good
+  fact: 'not a unique key: 125,133 distinct of 181,553 rows (~1.45 items per order)'
+  bytes_mib: 1.458
+- id: P40
+  split: test
+  author: assistant
+  pattern: tiny_cross_join
+  description: Distribution centers crossed with product categories.
+  sql: SELECT dc.name, p.category FROM distribution_centers dc CROSS JOIN (SELECT DISTINCT category FROM products)
+    p
+  guard_action_expected: allow
+  role: good
+  fact: distribution_centers has 10 rows (<= 1,000)
+  bytes_mib: 0.345
+- id: P41
+  split: test
+  author: assistant
+  pattern: tiny_cross_join
+  description: Recent stock crossed with the 10 distribution centers.
+  sql: SELECT i.id, dc.name FROM inventory_items i CROSS JOIN distribution_centers dc WHERE i.created_at >= TIMESTAMP
+    '2026-10-10'
+  guard_action_expected: allow
+  role: good
+  fact: one side has 10 rows; 0.01 MiB
+  bytes_mib: 0.014
+- id: P42
+  split: validation
+  author: assistant
+  pattern: filter_after_join
+  description: Filter after a join inside a derived table.
+  sql: SELECT x.id FROM (SELECT oi.id, oi.created_at, p.brand FROM order_items oi JOIN products p ON p.id = oi.product_id)
+    x WHERE x.brand = 'Calvin Klein' AND x.created_at >= TIMESTAMP '2026-06-01'
+  guard_action_expected: allow
+  role: good
+  fact: 'BigQuery pushes it down (measured earlier: same bytes); 1.4 MiB'
+  bytes_mib: 1.445
+- id: P43
+  split: test
+  author: assistant
+  pattern: having_on_group_column
+  description: HAVING on a group column.
+  sql: SELECT browser, COUNT(*) AS n FROM events WHERE created_at >= TIMESTAMP '2026-09-01' GROUP BY browser HAVING
+    browser <> 'Other'
+  guard_action_expected: allow
+  role: good
+  fact: bills the same as WHERE on BigQuery (measured earlier)
+  bytes_mib: 2.285
+- id: P44
+  split: test
+  author: assistant
+  pattern: cte_twice
+  description: A CTE used twice.
+  sql: WITH m AS (SELECT user_id, SUM(sale_price) AS spend FROM order_items WHERE created_at >= TIMESTAMP '2026-07-01'
+    GROUP BY user_id) SELECT (SELECT COUNT(*) FROM m WHERE spend > 200) AS big_spenders, (SELECT AVG(spend) FROM
+    m) AS avg_spend
+  guard_action_expected: allow
+  role: good
+  fact: a CTE used twice is not waste on BigQuery (measured earlier); user_id is not unique in order_items (44%)
+  bytes_mib: 0.75
+- id: P45
+  split: validation
+  author: assistant
+  pattern: sort_no_limit
+  description: 2026 order items sorted, no LIMIT.
+  sql: SELECT id, created_at FROM order_items WHERE created_at >= TIMESTAMP '2026-01-01' ORDER BY created_at
+  guard_action_expected: allow
+  role: good
+  fact: a sort with no LIMIT under the cap is allow (owner's choice 2026-10-17); 1.0 MiB
+  bytes_mib: 0.972
+- id: P46
+  split: validation
+  author: assistant
+  pattern: prunable_wrapper
+  description: DATE(created_at) = X.
+  sql: SELECT COUNT(*) AS n FROM events WHERE DATE(created_at) = DATE '2026-10-05'
+  guard_action_expected: allow
+  role: good
+  fact: 'prunes: 0.02 MiB'
+  bytes_mib: 0.022
+- id: P47
+  split: test
+  author: assistant
+  pattern: prunable_wrapper
+  description: TIMESTAMP_TRUNC(created_at, MONTH) = X.
+  sql: SELECT product_category, COUNT(*) AS n FROM inventory_items WHERE TIMESTAMP_TRUNC(created_at, MONTH) = TIMESTAMP
+    '2026-07-01' GROUP BY product_category
+  guard_action_expected: allow
+  role: good
+  fact: 'prunes: 0.22 MiB'
+  bytes_mib: 0.222
+- id: P48
+  split: test
+  author: assistant
+  pattern: select_star_cheap
+  description: SELECT * on October orders.
+  sql: SELECT * FROM orders WHERE created_at >= TIMESTAMP '2026-10-01'
+  guard_action_expected: allow
+  role: good
+  fact: 0.35 MiB, far under half the cap
+  bytes_mib: 0.346
+- id: P49
+  split: validation
+  author: assistant
+  pattern: lookup_join
+  description: Order items with their product names (lookup join).
+  sql: SELECT oi.id, p.name FROM order_items oi JOIN products p ON p.id = oi.product_id WHERE oi.created_at >= TIMESTAMP
+    '2026-09-01'
+  guard_action_expected: allow
+  role: good
+  fact: 'joins on products.id, a key: no fan-out; 2.1 MiB'
+  bytes_mib: 2.06
+- id: P50
+  split: test
+  author: assistant
+  pattern: short_in_list
+  description: IN list of 50 product ids.
+  sql: SELECT id, name FROM products WHERE id IN (1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010, 1011,
+    1012, 1013, 1014, 1015, 1016, 1017, 1018, 1019, 1020, 1021, 1022, 1023, 1024, 1025, 1026, 1027, 1028, 1029,
+    1030, 1031, 1032, 1033, 1034, 1035, 1036, 1037, 1038, 1039, 1040, 1041, 1042, 1043, 1044, 1045, 1046, 1047,
+    1048, 1049, 1050)
+  guard_action_expected: allow
+  role: good
+  fact: 100 values or fewer
+  bytes_mib: 1.629
+- id: P51
+  split: test
+  author: assistant
+  pattern: not_in_non_null
+  description: NOT IN over orders.user_id.
+  sql: SELECT COUNT(*) AS no_recent_order FROM users WHERE id NOT IN (SELECT user_id FROM orders WHERE created_at
+    >= TIMESTAMP '2026-10-01')
+  guard_action_expected: allow
+  role: good
+  fact: orders.user_id has no NULLs
+  bytes_mib: 0.865
+- id: P52
+  split: validation
+  author: assistant
+  pattern: clean
+  description: Recent shipped orders, newest 100.
+  sql: SELECT order_id, status FROM orders WHERE created_at >= TIMESTAMP '2026-10-10' AND status = 'Shipped' ORDER
+    BY created_at DESC LIMIT 100
+  guard_action_expected: allow
+  role: good
+  fact: partition-filtered, 0.1 MiB, none of the patterns
+  bytes_mib: 0.105
+- id: P53
+  split: test
+  author: owner
+  pattern: select_star_over_cap
+  description: Every column of events, no filter.
+  sql: SELECT * FROM events
+  guard_action_expected: block
+  role: bad
+  fact: dry run 367.19 MiB > 100 MiB cap
+  bytes_mib: 367.192
+- id: P54
+  split: test
+  author: owner
+  pattern: cartesian
+  description: orders x users with no join condition.
+  sql: SELECT o.order_id, u.email FROM orders o, users u
+  guard_action_expected: block
+  role: bad
+  fact: cartesian of 125,584 x 100,000 rows (registry) = 12.6 billion rows
+  bytes_mib: 3.448
+- id: P55
+  split: validation
+  author: owner
+  pattern: missing_partition_filter
+  description: Events per IP address, all time.
+  sql: SELECT ip_address, COUNT(*) AS cnt FROM events GROUP BY ip_address
+  guard_action_expected: warn
+  role: bad
+  fact: no filter on events.created_at (partition column); 35.22 MiB, under the cap; ip_address distinct ratio 0.281,
+    not a unique key
+  bytes_mib: 35.218
+- id: P56
+  split: validation
+  author: owner
+  pattern: missing_partition_filter
+  description: Events per month, all time.
+  sql: SELECT DATE_TRUNC(created_at, MONTH) AS m, COUNT(*) AS cnt FROM events GROUP BY 1
+  guard_action_expected: warn
+  role: bad
+  fact: no filter on events.created_at (partition column); 18.51 MiB, under the cap
+  bytes_mib: 18.506
+- id: P57
+  split: validation
+  author: owner
+  pattern: extract_year_prunes
+  description: 2024 order items.
+  sql: SELECT id, status, sale_price FROM order_items WHERE EXTRACT(YEAR FROM created_at) = 2024
+  guard_action_expected: allow
+  role: good
+  fact: 'EXTRACT(YEAR) prunes on BigQuery (guide): 0.918 MiB, same as the equivalent 2024 range (0.918) vs 4.544
+    unfiltered; under the cap'
+  bytes_mib: 0.918
+- id: P58
+  split: test
+  author: owner
+  pattern: missing_partition_filter
+  description: One order item by id.
+  sql: SELECT id, status, sale_price FROM order_items WHERE id = 42
+  guard_action_expected: warn
+  role: bad
+  fact: no filter on order_items.created_at (partition column; table not clustered); 4.54 MiB, the whole three columns
+  bytes_mib: 4.544
+- id: P59
+  split: validation
+  author: owner
+  pattern: clean
+  description: Orders per day, first two weeks of October 2026.
+  sql: SELECT DATE_TRUNC(created_at, DAY) AS d, COUNT(*) AS orders FROM orders WHERE created_at >= TIMESTAMP '2026-10-01
+    00:00:00+00' AND created_at < TIMESTAMP '2026-10-15 00:00:00+00' GROUP BY 1
+  guard_action_expected: allow
+  role: good
+  fact: partition-filtered, 0.05 MiB, none of the patterns
+  bytes_mib: 0.051
+- id: P60
+  split: validation
+  author: owner
+  pattern: key_join_filtered
+  description: Completed revenue by brand since September 2026.
+  sql: SELECT p.brand, SUM(oi.sale_price) AS revenue FROM order_items oi JOIN products p ON p.id = oi.product_id
+    WHERE oi.status = 'Complete' AND oi.created_at >= TIMESTAMP '2026-09-01 00:00:00+00' GROUP BY p.brand
+  guard_action_expected: allow
+  role: good
+  fact: 'join on products.id (distinct ratio 1.0: a key, no fan-out); order_items partition-filtered; 1.17 MiB;
+    brand ratio 0.095'
+  bytes_mib: 1.17
+- id: P61
+  split: validation
+  author: owner
+  pattern: small_table
+  description: All distribution centers.
+  sql: SELECT id, name, latitude, longitude FROM distribution_centers
+  guard_action_expected: allow
+  role: good
+  fact: 10 rows (registry); unpartitioned view; ~0 MiB
+  bytes_mib: 0.0
+- id: P62
+  split: validation
+  author: owner
+  pattern: clean
+  description: Events by type since 2026-10-10.
+  sql: SELECT event_type, COUNT(*) AS cnt FROM events WHERE created_at >= TIMESTAMP '2026-10-10 00:00:00+00' GROUP
+    BY event_type
+  guard_action_expected: allow
+  role: good
+  fact: partition-filtered, 0.73 MiB, none of the patterns
+  bytes_mib: 0.729

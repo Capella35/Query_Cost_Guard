@@ -80,11 +80,13 @@ settings.
   - Labels are changed only openly: `label_from` / `label_change` with the
     measured reason, in a separate commit, with both scores reported.
   - The BigQuery evals are BigQuery-native only: validation = B01–B30 +
-    T01–T40. `eval/bq_test.yaml` (pre-registered `ddf0030`, run once, 35/40)
-    and the other run-once sets (`holdout`, `bigquery`) are never rerun
-    silently. `run_eval.py` refuses
-    without `--rerun`, and a fix made after seeing a set's misses makes it a
-    tuning set.
+    T01–T40. `eval/bq_pool.yaml` (P01–P62, pre-registered 2026-10-18) is
+    split by `scripts/split_bq_pool.py` into `bq-pool-validation` (tune on
+    it) and `bq-pool-test` (run once). `eval/bq_test.yaml` (pre-registered
+    `ddf0030`, run once, 35/40) and the other run-once sets (`holdout`,
+    `bigquery`, `bq-pool-test`) are never rerun silently. `run_eval.py`
+    refuses without `--rerun`, and a fix made after seeing a set's misses
+    makes it a tuning set.
   - `eval/bq_validation.yaml` is generated: edit `RELABELS` (labels set at
     build time), `POST_RUN_RELABELS` (changes after a run, scored both ways) or
     `HEADER` in `scripts/build_bq_validation.py`, not the YAML. Its header holds the
