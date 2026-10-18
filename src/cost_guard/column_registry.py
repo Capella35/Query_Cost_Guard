@@ -35,10 +35,10 @@ Build mechanics:
   its value counts on the next run of any mode, without re-profiling.
 
 Every build appends one row to `registry_runs` (when, mode, tables profiled /
-failed, bytes), so registry_status() can show the last refresh. The build is
-refreshed by `cost_guard registry refresh`, which a deployment MUST schedule
-(DESIGN.md §11); a long-running Guard reloads
-the file when it changes (registry_mtime).
+failed, bytes), so registry_status() can show the last refresh. The build
+runs as `cost_guard registry refresh`, which a deployment MUST schedule
+(DESIGN.md §11); a long-running Guard reloads the file when it changes
+(registry_mtime).
 
 Keyed by (schema_name, table_name, column_name). Entries older than
 max_age_days are treated by the Guard as unverified (rule skipped, visibly).
