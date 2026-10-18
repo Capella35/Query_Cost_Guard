@@ -30,6 +30,8 @@ validation; kept as the record of that run.
 --suite bq-pool-validation / bq-pool-test: the fresh pool (eval/bq_pool.yaml,
 pre-registered 2026-10-18), split by scripts/split_bq_pool.py. Tune on the
 validation half; the test half is run ONCE.
+--suite bq-owner-test: 12 owner-written queries (eval/bq_owner_test.yaml,
+pre-registered 2026-10-18), run ONCE.
 
 --suite regression runs the 11 inline cases on the synthetic warehouse
 (also covered by tests/test_guard_regression.py). Those were written next
@@ -89,10 +91,13 @@ SUITE_FILES = {
                            "BigQuery pool, validation half"),
     "bq-pool-test": ("bq_pool.yaml", "RESULTS_bq_pool_test.md",
                      "BigQuery pool, test half (pre-registered)"),
+    "bq-owner-test": ("bq_owner_test.yaml", "RESULTS_bq_owner_test.md",
+                      "owner-written BigQuery test set (pre-registered)"),
 }
 SUITE_SPLIT = {"bq-pool-validation": "validation", "bq-pool-test": "test"}  # one file, two halves
-RUN_ONCE = ("holdout", "bigquery", "bq-test", "bq-pool-test")  # held-out / pre-registered: first run is the result
-BQ_SUITES = ("bigquery", "bq-validation", "bq-test", "bq-pool-validation", "bq-pool-test")  # BigQuery dry runs, eval_caps_bigquery.yaml
+RUN_ONCE = ("holdout", "bigquery", "bq-test", "bq-pool-test", "bq-owner-test")  # held-out / pre-registered: first run is the result
+BQ_SUITES = ("bigquery", "bq-validation", "bq-test", "bq-pool-validation", "bq-pool-test",
+             "bq-owner-test")  # BigQuery dry runs, eval_caps_bigquery.yaml
 
 
 def load_thelook_cases(filename: str = "eval_queries.yaml", split: str | None = None) -> list[dict]:
@@ -226,7 +231,7 @@ def full_check(wh, original: str, rewrite: str) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--suite", choices=["thelook", "holdout", "bigquery", "bq-validation", "bq-test",
-                             "bq-pool-validation", "bq-pool-test", "regression"],
+                             "bq-pool-validation", "bq-pool-test", "bq-owner-test", "regression"],
                     default="thelook")
     ap.add_argument("--rerun", action="store_true",
                     help="holdout/bigquery: run again although it has been run (recorded as a rerun)")

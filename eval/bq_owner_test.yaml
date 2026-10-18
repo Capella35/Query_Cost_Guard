@@ -1,0 +1,254 @@
+# BigQuery OWNER TEST set (2026-10-18): 12 analyst queries written by the
+# owner, run ONCE (run_eval.py --suite bq-owner-test). Labels are set from the
+# labeling guide below and data facts only; NO Guard verdict on any of these
+# queries was seen before this file was committed.
+#
+# PROVENANCE AND LIMITS
+# - Written by the owner, not by the assistant that wrote the Guard's rules,
+#   so independent of them. None repeats a query in the other sets (query
+#   fingerprints compared).
+# - The owner wrote them against bigquery-public-data.thelook_ecommerce; the
+#   table names were pointed at the copies in cost_guard_thelook (orders,
+#   order_items, events are partitioned on created_at there; users, products
+#   are views on the public tables). Nothing else changed, except splitting
+#   O08/O09, which had no ';' between them. `original_sql` keeps each as typed.
+#   On the public (unpartitioned) tables nearly every label would be allow.
+# - Facts: dry runs (bytes read), the column registry, exact join output rows
+#   from per-key counts (O03), status value counts (O06); ~30 MiB billed.
+# - Lopsided: 11 warn, 1 allow, 0 block, 0 rewrite; 11 of the warns rest on
+#   the missing partition filter. A high score says little about blocks or
+#   rewrites; it does test that 9 multi-table key joins and a many-to-many
+#   join under the cap are NOT blocked (priority 2).
+#
+# CAPS: eval/eval_caps_bigquery.yaml, interactive - 100 MiB bytes, 5,000,000
+# rows for join fan-out.
+#
+# LABELING GUIDE v3 (BigQuery; 2026-10-18): the rules of eval/bq_validation.yaml's header. Precedence: block > rewrite > warn > allow.
+#   block   - a non-read-only statement; bytes read above the cap (100 MiB);
+#             a cartesian product of two tables with more than 1,000 rows
+#             each; a join that multiplies rows past 5,000,000 output rows
+#             (a low-cardinality or many-to-many non-key join), with or
+#             without filters; SUM/AVG of an identifier.
+#             EXCEPTION (Guard, 2026-10-17): the fan-out estimate applies
+#             date-partition filters and `col = value` / `col IN (values)`;
+#             under any other filter (a range, LIKE, a join on an expression)
+#             it is only traced, so such a fan-out is a known miss.
+#   rewrite - an EQUIVALENT query (same rows and columns) that BILLS fewer
+#             bytes (billed = max(bytes read, 10 MiB per table), 2026-10-17)
+#             and can be produced mechanically. BigQuery prunes through
+#             CAST(col AS DATE), DATE(col), TIMESTAMP_TRUNC, DATE_TRUNC(DATE(col)),
+#             TIMESTAMP_ADD/SUB, DATE_ADD/SUB, EXTRACT(YEAR|DATE) and
+#             FORMAT_TIMESTAMP('%Y-%m-%d', col): NOT rewrite cases. EXTRACT of
+#             other parts, FORMAT_TIMESTAMP('%Y-%m', ...) and col + INTERVAL
+#             defeat pruning; with an equivalent range, that is a rewrite case.
+#   warn    - wasteful, risky or wrong with no equivalent fix, under the cap:
+#             SELECT * reading >= 50% of the cap (column count does not
+#             matter); no filter on the partition column of a partitioned
+#             table (orders, order_items, events, inventory_items); GROUP BY a
+#             unique key; DISTINCT that
+#             cannot remove anything; an IN list of more than 100 values;
+#             NOT IN over a column that can be NULL.
+#   allow   - under the cap and none of the above. A filter after a join
+#             inside a derived table, a CTE or subquery used twice, and HAVING
+#             on a group column are NOT waste on BigQuery (measured: same
+#             bytes), so on their own they are allow. So is a sort with no
+#             LIMIT under the cap (owner's choice 2026-10-17, B28 measured).
+# role: good = labeled allow; bad = anything else.
+
+queries:
+- id: O01
+  author: owner
+  pattern: missing_partition_filter
+  description: Revenue, orders and customers by month (order_items x orders on order_id).
+  sql: SELECT EXTRACT(MONTH FROM oi.Created_at) AS months, ROUND(SUM(oi.sale_price * o.num_of_item), 2) AS revenue,
+    COUNT(DISTINCT oi.order_id) AS order_count, COUNT(DISTINCT oi.user_id) AS customers_purchased FROM order_items
+    oi INNER JOIN orders AS o ON oi.order_id = o.order_id WHERE oi.status NOT IN ('Cancelled', 'Returned') GROUP
+    BY months ORDER BY revenue DESC
+  original_sql: SELECT EXTRACT(MONTH FROM oi.Created_at) AS months, ROUND(SUM(oi.sale_price * o.num_of_item), 2)
+    AS revenue, COUNT(DISTINCT oi.order_id) AS order_count, COUNT(DISTINCT oi.user_id) AS customers_purchased FROM
+    bigquery-public-data.thelook_ecommerce.order_items oi INNER JOIN `bigquery-public-data.thelook_ecommerce.orders`
+    AS o ON oi.order_id = o.order_id WHERE oi.status NOT IN ('Cancelled', 'Returned') GROUP BY months ORDER BY revenue
+    DESC
+  guard_action_expected: warn
+  role: bad
+  fact: 'no filter on the partition column of order_items (and orders), partitioned on created_at in cost_guard_thelook;
+    orders.order_id is a key: no fan-out'
+  bytes_mib: 9.231
+- id: O02
+  author: owner
+  pattern: missing_partition_filter
+  description: Customers by country with gender counts, via a CTE (order_items x users).
+  sql: WITH customers AS ( SELECT DISTINCT oi.user_id, SUM(CASE WHEN u.gender = 'M' THEN 1 ELSE null END) AS male,
+    SUM(CASE WHEN u.gender = 'F' THEN 1 ELSE null END) AS female, u.country AS country FROM order_items AS oi INNER
+    JOIN users AS u ON oi.user_id = u.id WHERE oi.status not in ('Cancelled', 'Returned') GROUP BY user_id, country
+    ) SELECT country, COUNT(DISTINCT user_id) AS customers_count, COUNT(female) AS female, COUNT(male) AS male FROM
+    customers GROUP BY country ORDER BY customers_count DESC
+  original_sql: WITH customers AS ( SELECT DISTINCT oi.user_id, SUM(CASE WHEN u.gender = 'M' THEN 1 ELSE null END)
+    AS male, SUM(CASE WHEN u.gender = 'F' THEN 1 ELSE null END) AS female, u.country AS country FROM bigquery-public-data.thelook_ecommerce.order_items
+    AS oi INNER JOIN bigquery-public-data.thelook_ecommerce.users AS u ON oi.user_id = u.id WHERE oi.status not
+    in ('Cancelled', 'Returned') GROUP BY user_id, country ) SELECT country, COUNT(DISTINCT user_id) AS customers_count,
+    COUNT(female) AS female, COUNT(male) AS male FROM customers GROUP BY country ORDER BY customers_count DESC
+  guard_action_expected: warn
+  role: bad
+  fact: no filter on the partition column of order_items (and orders), partitioned on created_at in cost_guard_thelook;
+    the CTE's DISTINCT cannot remove anything (GROUP BY user_id, country already makes rows unique); users.id is
+    a key
+  bytes_mib: 5.155
+- id: O03
+  author: owner
+  pattern: missing_partition_filter
+  description: Revenue and quantity by gender, order_items x orders joined on user_id.
+  sql: SELECT o.gender, ROUND(SUM(oi.sale_price * o.num_of_item), 2) AS revenue, SUM(o.num_of_item) AS quantity
+    FROM order_items AS oi INNER JOIN orders AS o ON oi.user_id = o.user_id WHERE oi.status NOT IN ('Cancelled',
+    'Returned') GROUP BY gender ORDER BY revenue DESC
+  original_sql: SELECT o.gender, ROUND(SUM(oi.sale_price * o.num_of_item), 2) AS revenue, SUM(o.num_of_item) AS
+    quantity FROM bigquery-public-data.thelook_ecommerce.order_items AS oi INNER JOIN bigquery-public-data.thelook_ecommerce.orders
+    AS o ON oi.user_id = o.user_id WHERE oi.status NOT IN ('Cancelled', 'Returned') GROUP BY gender ORDER BY revenue
+    DESC
+  guard_action_expected: warn
+  role: bad
+  fact: 'no filter on the partition column of order_items (and orders), partitioned on created_at in cost_guard_thelook;
+    many-to-many on user_id: exactly 278,241 output rows (per-key counts, 2026-10-18), under 5,000,000, so not a
+    block'
+  bytes_mib: 6.82
+- id: O04
+  author: owner
+  pattern: missing_partition_filter
+  description: Customers per age group (order_items x users).
+  sql: SELECT CASE WHEN u.age < 12 THEN 'Kids' WHEN u.age BETWEEN 12 AND 20 THEN 'Teenagers' WHEN u.age BETWEEN
+    20 AND 30 THEN 'Young Adults' WHEN u.age BETWEEN 30 AND 50 THEN 'Adults' WHEN u.age > 50 THEN 'Elderly' END
+    AS age_group, COUNT(DISTINCT oi.user_id) AS total_customer FROM order_items AS oi INNER JOIN users AS u ON oi.user_id
+    = u.id GROUP BY age_group ORDER BY total_customer DESC
+  original_sql: SELECT CASE WHEN u.age < 12 THEN 'Kids' WHEN u.age BETWEEN 12 AND 20 THEN 'Teenagers' WHEN u.age
+    BETWEEN 20 AND 30 THEN 'Young Adults' WHEN u.age BETWEEN 30 AND 50 THEN 'Adults' WHEN u.age > 50 THEN 'Elderly'
+    END AS age_group, COUNT(DISTINCT oi.user_id) AS total_customer FROM bigquery-public-data.thelook_ecommerce.order_items
+    AS oi INNER JOIN bigquery-public-data.thelook_ecommerce.users AS u ON oi.user_id = u.id GROUP BY age_group ORDER
+    BY total_customer DESC
+  guard_action_expected: warn
+  role: bad
+  fact: no filter on the partition column of order_items (and orders), partitioned on created_at in cost_guard_thelook;
+    users.id is a key
+  bytes_mib: 2.911
+- id: O05
+  author: owner
+  pattern: missing_partition_filter
+  description: Revenue by brand (order_items x orders x products).
+  sql: SELECT p.brand AS brand, ROUND(SUM(sale_price * num_of_item), 2) AS revenue, SUM(num_of_item) AS quantity
+    FROM order_items oi INNER JOIN orders o ON oi.order_id = o.order_id INNER JOIN products p ON oi.product_id =
+    p.id WHERE oi.status NOT IN ('Cancelled', 'Returned') GROUP BY brand ORDER BY revenue DESC
+  original_sql: SELECT p.brand AS brand, ROUND(SUM(sale_price * num_of_item), 2) AS revenue, SUM(num_of_item) AS
+    quantity FROM bigquery-public-data.thelook_ecommerce.order_items oi INNER JOIN bigquery-public-data.thelook_ecommerce.orders
+    o ON oi.order_id = o.order_id INNER JOIN bigquery-public-data.thelook_ecommerce.products p ON oi.product_id
+    = p.id WHERE oi.status NOT IN ('Cancelled', 'Returned') GROUP BY brand ORDER BY revenue DESC
+  guard_action_expected: warn
+  role: bad
+  fact: no filter on the partition column of order_items (and orders), partitioned on created_at in cost_guard_thelook;
+    orders.order_id and products.id are keys
+  bytes_mib: 8.401
+- id: O06
+  author: owner
+  pattern: missing_partition_filter
+  description: Revenue by category (order_items x orders x products).
+  sql: SELECT category AS product_category, ROUND(SUM(sale_price * num_of_item), 2) AS revenue, SUM(num_of_item)
+    AS quantity FROM order_items oi INNER JOIN orders o ON oi.order_id = o.order_id INNER JOIN products p ON oi.product_id
+    = p.id WHERE oi.status NOT IN ('cancelled', 'Returned') GROUP BY category ORDER BY revenue DESC
+  original_sql: SELECT category AS product_category, ROUND(SUM(sale_price * num_of_item), 2) AS revenue, SUM(num_of_item)
+    AS quantity FROM bigquery-public-data.thelook_ecommerce.order_items oi INNER JOIN bigquery-public-data.thelook_ecommerce.orders
+    o ON oi.order_id = o.order_id INNER JOIN bigquery-public-data.thelook_ecommerce.products p ON oi.product_id
+    = p.id WHERE oi.status NOT IN ('cancelled', 'Returned') GROUP BY category ORDER BY revenue DESC
+  guard_action_expected: warn
+  role: bad
+  fact: 'no filter on the partition column of order_items (and orders), partitioned on created_at in cost_guard_thelook;
+    key joins. Also: ''cancelled'' (lowercase) matches no status (values are capitalized; ''Cancelled'' has 27,200
+    rows), so cancelled items are not excluded: a wrong answer the guide does not cover'
+  bytes_mib: 8.412
+- id: O07
+  author: owner
+  pattern: missing_partition_filter
+  description: Cancelled and returned items by brand (order_items x products).
+  sql: SELECT p.brand AS brand, SUM(CASE WHEN oi.status = 'Cancelled' THEN 1 ELSE null END) AS Cancelled, SUM(CASE
+    WHEN oi.status = 'Returned' THEN 1 ELSE null END) AS Returned FROM order_items oi INNER JOIN products p ON oi.product_id
+    = p.id GROUP BY brand ORDER BY Cancelled DESC
+  original_sql: SELECT p.brand AS brand, SUM(CASE WHEN oi.status = 'Cancelled' THEN 1 ELSE null END) AS Cancelled,
+    SUM(CASE WHEN oi.status = 'Returned' THEN 1 ELSE null END) AS Returned FROM bigquery-public-data.thelook_ecommerce.order_items
+    oi INNER JOIN bigquery-public-data.thelook_ecommerce.products p ON oi.product_id = p.id GROUP BY brand ORDER
+    BY Cancelled DESC
+  guard_action_expected: warn
+  role: bad
+  fact: no filter on the partition column of order_items (and orders), partitioned on created_at in cost_guard_thelook;
+    products.id is a key
+  bytes_mib: 3.715
+- id: O08
+  author: owner
+  pattern: missing_partition_filter
+  description: Cancelled and returned items by category (order_items x products).
+  sql: SELECT p.category AS Category, SUM(CASE WHEN oi.status = 'Cancelled' THEN 1 ELSE null END) AS Cancelled,
+    SUM(CASE WHEN oi.status = 'Returned' THEN 1 ELSE null END) AS Returned FROM order_items oi INNER JOIN products
+    p ON oi.product_id = p.id GROUP BY Category ORDER by Cancelled DESC
+  original_sql: SELECT p.category AS Category, SUM(CASE WHEN oi.status = 'Cancelled' THEN 1 ELSE null END) AS Cancelled,
+    SUM(CASE WHEN oi.status = 'Returned' THEN 1 ELSE null END) AS Returned FROM bigquery-public-data.thelook_ecommerce.order_items
+    oi INNER JOIN bigquery-public-data.thelook_ecommerce.products p ON oi.product_id = p.id GROUP BY Category ORDER
+    by Cancelled DESC
+  guard_action_expected: warn
+  role: bad
+  fact: no filter on the partition column of order_items (and orders), partitioned on created_at in cost_guard_thelook;
+    products.id is a key
+  bytes_mib: 3.726
+- id: O09
+  author: owner
+  pattern: missing_partition_filter
+  description: Customers by traffic source (order_items x users).
+  sql: SELECT u.traffic_source AS traffic_source, COUNT(DISTINCT oi.user_id) AS total_customers FROM order_items
+    oi INNER JOIN users u ON oi.user_id = u.id WHERE oi.status NOT IN ('Cancelled', 'Returned') GROUP BY traffic_source
+    ORDER BY total_customers DESC
+  original_sql: SELECT u.traffic_source AS traffic_source, COUNT(DISTINCT oi.user_id) AS total_customers FROM bigquery-public-data.thelook_ecommerce.order_items
+    oi INNER JOIN bigquery-public-data.thelook_ecommerce.users u ON oi.user_id = u.id WHERE oi.status NOT IN ('Cancelled',
+    'Returned') GROUP BY traffic_source ORDER BY total_customers DESC
+  guard_action_expected: warn
+  role: bad
+  fact: no filter on the partition column of order_items (and orders), partitioned on created_at in cost_guard_thelook;
+    users.id is a key
+  bytes_mib: 4.71
+- id: O10
+  author: owner
+  pattern: clean
+  description: Female users in China, ordered by id.
+  sql: SELECT id, email FROM users WHERE gender = 'F' AND country = 'China' ORDER BY id
+  original_sql: SELECT id, email FROM `bigquery-public-data.thelook_ecommerce.users` WHERE gender = 'F' AND country
+    = 'China' ORDER BY id
+  guard_action_expected: allow
+  role: good
+  fact: users is an unpartitioned view; 4.5 MiB, under the cap; a sort with no LIMIT under the cap is allow
+  bytes_mib: 4.486
+- id: O11
+  author: owner
+  pattern: missing_partition_filter
+  description: Top 10 customers by purchase (order_items x orders x users).
+  sql: SELECT u.id AS customer_id, u.email AS email, ROUND(SUM(oi.sale_price * o.num_of_item), 2) AS total_purchase
+    FROM order_items AS oi INNER JOIN orders AS o ON oi.order_id = o.order_id INNER JOIN users AS u ON o.user_id
+    = u.id GROUP BY customer_id, email ORDER BY total_purchase DESC LIMIT 10
+  original_sql: SELECT u.id AS customer_id, u.email AS email, ROUND(SUM(oi.sale_price * o.num_of_item), 2) AS total_purchase
+    FROM bigquery-public-data.thelook_ecommerce.order_items AS oi INNER JOIN bigquery-public-data.thelook_ecommerce.orders
+    AS o ON oi.order_id = o.order_id INNER JOIN bigquery-public-data.thelook_ecommerce.users AS u ON o.user_id =
+    u.id GROUP BY customer_id, email ORDER BY total_purchase DESC LIMIT 10
+  guard_action_expected: warn
+  role: bad
+  fact: no filter on the partition column of order_items (and orders), partitioned on created_at in cost_guard_thelook;
+    key joins; GROUP BY users.id (unique in users)
+  bytes_mib: 8.897
+- id: O12
+  author: owner
+  pattern: missing_partition_filter
+  description: Monthly order frequency and average order value (order_items).
+  sql: SELECT FORMAT_DATE("%Y-%m", created_at) AS month_year, ROUND((COUNT(DISTINCT order_id)/COUNT(DISTINCT user_id)),2)
+    AS frequencies, ROUND((SUM(sale_price)/COUNT(DISTINCT order_id)),2) AS Average_order_value, COUNT(DISTINCT user_id)
+    AS total_unique_users FROM order_items WHERE status = 'Complete' GROUP BY month_year ORDER BY month_year DESC
+  original_sql: SELECT FORMAT_DATE("%Y-%m", created_at) AS month_year, ROUND((COUNT(DISTINCT order_id)/COUNT(DISTINCT
+    user_id)),2) AS frequencies, ROUND((SUM(sale_price)/COUNT(DISTINCT order_id)),2) AS Average_order_value, COUNT(DISTINCT
+    user_id) AS total_unique_users FROM `bigquery-public-data.thelook_ecommerce.order_items` WHERE status = 'Complete'
+    GROUP BY month_year ORDER BY month_year DESC
+  guard_action_expected: warn
+  role: bad
+  fact: 'no filter on the partition column of order_items (and orders), partitioned on created_at in cost_guard_thelook;
+    FORMAT_DATE is in SELECT, not a filter: no rewrite case'
+  bytes_mib: 7.314
