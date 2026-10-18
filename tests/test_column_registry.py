@@ -174,3 +174,43 @@ def test_value_counts_fill_an_older_registry_without_reprofiling(tmp_path):
     reg = load_registry(default_registry_path(db))
     assert reg.value_count("events", "promo", "x") == 4_000
     assert build_registry(db, mode="missing").value_counted == []  # nothing left to fill
+
+
+def test_registry_status_and_run_log(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from cost_guard.column_registry import registry_status
+
+    db = _db(tmp_path)
+    path = default_registry_path(db)
+    assert registry_status(path)["built"] is False
+    build_registry(db)
+    st = registry_status(path)
+    assert st["stale_tables"] == [] and st["last_run"]["mode"] == "stale"
+    assert sorted(st["last_run"]["profiled"].split(",")) == ["events", "tiny"]
+    events = next(t for t in st["tables"] if t["table"] == "events")
+    assert events["columns"] == 4 and events["value_counted_columns"] == 2  # promo, created_at
+    later = datetime.now(timezone.utc) + timedelta(days=40)
+    assert registry_status(path, now=later)["stale_tables"] == ["events", "tiny"]
+    build_registry(db, mode="missing")
+    assert registry_status(path)["last_run"]["profiled"] == ""  # latest run: nothing to do
+
+
+def test_backend_reloads_the_registry_when_the_file_changes(tmp_path):
+    import os
+
+    db = _db(tmp_path)
+    build_registry(db)
+    wh = DuckDBWarehouse(db)
+    first = wh.column_registry()
+    assert wh.column_registry() is first  # cached while the file is unchanged
+    assert first.value_count("events", "promo", "x") == 4_000
+    con = duckdb.connect(db)
+    con.execute("UPDATE events SET promo = 'x' WHERE id < 100")  # 98 more rows (2 already 'x')
+    con.close()
+    build_registry(db, mode="all")
+    path = default_registry_path(db)
+    t = os.stat(path).st_mtime + 5
+    os.utime(path, (t, t))  # a later mtime, whatever the clock resolution
+    again = wh.column_registry()
+    assert again is not first and again.value_count("events", "promo", "x") == 4_098

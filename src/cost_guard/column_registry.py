@@ -34,6 +34,11 @@ Build mechanics:
   100,000 users, 1/15 by distinct count). A registry built before this gets
   its value counts on the next run of any mode, without re-profiling.
 
+Every build appends one row to `registry_runs` (when, mode, tables profiled /
+failed, bytes), so registry_status() can show the last refresh. The build is
+meant to run on a schedule (scripts/schedule/); a long-running Guard reloads
+the file when it changes (registry_mtime).
+
 Keyed by (schema_name, table_name, column_name). Entries older than
 max_age_days are treated by the Guard as unverified (rule skipped, visibly).
 """
@@ -50,6 +55,7 @@ from .backends.base import ColumnProfile
 
 REGISTRY_TABLE = "column_registry"
 VALUE_COUNTS_TABLE = "value_counts"
+RUNS_TABLE = "registry_runs"
 # Guard rule: distinct/rows at or above = near-unique. 0.8 (owner's call
 # 2026-10-18; was 0.5): the guide warns on GROUP BY a UNIQUE key, and at 0.5
 # a normal per-buyer count (orders.user_id 0.63, ~1.6 orders per buyer) was a
@@ -317,7 +323,15 @@ def _build(source, registry_path: str, tables, settings, mode: str, schema: str)
                     "table_name VARCHAR, column_name VARCHAR, value VARCHAR, "
                     "value_count BIGINT, profiled_at VARCHAR)")
 
-        live = source.catalog(schema)
+        reg.execute(f"CREATE TABLE IF NOT EXISTS {RUNS_TABLE} (schema_name VARCHAR, "
+                    "finished_at VARCHAR, mode VARCHAR, profiled VARCHAR, value_counted VARCHAR, "
+                    "failed VARCHAR, oversized VARCHAR, bytes_processed BIGINT)")
+        try:
+            live = source.catalog(schema)
+        except Exception as e:  # noqa: BLE001 — recorded, then raised
+            report.failed.append(f"catalog: {str(e).splitlines()[0][:100]}")
+            _record_run(reg, schema, mode, report)
+            raise
 
         # Remove rows for tables/columns that no longer exist.
         registered = reg.execute(
@@ -380,10 +394,18 @@ def _build(source, registry_path: str, tables, settings, mode: str, schema: str)
             report.columns += len(entries)
             if counts:
                 report.value_counted.append(t)
+        _record_run(reg, schema, mode, report)
         return report
     finally:
         source.close()
         reg.close()
+
+
+def _record_run(reg, schema, mode, report) -> None:
+    reg.execute(f"INSERT INTO {RUNS_TABLE} VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [schema, datetime.now(timezone.utc).isoformat(), mode,
+                 ",".join(report.profiled), ",".join(report.value_counted),
+                 "; ".join(report.failed), "; ".join(report.oversized), report.bytes_processed])
 
 
 def _scan_value_counts(source, schema, table, cols, cfg, report) -> list[tuple[str, str, int]]:
@@ -552,6 +574,62 @@ def build_bigquery_registry(
                   tables, settings, mode, dataset)
 
 
+def registry_mtime(registry_path: str) -> Optional[float]:
+    """The registry file's modification time (None when absent): a backend
+    reloads when it changes, so a scheduled refresh reaches a running Guard."""
+    try:
+        return Path(registry_path).stat().st_mtime
+    except OSError:
+        return None
+
+
+def registry_status(registry_path: str, schema: str = "main",
+                    max_age_days: float = DEFAULTS["max_age_days"],
+                    now: Optional[datetime] = None) -> dict:
+    """Per table: rows, columns, oldest profile and its age, whether the
+    Guard treats it as stale, value-counted columns; plus the last build run.
+    Reads the local file only (no warehouse query)."""
+    import duckdb
+
+    if not Path(registry_path).exists():
+        return {"registry": registry_path, "built": False, "tables": [], "last_run": None}
+    reg = load_registry(registry_path, schema)
+    now = now or datetime.now(timezone.utc)
+    tables: dict[str, dict] = {}
+    for e in (reg.entries() if reg else []):
+        if e.schema_name.lower() != schema.lower():
+            continue
+        t = tables.setdefault(e.table_name, {"table": e.table_name, "rows": e.total_rows,
+                                             "columns": 0, "profiled_at": e.profiled_at,
+                                             "value_counted_columns": 0})
+        t["columns"] += 1
+        t["profiled_at"] = min(t["profiled_at"], e.profiled_at)
+        if reg.has_value_counts(e.table_name, e.column_name):
+            t["value_counted_columns"] += 1
+    for t in tables.values():
+        age = (now - datetime.fromisoformat(t["profiled_at"])) / timedelta(days=1)
+        t["age_days"] = round(age, 2)
+        t["stale"] = age > max_age_days
+    last = None
+    con = duckdb.connect(registry_path, read_only=True)
+    try:
+        has_runs = con.execute("SELECT COUNT(*) FROM information_schema.tables WHERE "
+                               f"table_schema = 'main' AND table_name = '{RUNS_TABLE}'").fetchone()[0]
+        if has_runs:
+            cur = con.execute(f"SELECT * FROM {RUNS_TABLE} WHERE schema_name = ? "
+                              "ORDER BY finished_at DESC LIMIT 1", [schema])
+            row = cur.fetchone()
+            if row:
+                last = dict(zip([d[0] for d in cur.description], row))
+                last.pop("schema_name")
+    finally:
+        con.close()
+    return {"registry": registry_path, "built": True, "max_age_days": max_age_days,
+            "tables": sorted(tables.values(), key=lambda t: t["table"]),
+            "stale_tables": sorted(t["table"] for t in tables.values() if t["stale"]),
+            "last_run": last}
+
+
 def load_registry(registry_path: str, default_schema: str = "main") -> Optional["ColumnRegistry"]:
     """Read a local registry file; None when it hasn't been built."""
     import duckdb
@@ -598,6 +676,10 @@ class ColumnRegistry:
         for schema, table, column, value, n in rows:
             key = (schema.lower(), table.lower(), column.lower())
             self._value_counts.setdefault(key, {})[value] = int(n)
+
+    def has_value_counts(self, table: str, column: str, schema: Optional[str] = None) -> bool:
+        schema = schema or self.default_schema
+        return (schema.lower(), table.lower(), column.lower()) in self._value_counts
 
     def value_count(self, table: str, column: str, value: str,
                     schema: Optional[str] = None) -> Optional[int]:

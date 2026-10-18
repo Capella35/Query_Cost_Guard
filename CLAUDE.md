@@ -22,6 +22,10 @@ PYTHONPATH=src .venv/bin/python -m cost_guard report                   # workloa
 .venv/bin/python scripts/build_bq_validation.py --project $GCP_PROJECT   # regenerate eval/bq_validation.yaml
 .venv/bin/python eval/run_eval.py --suite bq-validation --project $GCP_PROJECT
 .venv/bin/python eval/run_eval.py --rescore eval/results/<run>.json      # rescore a stored run, no warehouse
+
+# Column registry refresh (scheduled; mode stale bills nothing unless a table is older than max_age_days)
+sh scripts/schedule/refresh_registry.sh            # one refresh by hand -> runs/registry_refresh.log
+sh scripts/schedule/install_launchd.sh             # daily 06:00 on this Mac (uninstall: add `uninstall`)
 ```
 
 There is no linter or build step. Tests import `src/` and `demo/` via
@@ -40,8 +44,9 @@ Three points in time (`DESIGN.md` §3):
    `using_dialect`); runs the read-only check; gets the estimate from
    `backend.estimate()` (BigQuery dry-run bytes, DuckDB EXPLAIN rows corrected
    by `plan_estimate.py`); fetches table metadata and the **column registry**
-   (`column_registry.py`: pre-built distinct counts and row counts per column,
-   never scanned per query); runs `rules/static_rules.py` plus the join fan-out
+   (`column_registry.py`: pre-built distinct counts, row counts and per-value
+   counts, built on a schedule, never scanned per query; backends reload it
+   when the file changes); runs `rules/static_rules.py` plus the join fan-out
    estimate (`join_estimate.py`, rows from the registry since a dry run has no
    row counts); compares against the workload class caps; then tries rewrites
    (`rewrites.py` deterministic catalog first, the LLM proposer only if there

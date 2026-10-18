@@ -89,7 +89,8 @@ def test_mcp_lists_five_tools_and_calls_them(service):
 
     tools, res = asyncio.run(go())
     assert set(tools) == {"check_query", "run_query", "get_table_info", "get_query_history",
-                          "workload_report"}
+                          "workload_report", "registry_status"}
+    assert tools["registry_status"].annotations.read_only_hint is True
     assert tools["check_query"].annotations.read_only_hint is True
     assert tools["run_query"].annotations.read_only_hint is False
     assert not res.is_error
@@ -159,3 +160,11 @@ def test_mcp_has_no_bypass_and_returns_fix_hints(service):
     hints = res.structured_content["fix_hints"]
     assert hints and hints[0]["kind"] == "cause"
     assert loose.is_error and "looser caps" in loose.content[0].text
+
+
+def test_registry_status_reports_freshness(service):
+    out = service.registry_status()
+    assert out["built"] and out["trace_id"]
+    events = next(t for t in out["tables"] if t["table"] == "events")
+    assert events["rows"] == 1_000_000 and not events["stale"]
+    assert out["last_run"]["mode"] and "events" in out["last_run"]["profiled"]

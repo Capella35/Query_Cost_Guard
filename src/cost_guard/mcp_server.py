@@ -3,7 +3,7 @@
     python -m cost_guard.mcp_server                      # DuckDB (customer.yaml)
     python -m cost_guard.mcp_server --backend bigquery   # GCP_PROJECT from .env
 
-Five tools, over stdio:
+Six tools, over stdio:
 
   check_query        Guard verdict; nothing executes (BigQuery: a free dry run).
                      A block carries fix_hints: main cause first, then fixes.
@@ -12,6 +12,7 @@ Five tools, over stdio:
   get_table_info     size, partitioning, clustering of one table
   get_query_history  past runs of one query shape (fingerprint): numbers only
   workload_report    the query-log report (ledger.py) + Guard health + LLM usage
+  registry_status    column registry freshness per table + its last refresh run
 
 Boundaries, enforced here and not left to the calling model:
 - the deployment sets the workload class (--workload): a caller may ask for an
@@ -224,6 +225,15 @@ class CostGuardService:
         return self._traced("workload_report", go, top=top)
 
 
+    def registry_status(self) -> dict:
+        from .column_registry import registry_settings, registry_status
+
+        schema = getattr(self.backend, "dataset", None) or "main"
+        return self._traced("registry_status", lambda tracer: registry_status(
+            self.backend.registry_path, schema,
+            registry_settings(self.customer)["max_age_days"]))
+
+
 def _rules_fired(tracer) -> list[str]:
     """Names of the rules that produced findings (from the call's rule spans)."""
     return sorted({s["name"][len("rule."):] for s in tracer.spans
@@ -325,6 +335,14 @@ def build_server(service: CostGuardService):
         health (decision mix, block/bypass rates, check latency, estimate accuracy) and
         LLM usage."""
         return call(service.workload_report, top)
+
+    @server.tool(annotations=read_only)
+    def registry_status() -> dict[str, Any]:
+        """Freshness of the column registry the Guard reads (row and distinct counts per
+        column, built on a schedule): per table its rows, columns, profile age in days
+        and whether it is stale (rules that need it are then skipped), plus the last
+        refresh run (when, what was profiled, failures, bytes). Reads a local file only."""
+        return call(service.registry_status)
 
     return server
 

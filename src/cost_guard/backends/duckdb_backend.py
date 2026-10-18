@@ -163,6 +163,7 @@ class DuckDBWarehouse:
         self._row_counts: dict[str, int] = {}
         self._registry = None
         self._registry_loaded = False
+        self._registry_mtime = None
         # Registry entries older than this are not used to correct estimates.
         self.registry_max_age_days = 35
 
@@ -487,13 +488,20 @@ class DuckDBWarehouse:
 
     def column_registry(self):
         """The local column registry (column_registry.py) for this warehouse,
-        read once and cached. None when it has not been built."""
+        cached; reloaded when the file changes. None when it has not been built."""
         with self._lock:
-            if not self._registry_loaded:
-                from ..column_registry import load_registry
+            from ..column_registry import load_registry, registry_mtime
 
-                self._registry = load_registry(self.registry_path)
-                self._registry_loaded = True
+            mtime = registry_mtime(self.registry_path)
+            if not self._registry_loaded or mtime != self._registry_mtime:
+                # first use, or the file changed (a scheduled refresh): reload. A read
+                # that fails (the build holds the file) keeps the copy in memory.
+                try:
+                    self._registry = load_registry(self.registry_path)
+                    self._registry_loaded, self._registry_mtime = True, mtime
+                except Exception:  # noqa: BLE001
+                    if not self._registry_loaded:
+                        raise
             return self._registry
 
     def column_profile(self, table: str, column: str) -> ColumnProfile:

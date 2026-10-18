@@ -87,6 +87,7 @@ class BigQueryWarehouse:
         self.registry_path = registry_path or bigquery_registry_path(project, dataset)
         self._registry = None
         self._registry_loaded = False
+        self._registry_mtime = None
         self._cache: dict = {}  # key -> (expires_at, value); see _cached
         self._cache_lock = threading.Lock()
 
@@ -283,14 +284,21 @@ class BigQueryWarehouse:
         return self._kinds
 
     def column_registry(self):
-        """The local column registry for this dataset, read once and cached.
-        None when it has not been built (grouped columns then show up in
+        """The local column registry for this dataset, cached; reloaded when
+        the file changes. None when it has not been built (grouped columns then show up in
         skipped_rules)."""
-        if not self._registry_loaded:
-            from ..column_registry import load_registry
+        from ..column_registry import load_registry, registry_mtime
 
-            self._registry = load_registry(self.registry_path, default_schema=self.dataset)
-            self._registry_loaded = True
+        mtime = registry_mtime(self.registry_path)
+        if not self._registry_loaded or mtime != self._registry_mtime:
+            # first use, or the file changed (a scheduled refresh): reload. A read
+            # that fails (the build holds the file) keeps the copy in memory.
+            try:
+                self._registry = load_registry(self.registry_path, default_schema=self.dataset)
+                self._registry_loaded, self._registry_mtime = True, mtime
+            except Exception:  # noqa: BLE001
+                if not self._registry_loaded:
+                    raise
         return self._registry
 
     def column_profile(self, table: str, column: str) -> ColumnProfile:
