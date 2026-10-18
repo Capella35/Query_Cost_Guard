@@ -95,6 +95,49 @@ class CostGuardService:
         # The deployment's user (--user): budgets are charged to it, and a
         # caller can't name someone else. None = no trusted identity.
         self.user = user
+        # Stop rule for an agent's revise-and-retry loop, enforced here and not
+        # only in the instructions: after max_blocked_in_a_row blocked results
+        # in a row, check_query and run_query refuse for pause_min. Any result
+        # that is not a block resets the count. 0 turns it off.
+        import threading
+        import time
+
+        loop = customer.get("mcp") or {}
+        self.max_blocked_in_a_row = int(loop.get("max_blocked_in_a_row", 3))
+        self.pause_sec = float(loop.get("pause_min", 5)) * 60
+        self.clock = time.monotonic
+        self._blocked_in_a_row = 0
+        self._paused_until: Optional[float] = None
+        self._loop_lock = threading.Lock()
+
+    def _loop_gate(self) -> None:
+        """Refuse check_query / run_query while paused after repeated blocks."""
+        with self._loop_lock:
+            if self._paused_until is None:
+                return
+            left = self._paused_until - self.clock()
+            if left <= 0:
+                self._paused_until, self._blocked_in_a_row = None, 0
+                return
+        raise PermissionError(
+            f"paused after {self.max_blocked_in_a_row} blocked queries in a row: stop and ask "
+            f"the user what to change before trying again (resumes in {max(1, round(left / 60))} min)")
+
+    def _count_block(self, out: dict) -> dict:
+        if self.max_blocked_in_a_row <= 0:
+            return out
+        with self._loop_lock:
+            if out.get("decision") != "block":
+                self._blocked_in_a_row = 0
+                return out
+            self._blocked_in_a_row += 1
+            if self._blocked_in_a_row >= self.max_blocked_in_a_row:
+                self._paused_until = self.clock() + self.pause_sec
+                out["stop"] = (
+                    f"{self._blocked_in_a_row} blocked queries in a row: stop and ask the user "
+                    f"what to change. check_query and run_query are paused for "
+                    f"{self.pause_sec / 60:g} min.")
+        return out
 
     def _user(self, requested: Optional[str]) -> Optional[str]:
         """The user a call is logged as: the deployment's, which a caller may
@@ -139,6 +182,7 @@ class CostGuardService:
         from .thresholds import fingerprint_query
 
         workload_class = self._workload(workload_class)
+        self._loop_gate()
 
         def go(tracer):
             from .config import volume_settings
@@ -156,7 +200,7 @@ class CostGuardService:
             _annotate_verdict(tracer, v, fp)
             return {**_verdict_fields(v), "fingerprint": fp, "rules_fired": _rules_fired(tracer)}
 
-        return self._traced("check_query", go, workload_class=workload_class)
+        return self._count_block(self._traced("check_query", go, workload_class=workload_class))
 
     def run_query(self, sql: str, workload_class: Optional[str] = None,
                   user: Optional[str] = None) -> dict:
@@ -164,6 +208,7 @@ class CostGuardService:
 
         workload_class = self._workload(workload_class)
         user = self._user(user)
+        self._loop_gate()
 
         started: dict = {}
 
@@ -202,7 +247,7 @@ class CostGuardService:
                 "investigation": started.get("investigation"),
             }
 
-        return self._traced("run_query", go, workload_class=workload_class)
+        return self._count_block(self._traced("run_query", go, workload_class=workload_class))
 
     def get_table_info(self, table: str) -> dict:
         from .tools.get_table_metadata import get_table_metadata
@@ -357,6 +402,10 @@ def server_instructions(service: CostGuardService) -> str:
         who += " Budgets this month (MODELED USD): " + ", ".join(
             f"{s.kind} {s.name} ${s.limit_usd:,.2f}" for s in st.scopes) + \
             " — check_query and run_query report what is left."
+    n = service.max_blocked_in_a_row
+    stop_rule = (f"After {n} blocked queries in a row the server pauses check_query and\n"
+                 f"     run_query for {service.pause_sec / 60:g} min: stop and ask the user."
+                 if n > 0 else "After 3 revisions that still block, stop and ask the user.")
     return f"""Cost Guard checks warehouse SQL for cost BEFORE it runs, then runs it under hard limits.
 
 Connected to: {where}
@@ -373,7 +422,7 @@ Workflow, in this order:
    - warn: fix what `findings` names if you can (e.g. add a date range the user asked
      for), check again; or tell the user the warning before running it.
    - block: never run it and never retry it unchanged. Follow `fix_hints`, revise, and
-     check_query again. After 3 revisions that still block, stop and ask the user.
+     check_query again. {stop_rule}
 4. A `suggestion` is an improved query from the model, priced by a dry run. If
    `changes_result` is true it gives a DIFFERENT answer (e.g. only recent dates): show
    the user its `changes` and let them choose; never swap it in silently.

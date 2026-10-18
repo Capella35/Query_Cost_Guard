@@ -196,3 +196,42 @@ def test_server_offers_the_workflow_prompt(service):
     assert [p.name for p in prompts] == ["analyze_with_cost_guard"]
     text = got.messages[0].content.text
     assert "revenue by month?" in text and "check_query" in text and "Never reveal" in text
+
+
+def test_three_blocks_in_a_row_pause_check_and_run(service):
+    now = [1000.0]
+    service.clock = lambda: now[0]
+    assert "stop" not in service.check_query(HUGE)
+    assert "stop" not in service.run_query(HUGE)
+    third = service.check_query(HUGE)
+    assert third["decision"] == "block" and "stop and ask the user" in third["stop"]
+    for call in (service.check_query, service.run_query):
+        with pytest.raises(PermissionError, match="paused after 3 blocked queries"):
+            call(SMALL)
+    assert service.get_table_info("orders")["trace_id"]  # other tools keep working
+    now[0] += 5 * 60
+    assert service.check_query(SMALL)["decision"] != "block"
+
+
+def test_a_query_that_is_not_blocked_resets_the_count(service):
+    service.check_query(HUGE)
+    service.check_query(HUGE)
+    service.check_query(SMALL)
+    service.check_query(HUGE)
+    assert "stop" not in service.check_query(HUGE)
+
+
+def test_paused_tool_reaches_the_agent_as_an_error(service):
+    from mcp import Client
+
+    from cost_guard.mcp_server import build_server, server_instructions
+
+    async def go():
+        async with Client(build_server(service)) as client:
+            for _ in range(3):
+                await client.call_tool("check_query", {"sql": HUGE})
+            return await client.call_tool("check_query", {"sql": SMALL})
+
+    res = asyncio.run(go())
+    assert res.is_error and "ask the user" in res.content[0].text
+    assert "3 blocked queries in a row the server pauses" in server_instructions(service)

@@ -45,6 +45,13 @@ column_registry:
 
 # Escape hatch (PROJECT_BRIEF): a blocked query runs only when this is true AND
 # the caller passes a bypass reason. Every bypass is recorded in the trace.
+# MCP server stop rule for an agent's retry loop (mcp_server.py): after this
+# many blocked check_query / run_query results in a row, both tools refuse for
+# pause_min; any result that is not a block resets the count. 0 = off.
+mcp:
+  max_blocked_in_a_row: 3
+  pause_min: 5
+
 guard:
   allow_bypass: false
   # Long-running services only (decide(rewrite_wait_sec=...)): wait at most this
