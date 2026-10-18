@@ -133,10 +133,7 @@ class CostGuardService:
             self._blocked_in_a_row += 1
             if self._blocked_in_a_row >= self.max_blocked_in_a_row:
                 self._paused_until = self.clock() + self.pause_sec
-                out["stop"] = (
-                    f"{self._blocked_in_a_row} blocked queries in a row: stop and ask the user "
-                    f"what to change. check_query and run_query are paused for "
-                    f"{self.pause_sec / 60:g} min.")
+                out["stop"] = _stop_message(out, self._blocked_in_a_row, self.pause_sec)
         return out
 
     def _user(self, requested: Optional[str]) -> Optional[str]:
@@ -316,6 +313,24 @@ def _rules_fired(tracer) -> list[str]:
                    if s["name"].startswith("rule.") and s["attrs"].get("findings")})
 
 
+def _stop_message(out: dict, blocks: int, pause_sec: float) -> dict:
+    """What the agent hands the user when it must stop: the last block's
+    reason and its fixes, each marked whether it changes the result, so even
+    a weak agent can ask a concrete question."""
+    hints = out.get("fix_hints") or []
+    return {
+        "message": (f"{blocks} blocked queries in a row: stop and ask the user. "
+                    f"check_query and run_query are paused for {pause_sec / 60:g} min."),
+        "reason": out.get("reason"),
+        "causes": [h["text"] for h in hints if h.get("kind") == "cause"],
+        "options": [{"fix": h["text"], "changes_result": h.get("changes_result")}
+                    for h in hints if h.get("kind") != "cause"],
+        "ask_user": ("Tell the user why it was blocked (reason, causes), list the options "
+                     "and whether each changes the answer, and ask which one to take or "
+                     "whether to change the question."),
+    }
+
+
 def _verdict_fields(v) -> dict:
     return {
         "decision": v.decision,
@@ -404,7 +419,8 @@ def server_instructions(service: CostGuardService) -> str:
             " — check_query and run_query report what is left."
     n = service.max_blocked_in_a_row
     stop_rule = (f"After {n} blocked queries in a row the server pauses check_query and\n"
-                 f"     run_query for {service.pause_sec / 60:g} min: stop and ask the user."
+                 f"     run_query for {service.pause_sec / 60:g} min: stop and ask the user, using the\n"
+                 f"     `stop` field (the reason and the options, each marked if it changes the answer)."
                  if n > 0 else "After 3 revisions that still block, stop and ask the user.")
     return f"""Cost Guard checks warehouse SQL for cost BEFORE it runs, then runs it under hard limits.
 

@@ -204,7 +204,11 @@ def test_three_blocks_in_a_row_pause_check_and_run(service):
     assert "stop" not in service.check_query(HUGE)
     assert "stop" not in service.run_query(HUGE)
     third = service.check_query(HUGE)
-    assert third["decision"] == "block" and "stop and ask the user" in third["stop"]
+    stop = third["stop"]
+    assert third["decision"] == "block" and "stop and ask the user" in stop["message"]
+    assert stop["reason"] == third["reason"] and stop["causes"]
+    assert stop["options"] and all("changes_result" in o for o in stop["options"])
+    assert "ask which one" in stop["ask_user"]
     for call in (service.check_query, service.run_query):
         with pytest.raises(PermissionError, match="paused after 3 blocked queries"):
             call(SMALL)
