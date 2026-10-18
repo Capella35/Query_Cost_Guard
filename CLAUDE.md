@@ -22,6 +22,7 @@ PYTHONPATH=src .venv/bin/python -m cost_guard report                   # workloa
 .venv/bin/python scripts/build_bq_validation.py --project $GCP_PROJECT   # regenerate eval/bq_validation.yaml
 .venv/bin/python eval/run_eval.py --suite bq-validation --project $GCP_PROJECT
 .venv/bin/python eval/run_eval.py --rescore eval/results/<run>.json      # rescore a stored run, no warehouse
+.venv/bin/python scripts/mcp_smoke_bigquery.py      # MCP server over stdio on BigQuery, free (dry runs, 0 jobs)
 
 # Column registry (REQUIRED to be refreshed on a schedule in a deployment; not scheduled here — run on demand)
 PYTHONPATH=src .venv/bin/python -m cost_guard registry status --backend bigquery    # local file, free
