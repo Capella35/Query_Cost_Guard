@@ -68,7 +68,7 @@ anomaly:
 # runs/investigations/ and changes nothing.
 investigator:
   enabled: true
-  cooldown_min: 60        # at most one investigation per query shape per hour
+  cooldown_min: 15        # at most one investigation per query shape per 15 min
   max_per_day: 20         # investigations per day, all shapes
   llm_max_per_day: 0      # optional Claude summary per report; 0 = never (deterministic only)
 
