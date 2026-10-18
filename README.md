@@ -397,8 +397,8 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python scripts/load_thelook_duckdb.py --data-dir data/raw --db data/thelook.duckdb  # also builds the column registry
 .venv/bin/python scripts/build_column_registry.py   # refresh stale/new profiles into data/thelook.registry.duckdb (schedule it)
 .venv/bin/python -m pytest -q
-.venv/bin/python eval/run_eval.py
-PYTHONPATH=src .venv/bin/python -m cost_guard check "SELECT * FROM users, orders"
+.venv/bin/python eval/run_eval.py --suite thelook          # the DuckDB-era set, on the local copy
+PYTHONPATH=src .venv/bin/python -m cost_guard --db data/thelook.duckdb check "SELECT * FROM users, orders"
 ```
 
 `data/` is gitignored. Cost on this path is modeled from EXPLAIN row

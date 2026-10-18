@@ -18,8 +18,9 @@
                    here it runs when the owner decides. --backend bigquery uses
                    GCP_PROJECT from .env; each scan is dry-run first and capped.
 
-The warehouse is the DuckDB file from customer.yaml (warehouse.duckdb.db_path)
-unless --db is given. --llm claude enables the LLM explainer/rewrite proposer
+The warehouse is customer.yaml warehouse.backend (BigQuery: project from
+GCP_PROJECT, dataset cost_guard_thelook) unless --backend is given; --db alone
+means the DuckDB file (tests, the demo). --llm claude enables the LLM explainer/rewrite proposer
 (needs Anthropic credentials); the default is no LLM at all.
 """
 from __future__ import annotations
@@ -31,10 +32,11 @@ from dataclasses import asdict
 
 
 def _backend(args, customer):
-    from .backends.duckdb_backend import DuckDBWarehouse
+    """The warehouse per config.choose_backend: --backend, else --db (DuckDB),
+    else COST_GUARD_BACKEND, else customer.yaml (BigQuery)."""
+    from .config import make_backend
 
-    db = args.db or customer["warehouse"]["duckdb"]["db_path"]
-    return DuckDBWarehouse(db)
+    return make_backend(customer, args.backend, args.project, args.dataset, args.db)
 
 
 def _llm(args, backend):
@@ -46,23 +48,24 @@ def _llm(args, backend):
 
 
 def _registry(args, customer) -> int:
-    import os
-
     from . import column_registry as cr
+    from .config import choose_backend, warehouse_settings
 
     settings = cr.registry_settings(customer)
-    if args.backend == "bigquery":
-        project = args.project or os.environ.get("GCP_PROJECT")
+    wcfg = warehouse_settings(customer)
+    backend = choose_backend(customer, args.backend, args.db)
+    if backend == "bigquery":
+        project, dataset = args.project or wcfg["project"], args.dataset or wcfg["dataset"]
         if not project:
-            print("--backend bigquery needs --project or GCP_PROJECT", file=sys.stderr)
+            print("BigQuery needs a project: --project or GCP_PROJECT", file=sys.stderr)
             return 2
-        path, schema = cr.bigquery_registry_path(project, args.dataset), args.dataset
+        path, schema = cr.bigquery_registry_path(project, dataset), dataset
     else:
-        db = args.db or customer["warehouse"]["duckdb"]["db_path"]
+        db = args.db or wcfg["db_path"]
         path, schema = cr.default_registry_path(db), "main"
     if args.action == "refresh":
-        if args.backend == "bigquery":
-            rep = cr.build_bigquery_registry(project, args.dataset, None, settings, args.mode,
+        if backend == "bigquery":
+            rep = cr.build_bigquery_registry(project, dataset, None, settings, args.mode,
                                              registry_path=path,
                                              maximum_bytes_billed=args.max_bytes_billed)
         else:
@@ -99,7 +102,11 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(prog="cost_guard", description="Cost Guard + Investigator CLI")
     parser.add_argument("--customer", help="path to customer.yaml (default: repo root)")
-    parser.add_argument("--db", help="DuckDB file (default: from customer.yaml)")
+    parser.add_argument("--db", help="DuckDB file (implies --backend duckdb)")
+    # Where queries go: customer.yaml warehouse.backend (BigQuery) unless set here.
+    parser.add_argument("--backend", choices=["bigquery", "duckdb"])
+    parser.add_argument("--project", help="BigQuery project (default: GCP_PROJECT)")
+    parser.add_argument("--dataset", help="BigQuery dataset (default: customer.yaml)")
     sub = parser.add_subparsers(dest="cmd", required=True)
     for name in ("check", "run"):
         p = sub.add_parser(name)
@@ -130,9 +137,10 @@ def main(argv: list[str] | None = None) -> int:
                    help="optional summary, within customer.yaml investigator.llm_max_per_day")
     p = sub.add_parser("registry")
     p.add_argument("action", choices=["status", "refresh"])
-    p.add_argument("--backend", choices=["duckdb", "bigquery"], default="duckdb")
-    p.add_argument("--project", help="BigQuery project (default: GCP_PROJECT)")
-    p.add_argument("--dataset", default="cost_guard_thelook")
+    # Also accepted after `registry` (as before); SUPPRESS keeps the top-level value.
+    p.add_argument("--backend", choices=["duckdb", "bigquery"], default=argparse.SUPPRESS)
+    p.add_argument("--project", default=argparse.SUPPRESS)
+    p.add_argument("--dataset", default=argparse.SUPPRESS)
     p.add_argument("--mode", choices=["missing", "stale", "all"], default="stale",
                    help="refresh: stale (default) re-profiles only tables older than max_age_days")
     p.add_argument("--max-bytes-billed", type=int, default=2 * 1024**3,

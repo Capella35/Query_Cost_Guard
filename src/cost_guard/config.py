@@ -34,6 +34,57 @@ def load_dotenv(path: str | Path | None = None) -> list[str]:
     return set_now
 
 
+BACKENDS = ("bigquery", "duckdb")
+
+
+def warehouse_settings(customer: Optional[dict]) -> dict:
+    """customer.yaml `warehouse`: the backend every entry point uses, and its
+    connection (BigQuery project from `project` or GCP_PROJECT; dataset;
+    DuckDB file)."""
+    import os
+
+    w = (customer or {}).get("warehouse") or {}
+    bq = w.get("bigquery") or {}
+    return {"backend": w.get("backend", "bigquery"),
+            "project": bq.get("project") or os.environ.get("GCP_PROJECT"),
+            "dataset": bq.get("dataset") or "cost_guard_thelook",
+            "db_path": (w.get("duckdb") or {}).get("db_path") or "data/thelook.duckdb"}
+
+
+def choose_backend(customer: Optional[dict], backend: Optional[str] = None,
+                   db: Optional[str] = None) -> str:
+    """Which warehouse an entry point opens: an explicit --backend; else
+    --db alone means DuckDB (tests, the demo); else COST_GUARD_BACKEND; else
+    customer.yaml warehouse.backend (BigQuery, the target). One rule for the
+    CLI, the MCP server and the registry build, so none silently defaults to
+    the local DuckDB copy."""
+    import os
+
+    choice = backend or ("duckdb" if db else None) or os.environ.get("COST_GUARD_BACKEND") \
+        or warehouse_settings(customer)["backend"]
+    if choice not in BACKENDS:
+        raise SystemExit(f"unknown backend {choice!r} (expected one of {', '.join(BACKENDS)})")
+    return choice
+
+
+def make_backend(customer: Optional[dict], backend: Optional[str] = None,
+                 project: Optional[str] = None, dataset: Optional[str] = None,
+                 db: Optional[str] = None):
+    """The warehouse backend per choose_backend, connected as configured."""
+    cfg = warehouse_settings(customer)
+    if choose_backend(customer, backend, db) == "bigquery":
+        from .backends.bigquery_backend import BigQueryWarehouse
+
+        project = project or cfg["project"]
+        if not project:
+            raise SystemExit("BigQuery needs a project: --project, GCP_PROJECT (.env), or "
+                             "customer.yaml warehouse.bigquery.project")
+        return BigQueryWarehouse(project, dataset or cfg["dataset"])
+    from .backends.duckdb_backend import DuckDBWarehouse
+
+    return DuckDBWarehouse(db or cfg["db_path"])
+
+
 def load_customer(path: str | Path | None = None) -> dict:
     """Load customer.yaml (repo root by default)."""
     import yaml

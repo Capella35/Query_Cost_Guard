@@ -124,17 +124,13 @@ report:
 
 # Warehouse backend. BigQuery is the target (2026-10-17): the evals run there
 # (eval/bq_validation.yaml, eval/bq_test.yaml). DuckDB stays for the unit tests and offline demos.
+# Where every entry point sends queries (CLI, MCP server, registry build):
+# config.choose_backend. --backend overrides; --db alone means DuckDB.
 warehouse:
-  backend: duckdb
+  backend: bigquery             # the target warehouse (2026-10-17); duckdb = tests, demo
+  bigquery:
+    project: null               # null = GCP_PROJECT from .env
+    dataset: cost_guard_thelook
   duckdb:
     db_path: data/thelook.duckdb
     data_dir: data/raw            # Kaggle CSVs live here (gitignored, >500 MB)
-
-# --- Stretch goal: BigQuery ---
-bigquery:
-  project: null                 # TODO: set your GCP project if/when you do the cloud path
-  dataset: thelook_ecommerce
-  location: US
-  # Project-level safety net — set BEFORE running anything, especially Q13.
-  maximum_bytes_billed: 1099511627776
-  query_timeout_sec: 3600

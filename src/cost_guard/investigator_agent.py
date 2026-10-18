@@ -167,7 +167,11 @@ class InvestigatorAgent:
 
         fp = rep.fingerprint
         hist = self._step(rep, tracer, tid, "history", lambda: self.service.get_query_history(fp))
-        tree = sql_ast.try_parse(fp)
+        # This runs in the agent's own thread, where the dialect context of the
+        # request is not set: parse in the backend's dialect (a BigQuery
+        # fingerprint with backticked tables failed under DuckDB's, 2026-10-18).
+        dialect = "bigquery" if getattr(self.service.backend, "name", None) == "bigquery" else sql_ast.DIALECT
+        tree = sql_ast.try_parse(fp, dialect)
         tables = sql_ast.referenced_tables(tree) if tree is not None else []
         tinfo = self._step(rep, tracer, tid, "tables", lambda: {
             t: self.service.get_table_info(t) for t in tables})

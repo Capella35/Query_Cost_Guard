@@ -6,9 +6,10 @@ rows, min/max) into a LOCAL registry file next to the warehouse
 profiles up there instead of scanning on the query path. Schedule it (e.g.
 nightly or monthly):
 
-    python scripts/build_column_registry.py                 # stale + missing
+    python scripts/build_column_registry.py                 # customer.yaml backend (BigQuery): stale + missing
     python scripts/build_column_registry.py --mode missing  # new tables/columns only
     python scripts/build_column_registry.py --mode all      # re-profile everything
+    python scripts/build_column_registry.py --db data/thelook.duckdb   # the local DuckDB copy
     # BigQuery: one billed scan per table (dry-run first, capped), local file
     # data/bigquery/<project>.<dataset>.registry.duckdb
     python scripts/build_column_registry.py --bigquery-project $GCP_PROJECT --dataset cost_guard_thelook
@@ -39,25 +40,35 @@ from cost_guard.config import load_customer  # noqa: E402
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db", default=str(ROOT / "data" / "thelook.duckdb"))
+    ap.add_argument("--db", help="profile this DuckDB file (implies DuckDB; default: "
+                    "customer.yaml warehouse.backend, BigQuery)")
     ap.add_argument("--mode", choices=["missing", "stale", "all"], default="stale")
     ap.add_argument("--tables", nargs="*", help="only these tables (default: all base tables)")
     ap.add_argument("--registry", help="registry file (default: <db>.registry.duckdb)")
-    ap.add_argument("--bigquery-project", help="profile a BigQuery dataset instead of --db")
-    ap.add_argument("--dataset", default="cost_guard_thelook")
+    ap.add_argument("--bigquery-project", help="BigQuery project (default: GCP_PROJECT)")
+    ap.add_argument("--dataset", help="BigQuery dataset (default: customer.yaml)")
     ap.add_argument("--max-bytes-billed", type=int, default=2 * 1024**3,
                     help="BigQuery: per-scan cap; a table over it is reported, not scanned")
     args = ap.parse_args()
-    settings = registry_settings(load_customer())
+    from cost_guard.config import choose_backend, load_dotenv, warehouse_settings
+
+    load_dotenv()
+    customer = load_customer()
+    settings = registry_settings(customer)
+    wcfg = warehouse_settings(customer)
     t0 = time.perf_counter()
-    if args.bigquery_project:
-        registry = args.registry or bigquery_registry_path(args.bigquery_project, args.dataset)
-        rep = build_bigquery_registry(args.bigquery_project, args.dataset, args.tables, settings,
+    if args.bigquery_project or choose_backend(customer, None, args.db) == "bigquery":
+        project, dataset = args.bigquery_project or wcfg["project"], args.dataset or wcfg["dataset"]
+        if not project:
+            raise SystemExit("BigQuery needs a project: --bigquery-project or GCP_PROJECT")
+        registry = args.registry or bigquery_registry_path(project, dataset)
+        rep = build_bigquery_registry(project, dataset, args.tables, settings,
                                       args.mode, registry_path=registry,
                                       maximum_bytes_billed=args.max_bytes_billed)
     else:
-        registry = args.registry or default_registry_path(args.db)
-        rep = build_registry(args.db, args.tables, settings, args.mode, registry_path=registry)
+        db = args.db or wcfg["db_path"]
+        registry = args.registry or default_registry_path(db)
+        rep = build_registry(db, args.tables, settings, args.mode, registry_path=registry)
     print(f"column registry ({args.mode}): profiled {len(rep.profiled)} table(s), "
           f"{rep.columns} columns in {time.perf_counter() - t0:.1f}s -> {registry}")
     if rep.bytes_processed:

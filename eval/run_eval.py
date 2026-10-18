@@ -233,7 +233,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--suite", choices=["thelook", "holdout", "bigquery", "bq-validation", "bq-test",
                              "bq-pool-validation", "bq-pool-test", "bq-owner-test", "regression"],
-                    default="thelook")
+                    required=True)  # no default: never the retired DuckDB set by accident
     ap.add_argument("--rerun", action="store_true",
                     help="holdout/bigquery: run again although it has been run (recorded as a rerun)")
     ap.add_argument("--project", help="bigquery suite: GCP project holding the TheLook copies")

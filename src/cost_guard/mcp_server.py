@@ -1,7 +1,7 @@
 """MCP server: Cost Guard's tools for AI apps (DESIGN.md section 14, item 5).
 
-    python -m cost_guard.mcp_server                      # DuckDB (customer.yaml)
-    python -m cost_guard.mcp_server --backend bigquery   # GCP_PROJECT from .env
+    python -m cost_guard.mcp_server                      # customer.yaml: BigQuery, GCP_PROJECT from .env
+    python -m cost_guard.mcp_server --backend duckdb     # the local DuckDB copy (demo, tests)
 
 Six tools, over stdio:
 
@@ -380,16 +380,11 @@ def build_server(service: CostGuardService):
 
 
 def _backend(args, customer):
-    if args.backend == "bigquery":
-        from .backends.bigquery_backend import BigQueryWarehouse
+    """config.choose_backend: --backend, else --db (DuckDB), else
+    COST_GUARD_BACKEND, else customer.yaml warehouse.backend (BigQuery)."""
+    from .config import make_backend
 
-        project = args.project or os.environ.get("GCP_PROJECT")
-        if not project:
-            raise SystemExit("--backend bigquery needs --project or GCP_PROJECT")
-        return BigQueryWarehouse(project, args.dataset)
-    from .backends.duckdb_backend import DuckDBWarehouse
-
-    return DuckDBWarehouse(args.db or customer["warehouse"]["duckdb"]["db_path"])
+    return make_backend(customer, args.backend, args.project, args.dataset, args.db)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -399,10 +394,10 @@ def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     p = argparse.ArgumentParser(prog="cost_guard.mcp_server", description=__doc__.split("\n")[0])
     p.add_argument("--backend", choices=["duckdb", "bigquery"],
-                   default=os.environ.get("COST_GUARD_BACKEND", "duckdb"))
-    p.add_argument("--db", help="DuckDB file (default: from customer.yaml)")
+                   help="default: COST_GUARD_BACKEND, else customer.yaml warehouse.backend")
+    p.add_argument("--db", help="DuckDB file (implies --backend duckdb)")
     p.add_argument("--project", help="BigQuery project (default: GCP_PROJECT)")
-    p.add_argument("--dataset", default="cost_guard_thelook")
+    p.add_argument("--dataset", help="BigQuery dataset (default: customer.yaml)")
     p.add_argument("--workload", default=os.environ.get("COST_GUARD_WORKLOAD", "interactive"),
                    help="workload class for every call (callers may only pick a stricter one)")
     p.add_argument("--customer", help="path to customer.yaml (default: repo root)")

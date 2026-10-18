@@ -13,8 +13,10 @@ offline demo. `DESIGN.md` is the source of truth for decisions (newer than
 ```bash
 .venv/bin/python -m pytest -q                                   # all tests (~30 s, offline, no credentials)
 .venv/bin/python -m pytest -q tests/test_join_estimate.py::test_name   # one test
-PYTHONPATH=src .venv/bin/python -m cost_guard check "SELECT ..."       # verdict only, nothing runs
-PYTHONPATH=src .venv/bin/python -m cost_guard run "SELECT ..."         # guard + watchdog + query log
+# The CLI, MCP server and registry build open customer.yaml warehouse.backend
+# (BigQuery) unless --backend is given; --db FILE alone means DuckDB (tests, demo).
+PYTHONPATH=src .venv/bin/python -m cost_guard check "SELECT ..."       # verdict only, nothing runs (a free dry run)
+PYTHONPATH=src .venv/bin/python -m cost_guard run "SELECT ..."         # guard + watchdog + query log (BILLED on BigQuery)
 PYTHONPATH=src .venv/bin/python -m cost_guard report                   # workload report from the log
 
 # BigQuery evals (GCP_PROJECT is in .env; the project is agentic-project1-511621,
