@@ -272,6 +272,27 @@ def no_long_in_list(sql: str, metadata: dict) -> list[str]:
     ]
 
 
+def no_not_in_over_nulls(sql: str, metadata: dict) -> list[str]:
+    """NOT IN over a subquery column that holds NULLs: one NULL makes the
+    NOT IN false-or-unknown for every row, so the query returns nothing — a
+    silent wrong answer, not a cost (labeling guide: warn). The NULL count
+    comes from the column registry (`not_in_columns`, set by the Guard); with
+    no fresh entry the rule is skipped visibly. Added 2026-10-18 after the
+    pool's test half: P37 and T23 had passed only through a false finding."""
+    entries = metadata.get("not_in_columns") or {}
+    findings = []
+    for table, col, text in sql_ast.not_in_subqueries(sql_ast.parse_one(sql)):
+        entry = entries.get(col)
+        if table != (metadata.get("table") or "").lower() or entry is None or not entry.null_count:
+            continue
+        findings.append(
+            f"NOT IN over {table}.{col}, which has {entry.null_count:,} NULLs of "
+            f"{entry.total_rows:,} rows (column registry), in {text!r} — a single NULL makes "
+            f"NOT IN return no rows; use NOT EXISTS, or add WHERE {col} IS NOT NULL in the "
+            "subquery (either changes the result: it returns the rows NOT IN silently dropped)")
+    return findings
+
+
 ALL_RULES = [
     require_partition_filter,
     no_cross_join_without_condition,
@@ -282,6 +303,7 @@ ALL_RULES = [
     no_sum_on_identifier,
     no_redundant_distinct,
     no_long_in_list,
+    no_not_in_over_nulls,
 ]
 
 # Rules about query structure only: run once per query, not once per table,

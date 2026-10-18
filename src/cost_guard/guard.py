@@ -337,7 +337,8 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
     no_profile: list[str] = []
     max_age_days = registry_settings(customer)["max_age_days"]
     registry = None
-    if backend is not None and tables and (group_cols or sql_ast.summed_columns(tree)):
+    not_in = sql_ast.not_in_subqueries(tree)
+    if backend is not None and tables and (group_cols or sql_ast.summed_columns(tree) or not_in):
         with tracer.span(tid, "column_registry.lookup"):
             get = getattr(backend, "column_registry", None)
             try:
@@ -364,6 +365,13 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
             continue
         md["table"] = t
         md["engine"] = getattr(backend, "name", None)  # warehouse-aware rules
+        if md.get("num_rows") is None and registry is not None:
+            # A view reports no row count; the registry profiled it through the
+            # view. Without this a 100k-row view is never "large" and the
+            # GROUP BY rule skips it (P32).
+            entry = next((e for e in registry.entries() if e.table_name.lower() == t.lower()), None)
+            if entry is not None and entry.age_days() <= max_age_days:
+                md["num_rows"] = int(entry.total_rows)
         md["large"] = (md.get("num_rows") or 0) >= LARGE_TABLE_ROWS
         # The warehouse's own partitioning wins; customer.yaml is the fallback
         # for engines without real partitions (DuckDB: the zone-mapped date column).
@@ -397,6 +405,19 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
                 no_profile.append(f"no_high_cardinality_groupby on '{t}.{col}': {why}"
                                   " — run scripts/build_column_registry.py")
         md["column_profiles"] = profiles
+        # NULL counts of NOT IN subquery columns read from this table.
+        md["not_in_columns"] = {}
+        for nt, col, _ in not_in:
+            if nt != t.lower():
+                continue
+            entry = registry.lookup(t, col) if registry is not None else None
+            if entry is not None and entry.age_days() <= max_age_days:
+                md["not_in_columns"][col] = entry
+            else:
+                why = ("no column registry for this warehouse" if registry is None
+                       else "column not in the registry" if entry is None
+                       else f"registry entry is {entry.age_days():.0f} days old (> {max_age_days})")
+                no_profile.append(f"no_not_in_over_nulls on '{t}.{col}': {why}")
         md["registry"] = registry
         try:
             md["column_kinds"] = backend.column_kinds() if hasattr(backend, "column_kinds") else {}

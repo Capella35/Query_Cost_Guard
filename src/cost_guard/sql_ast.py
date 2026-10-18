@@ -646,12 +646,19 @@ def partition_filter_use(tree: exp.Expression, table: str, column: str) -> Parti
                     continue
                 if col.table and col.table.lower() in other:
                     continue
-                node, is_bare = col.parent, True
+                # A column inside a subquery of this comparison (x IN (SELECT
+                # ... WHERE created_at >= ...)) belongs to the subquery's own
+                # comparisons, found from its own WHERE; not this one (P51).
+                node, is_bare, nested = col.parent, True, False
                 while node is not None and node is not cmp:
+                    if isinstance(node, (exp.Select, exp.Subquery)):
+                        nested = True
+                        break
                     if not isinstance(node, exp.Paren):
                         is_bare = False
-                        break
                     node = node.parent
+                if nested:
+                    continue
                 text = cmp.sql(dialect=DIALECT)
                 if is_bare:
                     bare.append(text)
@@ -660,6 +667,46 @@ def partition_filter_use(tree: exp.Expression, table: str, column: str) -> Parti
                     chains.setdefault(text, wrapper_chain(col, cmp))
     wrapped = list(dict.fromkeys(wrapped))
     return PartitionFilterUse(list(dict.fromkeys(bare)), wrapped, [chains[w] for w in wrapped])
+
+
+def not_in_subqueries(tree: exp.Expression) -> list[tuple[str, str, str]]:
+    """(table, column, predicate SQL) for every `x NOT IN (SELECT col FROM
+    table ...)` whose subquery reads one physical table and selects a bare
+    column, unless the subquery itself filters `col IS NOT NULL`. A single
+    NULL in that column makes NOT IN return no rows (TRUE AND NULL is NULL)."""
+    ctes = cte_bodies(tree)
+    out = []
+    for node in tree.find_all(exp.Not):
+        pred = node.this
+        while isinstance(pred, exp.Paren):
+            pred = pred.this
+        if not isinstance(pred, exp.In) or not pred.args.get("query"):
+            continue
+        sub = pred.args["query"]
+        sub = sub.this if isinstance(sub, exp.Subquery) else sub
+        if not isinstance(sub, exp.Select) or len(sub.expressions) != 1:
+            continue
+        rels = _relations(sub)
+        if len(rels) != 1 or not isinstance(rels[0][0], exp.Table):
+            continue
+        table = rels[0][0]
+        if table.name.lower() in ctes:
+            continue
+        col = sub.expressions[0]
+        col = col.this if isinstance(col, exp.Alias) else col
+        if not isinstance(col, exp.Column) or isinstance(col.this, exp.Star):
+            continue
+        if col.table and col.table.lower() != _rel_name(table):
+            continue
+        name = col.name.lower()
+        guarded = any(
+            isinstance(p, exp.Not) and isinstance(p.this, exp.Is)
+            and isinstance(p.this.this, exp.Column) and p.this.this.name.lower() == name
+            and isinstance(p.this.expression, exp.Null)
+            for p in conjuncts(sub.args.get("where")))
+        if not guarded:
+            out.append((table.name.lower(), name, node.sql(dialect=DIALECT)))
+    return out
 
 
 def filters_after_join(tree: exp.Expression) -> list[str]:
