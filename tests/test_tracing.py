@@ -97,3 +97,7 @@ def test_llm_records_token_counts_not_prompts():
     attrs = t.spans[0]["attrs"]
     assert attrs["input_tokens"] == 120 and attrs["output_tokens"] == 30
     assert "secret" not in json.dumps(attrs)
+    # OpenInference names for Phoenix, and the MODELED cost at Haiku prices
+    assert attrs["llm.token_count.prompt"] == 120 and attrs["llm.token_count.total"] == 150
+    assert attrs["llm.provider"] == "anthropic" and attrs["llm.model_name"] == "claude-haiku-5-5"
+    assert abs(attrs["llm.cost.total"] - (120 * 0.10 + 30 * 0.50) / 1e6) < 1e-12

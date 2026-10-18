@@ -173,12 +173,30 @@ def _case_result(span, case: dict, v) -> None:
         "eval.expected": case["expected"], "eval.got": v.decision,
         "eval.ok": v.decision == case["expected"], "eval.role": case["role"],
         "eval.findings": len(v.findings), "eval.estimate_source": v.estimate_source,
+        **_case_cost(case["sql"], v),
         "cost_guard.content": "included" if observability.content_enabled() else "none"})
     observability.add_content(**{
         "input.value": case["sql"],
         "output.value": json.dumps({"decision": v.decision, "reason": v.reason,
                                     "findings": v.findings, "rewritten_sql": v.rewritten_sql,
                                     "explanation": v.explanation}, indent=1)})
+
+
+def _case_cost(sql: str, v) -> dict:
+    """Bytes and the MODELED BigQuery cost of running the checked query once
+    (customer.yaml cost_model; billed = at least 10 MiB per table). The check
+    itself is a dry run: free."""
+    from cost_guard import sql_ast
+    from cost_guard.config import load_customer
+    from cost_guard.runtime import bigquery_billed
+
+    est = v.estimated_bytes
+    if est is None or v.estimate_source != "dry_run":
+        return {}
+    price = (load_customer().get("cost_model") or {}).get("price_per_tb_usd") or 0
+    billed = bigquery_billed(est, len(sql_ast.referenced_tables(sql_ast.parse_one(sql))))
+    return {"eval.bytes_estimate": est, "eval.bytes_billed_if_run": billed,
+            "eval.usd_if_run_modeled": round(billed / 1024**4 * price, 6)}
 
 
 def full_check(wh, original: str, rewrite: str) -> dict:

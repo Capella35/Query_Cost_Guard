@@ -34,6 +34,9 @@ from pydantic import BaseModel
 from .interfaces import RewriteProposal
 
 MODEL = "claude-haiku-5-5"
+# USD per 1M tokens for MODEL (Claude Platform pricing, prompts <= 100k
+# tokens, checked 2026-10-18); for the MODELED cost on each LLM span.
+PRICE_PER_MTOK = {"input": 0.10, "output": 0.50, "cache_read": 0.01}
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 
@@ -153,9 +156,20 @@ class ClaudeLLM:
         if usage is not None:  # counts only — the prompt holds the query, so it is not traced
             from .tracing import annotate
 
-            annotate(model=self.model, input_tokens=getattr(usage, "input_tokens", None),
-                     output_tokens=getattr(usage, "output_tokens", None),
-                     cache_read_tokens=getattr(usage, "cache_read_input_tokens", None))
+            tin = getattr(usage, "input_tokens", None) or 0
+            tout = getattr(usage, "output_tokens", None) or 0
+            tcache = getattr(usage, "cache_read_input_tokens", None) or 0
+            usd = None
+            if self.model == MODEL:  # price known for this model only
+                usd = (tin * PRICE_PER_MTOK["input"] + tout * PRICE_PER_MTOK["output"]
+                       + tcache * PRICE_PER_MTOK["cache_read"]) / 1e6
+            annotate(model=self.model, input_tokens=tin, output_tokens=tout, cache_read_tokens=tcache,
+                     # OpenInference names, so Phoenix shows tokens (and cost) per call
+                     **{"llm.provider": "anthropic", "llm.model_name": self.model,
+                        "llm.token_count.prompt": tin + tcache, "llm.token_count.completion": tout,
+                        "llm.token_count.total": tin + tcache + tout,
+                        "llm.token_count.prompt_details.cache_read": tcache,
+                        "llm.cost.total": usd, "cost_guard.llm_usd_modeled": usd})
         from . import observability
 
         # Content mode (evals on TheLook only): the prompt and reply on the
