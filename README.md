@@ -40,7 +40,7 @@ What exists in code today. "How it works" below only describes rows marked **bui
 | `compare_results`: both queries on the same sampled inputs, timeout, order-insensitive / float-tolerant / NULL-consistent hash | **built** | `tools/compare_results.py`, `results.py` |
 | Fix hints on blocks: main cause first (a table alone over the cap, a many-to-many join key from the registry, the joins' estimated fan-out, a cartesian product), then ranked fixes (aggregate before the join, a date filter with a 30-day estimate labeled "if rows are spread evenly", column list), each marked whether it changes the result; on BigQuery, a query with a LIMIT is told that LIMIT doesn't reduce bytes billed (dry runs: `SELECT * FROM events` 367.2 MiB with or without `LIMIT 10`). Never a rewrite, never a different decision | **built** | `fix_hints.py` |
 | Escape hatch: block → warn only with `guard.allow_bypass: true` + a reason; traced; never for writes | **built** | `guard._maybe_bypass` |
-| Tracing of every decision: JSONL by default (spans nested, thread-safe); optional OpenTelemetry export to a local Phoenix (`PHOENIX_COLLECTOR_ENDPOINT`), OpenInference span kinds, the JSONL trace id = the Phoenix trace id. Spans carry shape ids, counts, verdicts, reasons and LLM token counts — never SQL text, prompts or rows (LLM calls are not auto-instrumented for that reason) | **built** — export tested in-memory and against a local OTLP receiver; not yet viewed in a running Phoenix | `tracing.py`, `observability.py` |
+| Tracing of every decision: JSONL by default (spans nested, thread-safe); optional OpenTelemetry export to a local Phoenix (`PHOENIX_COLLECTOR_ENDPOINT`), OpenInference span kinds, the JSONL trace id = the Phoenix trace id. Spans carry shape ids, counts, verdicts, reasons and LLM token counts — never SQL text, prompts or rows (LLM calls are not auto-instrumented for that reason) | **built** — export tested in-memory and against a local OTLP receiver; viewed in a running Phoenix 2026-10-18 (evals: `run_eval.py --phoenix`, one trace per case; `--phoenix-content` adds SQL, verdicts and LLM prompts/replies to the exported spans only, TheLook evals only, own Phoenix project) | `tracing.py`, `observability.py` |
 | MCP server (stdio): `check_query`, `run_query` (the only path to the warehouse; blocked queries never run), `get_table_info`, `get_query_history` (numbers only), `workload_report`, `registry_status`. The deployment sets the workload class (`--workload`; callers may only pick a stricter one) and there is no bypass through MCP. No result rows returned; one trace per tool call, nested under the MCP SDK's own request span | **built** — tested in-process and end to end over stdio on TheLook DuckDB; BigQuery: smoke test over stdio 2026-10-18, 15/15 (`scripts/mcp_smoke_bigquery.py`: every tool but `run_query`, dry runs only, 0 BigQuery jobs); `run_query` not run live through MCP yet | `mcp_server.py` |
 | Runtime watchdog: per-query timeout (learned threshold or hard cap), DuckDB interrupt; on BigQuery every run also carries the class bytes cap as `maximum_bytes_billed` (a bypassed block keeps only the project ceiling) | **built** | `runtime.py` |
 | Query log (fingerprints + numbers, no raw SQL) and `get_query_history`; optional caller id, keyed hash of the exact query (repeat detection without storing literals), offered-rewrite shape, bypass flag | **built** | `runtime.py`, `tools/` |
@@ -427,11 +427,23 @@ returns result rows. `--workload scheduled` sets the class for every call;
 callers can only ask for a stricter one. Each call appends its trace to
 `runs/traces.jsonl` and returns the `trace_id`.
 
-**Phoenix (optional):** `pip install arize-phoenix && phoenix serve`, then
-start the server with `PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006`. The
-MCP request spans and the Guard's spans appear as one trace per tool call at
-http://localhost:6006. Self-hosted keeps every span on the machine; a hosted
-endpoint would receive span attributes (no SQL text or rows, see DESIGN.md §11).
+**Phoenix (optional):** install it in its own environment and serve it on
+this machine only:
+
+```bash
+python3 -m venv .venv-phoenix && .venv-phoenix/bin/pip install arize-phoenix
+PHOENIX_HOST=127.0.0.1 .venv-phoenix/bin/phoenix serve        # UI: http://localhost:6006
+```
+
+Then either start the MCP server with
+`PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006` (one trace per tool call), or
+run an eval with `--phoenix` (one trace per case, project `cost-guard-evals`:
+pattern, expected, got, ok, and the Guard's steps). Numbers only: no SQL text,
+prompts or rows (DESIGN.md §11). For reading eval traces on TheLook,
+`--phoenix --phoenix-content` also attaches each case's SQL, the verdict and
+the model's prompt and reply, to the exported spans only (the JSONL trace stays
+numbers-only), in a separate project `cost-guard-evals-content`. A hosted
+endpoint would receive whatever the spans carry: keep Phoenix local.
 
 ## Demo (5 minutes, zero setup)
 

@@ -23,6 +23,8 @@ PYTHONPATH=src .venv/bin/python -m cost_guard report                   # workloa
 .venv/bin/python eval/run_eval.py --suite bq-validation --project $GCP_PROJECT
 .venv/bin/python eval/run_eval.py --rescore eval/results/<run>.json      # rescore a stored run, no warehouse
 .venv/bin/python scripts/mcp_smoke_bigquery.py      # MCP server over stdio on BigQuery, free (dry runs, 0 jobs)
+PHOENIX_HOST=127.0.0.1 .venv-phoenix/bin/phoenix serve   # local Phoenix UI on :6006 (own venv)
+.venv/bin/python eval/run_eval.py --suite bq-validation --project $GCP_PROJECT --phoenix [--phoenix-content]
 
 # Column registry (REQUIRED to be refreshed on a schedule in a deployment; not scheduled here — run on demand)
 PYTHONPATH=src .venv/bin/python -m cost_guard registry status --backend bigquery    # local file, free
@@ -106,7 +108,9 @@ settings.
   Significant choices get a dated row in the DESIGN.md decision log (§12).
   Dollar figures are labeled MODELED.
 - **Privacy.** Logs and traces hold query fingerprints and numbers, never SQL
-  text, literals or result rows.
+  text, literals or result rows. The one exception is opt-in: `run_eval.py
+  --phoenix-content`, TheLook evals only, exported spans only (own Phoenix
+  project); never add content to the JSONL trace, the MCP server or the CLI.
 - **Git.** Stage files by explicit path. `docs/architecture-v2.html` is the
   user's working copy: never commit it. `eval/results/` and `data/` are
   gitignored; the `eval/RESULTS_*.md` summaries are committed.

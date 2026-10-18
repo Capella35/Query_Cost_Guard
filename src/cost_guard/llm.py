@@ -156,6 +156,18 @@ class ClaudeLLM:
             annotate(model=self.model, input_tokens=getattr(usage, "input_tokens", None),
                      output_tokens=getattr(usage, "output_tokens", None),
                      cache_read_tokens=getattr(usage, "cache_read_input_tokens", None))
+        from . import observability
+
+        # Content mode (evals on TheLook only): the prompt and reply on the
+        # exported span, so Phoenix can show them; never in the JSONL trace.
+        if observability.content_enabled():
+            out = resp.parsed_output
+            observability.add_content(**{
+                "input.value": f"{system}\n\n{user}",
+                "output.value": ("(refusal)" if resp.stop_reason == "refusal"
+                                 else out.model_dump_json() if hasattr(out, "model_dump_json")
+                                 else str(out or "")),
+                "llm.model_name": self.model})
         if resp.stop_reason == "refusal":
             return None
         return resp.parsed_output

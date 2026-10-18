@@ -35,6 +35,13 @@ validation half; the test half is run ONCE.
 (also covered by tests/test_guard_regression.py). Those were written next
 to the rules: 100% there is expected, not evidence.
 
+--phoenix exports each case as one trace to a local Phoenix (PHOENIX_COLLECTOR_ENDPOINT,
+default http://localhost:6006): root span `eval <id>` with pattern, expected, got, ok,
+and the Guard's spans under it; numbers only, project "cost-guard-evals".
+--phoenix-content (TheLook only) also attaches the SQL, the verdict and the model's
+prompt and reply, to the exported spans only (the JSONL trace stays numbers-only),
+in its own project "cost-guard-evals-content".
+
 --llm claude enables the Claude rewrite proposer + explainer (F3.1/F3.3;
 needs Anthropic credentials). Default: no LLM.
 
@@ -122,6 +129,58 @@ def load_regression_cases() -> list[dict]:
     ]
 
 
+def _phoenix_setup(args) -> bool:
+    """--phoenix / --phoenix-content: start OpenTelemetry export (observability.py)."""
+    if args.phoenix_content and not args.phoenix:
+        raise SystemExit("--phoenix-content needs --phoenix")
+    if not args.phoenix:
+        return False
+    if args.phoenix_content and args.suite in BQ_SUITES and args.dataset != "cost_guard_thelook":
+        raise SystemExit("--phoenix-content is for the TheLook evals only (dataset "
+                         "cost_guard_thelook): it exports SQL and prompts")
+    from cost_guard import observability
+
+    project = "cost-guard-evals-content" if args.phoenix_content else "cost-guard-evals"
+    if not observability.setup(project=project, content=args.phoenix_content):
+        raise SystemExit("--phoenix needs the OpenTelemetry SDK (opentelemetry-sdk, "
+                         "opentelemetry-exporter-otlp-proto-http)")
+    import atexit
+
+    atexit.register(observability.shutdown)  # flush batched spans
+    print(f"phoenix: exporting to project {project!r}"
+          + (" WITH SQL and prompts" if args.phoenix_content else " (numbers only)"))
+    return True
+
+
+def _case_span(phoenix: bool, case: dict):
+    """Root span of one eval case in Phoenix (export only; not in the JSONL trace)."""
+    from contextlib import nullcontext
+
+    if not phoenix:
+        return nullcontext(None)
+    from cost_guard import observability
+
+    return observability.otel_span(f"eval {case['id']}")
+
+
+def _case_result(span, case: dict, v) -> None:
+    if span is None:
+        return
+    from cost_guard import observability
+
+    observability.set_attributes(span, {
+        "eval.case_id": case["id"], "eval.pattern": case["pattern"],
+        "eval.expected": case["expected"], "eval.got": v.decision,
+        "eval.ok": v.decision == case["expected"], "eval.role": case["role"],
+        "eval.findings": len(v.findings), "eval.estimate_source": v.estimate_source,
+        "cost_guard.content": "included" if observability.content_enabled() else "none"})
+    observability.add_content(**{
+        "input.value": case["sql"],
+        "output.value": json.dumps({"decision": v.decision, "reason": v.reason,
+                                    "findings": v.findings, "rewritten_sql": v.rewritten_sql,
+                                    "explanation": v.explanation}, indent=1)})
+
+
 def full_check(wh, original: str, rewrite: str) -> dict:
     """Execute both on the full data: equivalence + measured runtime."""
     con = wh._connect()
@@ -157,6 +216,11 @@ def main() -> None:
     ap.add_argument("--dataset", default="cost_guard_thelook")
     ap.add_argument("--db", default=str(ROOT / "data" / "thelook.duckdb"))
     ap.add_argument("--llm", choices=["none", "claude"], default="none")
+    ap.add_argument("--phoenix", action="store_true",
+                    help="export each case as a trace to a local Phoenix (numbers only)")
+    ap.add_argument("--phoenix-content", action="store_true",
+                    help="with --phoenix, on TheLook only: also export SQL, verdicts and "
+                         "LLM prompts/replies (never written to the JSONL trace)")
     ap.add_argument("--rescore", metavar="RESULTS_JSON",
                     help="re-score a STORED run's verdicts against the current labels "
                          "(after recorded label changes); runs no query and no Guard")
@@ -205,10 +269,13 @@ def main() -> None:
 
     customer = (load_eval_customer(ROOT / "eval" / "eval_caps_bigquery.yaml")
                 if args.suite in BQ_SUITES else load_eval_customer())  # caps the labels were written under
+    phoenix = _phoenix_setup(args)
     tracer = Tracer()
     results = []
     for case in cases:
-        v = decide(case["sql"], customer=customer, backend=wh, tracer=tracer, llm=llm)
+        with _case_span(phoenix, case) as case_span:
+            v = decide(case["sql"], customer=customer, backend=wh, tracer=tracer, llm=llm)
+            _case_result(case_span, case, v)
         spans = [s for s in tracer.spans if s["name"] != "guard.decide"]
         r = {
             "id": case["id"],
