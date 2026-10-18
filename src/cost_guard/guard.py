@@ -130,6 +130,10 @@ class GuardVerdict:
     # Blocked by the budget alone: an approval (bypass) keeps the per-query
     # caps (runtime keeps the bytes ceiling), unlike a cost-cap bypass.
     budget_only_block: bool = False
+    # LLM suggestion for a warned or cost-blocked query (_suggest): an
+    # improved query, what it changes, and its dry-run cost against the
+    # original. Never run or swapped in by the Guard; the decision stands.
+    suggestion: Optional[dict] = None
 
 
 def is_read_only(sql: str) -> bool:
@@ -191,6 +195,10 @@ def decide(
         if verdict.decision == "block" and not verdict.budget_only_block:
             _add_fix_hints(sql, verdict, customer, backend, tracer, tid, ctx)
         verdict = _maybe_bypass(verdict, customer, bypass_reason, tracer, tid)
+        if (llm is not None and verdict.decision in ("warn", "block")
+                and hasattr(llm, "suggest_improvement")
+                and "non-read-only statement" not in verdict.findings):
+            _suggest(sql, verdict, llm, customer, backend, tracer, tid, ctx)
         if llm is not None and verdict.decision in ("warn", "block"):
             with tracer.span(tid, "llm.explain_flag") as span:
                 try:
@@ -249,6 +257,112 @@ def _apply_budget(sql, verdict, budget, customer, tracer, tid) -> GuardVerdict:
         else:
             verdict.reason += f"; {msg}"
     return verdict
+
+
+SUGGESTIONS_PER_DAY = 200  # default for customer.yaml llm.suggestions_per_day
+_suggest_lock = threading.Lock()
+_suggest_day = {"day": None, "n": 0}  # per process
+_suggest_cache: dict[str, object] = {}  # exact SQL + findings -> SuggestionOut (memory only)
+
+
+def _llm_suggestion(llm, sql, items, customer, tracer, tid, ctx):
+    """One capped, cached call to the model for an improved query. Records
+    that it was asked (ctx) so decide() does not ask twice."""
+    import hashlib
+    from datetime import date
+
+    ctx = ctx if ctx is not None else {}
+    ctx["suggestion_asked"] = True
+    key = hashlib.sha256((sql + "\x00" + "\x00".join(items)).encode()).hexdigest()
+    cap = ((customer or {}).get("llm") or {}).get("suggestions_per_day", SUGGESTIONS_PER_DAY)
+    with _suggest_lock:
+        if key in _suggest_cache:
+            ctx["suggestion"] = _suggest_cache[key]
+            return ctx["suggestion"]
+        today = date.today().isoformat()
+        if _suggest_day["day"] != today:
+            _suggest_day.update(day=today, n=0)
+        if _suggest_day["n"] >= cap:
+            ctx["suggestion_skipped"] = f"llm_suggestion: daily cap of {cap} reached"
+            ctx["suggestion"] = None
+            return None
+        _suggest_day["n"] += 1
+    with tracer.span(tid, "llm.suggest_improvement") as span:
+        try:
+            prop = llm.suggest_improvement(sql, items)
+        except Exception as e:  # noqa: BLE001 — no suggestion, the verdict stands
+            prop = None
+            span["attrs"]["error"] = str(e)[:200]
+        span["attrs"]["suggested"] = prop is not None
+        span["attrs"]["changes_result"] = getattr(prop, "changes_result", None)
+    with _suggest_lock:
+        if len(_suggest_cache) > 500:
+            _suggest_cache.clear()
+        _suggest_cache[key] = prop
+    ctx["suggestion"] = prop
+    return prop
+
+
+def _suggest(sql, verdict, llm, customer, backend, tracer, tid, ctx) -> None:
+    """Attach the model's improved query to a warned or blocked verdict,
+    after checking it is read-only and valid (dry run) and pricing it
+    against the original. Not checked for equal results unless it was tried
+    as a rewrite (then the outcome is stated)."""
+    from .runtime import bigquery_billed
+
+    prop = (ctx.get("suggestion") if ctx.get("suggestion_asked")
+            else _llm_suggestion(llm, sql, explain_inputs(verdict), customer, tracer, tid, ctx))
+    if ctx.get("suggestion_skipped"):
+        verdict.skipped_rules.append(ctx["suggestion_skipped"])
+    if prop is None:
+        return
+    cand = prop.improved_sql
+    with tracer.span(tid, "suggestion.check") as span:
+        if sql_ast.read_only_violation(cand):
+            span["attrs"]["rejected"] = "not read-only"
+            return
+        if backend is None:
+            span["attrs"]["rejected"] = "no backend to validate it"
+            return
+        try:
+            est = backend.estimate(cand)
+        except Exception as e:  # noqa: BLE001 — invalid SQL: not shown
+            span["attrs"]["rejected"] = f"the warehouse rejected it ({str(e).splitlines()[0][:100]})"
+            return
+        out = {"sql": cand, "changes": list(prop.changes), "changes_result": bool(prop.changes_result),
+               "runtime_note": f"(the model's reasoning, not measured) {prop.runtime_note}",
+               "note": "a suggestion: the Guard never runs it or swaps it in; the decision stands"}
+        tried = [f for f in verdict.findings if f.startswith("llm rewrite")]
+        if not prop.changes_result:
+            why = tried[0] if tried else ""
+            if "bills no fewer bytes" in why:
+                out["equivalence"] = ("the model says the result is unchanged; not offered as a rewrite "
+                                      "because it bills no fewer bytes, so equality was NOT checked")
+            elif "failed verification" in why:
+                out["equivalence"] = ("the model says the result is unchanged, but the Guard's sample "
+                                      f"check found a difference: {why}")
+            else:
+                out["equivalence"] = ("the model says the result is unchanged; NOT verified"
+                                      + (f" ({why})" if why else ""))
+        if est.source == "dry_run" and verdict.estimated_bytes is not None:
+            price = ((customer or {}).get("cost_model") or {}).get("price_per_tb_usd") or 0
+            n_orig = len(sql_ast.referenced_tables(sql_ast.parse_one(sql)))
+            tree = sql_ast.try_parse(cand)
+            n_new = len(sql_ast.referenced_tables(tree)) if tree is not None else n_orig
+            b0, b1 = verdict.estimated_bytes, est.estimated_bytes_scanned or 0
+            p0, p1 = bigquery_billed(b0, n_orig), bigquery_billed(b1, n_new)
+            usd0, usd1 = p0 / 1024**4 * price, p1 / 1024**4 * price
+            out.update(bytes_read={"original": b0, "suggested": b1},
+                       bytes_billed={"original": p0, "suggested": p1},
+                       usd_per_run_modeled={"original": round(usd0, 8), "suggested": round(usd1, 8)},
+                       saves_usd_per_run_modeled=round(usd0 - usd1, 8))
+        else:
+            out.update(rows_estimate={"original": verdict.estimated_rows,
+                                      "suggested": est.rows_processed})
+        span["attrs"].update(changes_result=out["changes_result"], changes=len(out["changes"]),
+                             bytes_billed_saved=(out.get("bytes_billed") or {}).get("original", 0)
+                             - (out.get("bytes_billed") or {}).get("suggested", 0))
+    verdict.suggestion = out
 
 
 def explain_inputs(verdict) -> list[str]:
@@ -684,7 +798,14 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
         if cand:
             candidates.append(("deterministic:" + "+".join(applied), cand))
         pruning_only = bool(applied) and set(applied) <= PRUNING_ONLY_FIXERS
-        if not candidates and llm is not None:
+        if not candidates and llm is not None and hasattr(llm, "suggest_improvement"):
+            # One call: an improvement the model says keeps the result is tried
+            # as a rewrite below (verified like any other); one that changes the
+            # result is attached afterwards as a suggestion (decide -> _suggest).
+            prop = _llm_suggestion(llm, sql, findings, customer, tracer, tid, ctx)
+            if prop is not None and not prop.changes_result:
+                candidates.append(("llm", prop.improved_sql))
+        elif not candidates and llm is not None:
             with tracer.span(tid, "llm.propose_rewrite") as span:
                 try:
                     prop = llm.propose_rewrite(sql, findings)

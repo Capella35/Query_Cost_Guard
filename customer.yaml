@@ -83,6 +83,14 @@ volume:
   min_runs: 20
   warn_usd_per_window: 5.0
 
+# LLM (optional, --llm claude; model in llm.py). Suggestions: for a warned or
+# cost-blocked query the model writes an improved query; the Guard checks it
+# is read-only and valid (dry run) and prices it against the original, and
+# never runs it or swaps it in. One that keeps the result is tried as a
+# verified rewrite. Capped per day (per process) and cached per exact query.
+llm:
+  suggestions_per_day: 200
+
 # Spend budgets (budgets.py; owner's choice 2026-10-18), checked before a query
 # runs: spent this calendar month (UTC) + this query's dry-run cost. Warn at
 # warn_at x limit, block over the limit; a query counts toward its user and

@@ -184,7 +184,8 @@ def _case_result(span, case: dict, v) -> None:
         "input.value": case["sql"],
         "output.value": json.dumps({"decision": v.decision, "reason": v.reason,
                                     "findings": v.findings, "rewritten_sql": v.rewritten_sql,
-                                    "explanation": v.explanation}, indent=1)})
+                                    "explanation": v.explanation, "suggestion": v.suggestion},
+                                   indent=1, default=str)})
 
 
 def _case_cost(sql: str, v) -> dict:
@@ -318,6 +319,7 @@ def main() -> None:
             "findings": v.findings,
             "skipped_rules": v.skipped_rules,
             "explanation": v.explanation,
+            "suggestion": v.suggestion,
         }
         if v.decision == "rewrite":
             r["rewrite_source"] = v.rewrite_source

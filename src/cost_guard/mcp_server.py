@@ -284,7 +284,8 @@ def _verdict_fields(v) -> dict:
         "verification": v.verification,
         "explanation": v.explanation,
         "fix_hints": v.fix_hints,  # blocks: main cause first, then fixes
-        "budget": v.budget,  # the stricter budget scope's figures (MODELED), when budgets are on
+        "budget": v.budget,
+        "suggestion": v.suggestion,  # --llm: an improved query + its dry-run cost; never run by the Guard  # the stricter budget scope's figures (MODELED), when budgets are on
         "caps": v.caps,
         "workload_class": v.workload_class,
     }

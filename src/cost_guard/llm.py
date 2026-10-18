@@ -50,6 +50,13 @@ class ExplanationOut(BaseModel):
     explanation: str
 
 
+class SuggestionOut(BaseModel):
+    improved_sql: str
+    changes: list[str]          # every change, each saying what it does to the result
+    changes_result: bool        # True if any change can alter the rows or values returned
+    runtime_note: str           # why it should run faster or cheaper (the model's reasoning)
+
+
 class ColumnKindOut(BaseModel):
     table: str
     column: str
@@ -99,6 +106,28 @@ DIALECTS = {
                  "not DATE ones."),
     "duckdb": ("DuckDB dialect", ""),
 }
+
+SUGGEST_SYSTEM = """You improve an analytics SQL query ({dialect}) that a cost \
+guard flagged, so it costs less and runs faster. You are given the query, the \
+guard's verdict (decision, reason, findings) and the columns of each table.
+
+Goal: fewer bytes billed first (BigQuery bills the columns read, after \
+partition pruning, at least 10 MiB per table), then less work (fewer rows \
+joined, sorted or grouped). Typical improvements: filter the partition column \
+(created_at) to a bounded range; read only the columns needed; aggregate \
+before joining; join on keys; add a LIMIT for top-N output. Fix a clear \
+mistake you notice (a filter value that cannot match because of case, a sum \
+that counts rows twice because of a join), and say so.
+
+You MAY change the result when that is what saves cost (for example a date \
+range the original did not have), but then set changes_result to true and \
+list every such change in `changes`, saying what it does to the result and \
+what the analyst should check (e.g. "adds created_at >= TIMESTAMP_SUB(\
+CURRENT_TIMESTAMP(), INTERVAL 90 DAY): results cover the last 90 days only; \
+adjust the range"). Keep the analyst's intent: same question, same output \
+columns. Do not invent columns or tables. If nothing would make it cheaper or \
+more correct, return the original SQL unchanged with an empty `changes` list.
+runtime_note: one sentence on why it should be cheaper or faster.{dialect_notes}"""
 
 EXPLAIN_SYSTEM = """You explain to a data analyst, in 2-4 plain sentences, why \
 their query was flagged by a cost guard and what to change. You are given the \
@@ -233,6 +262,24 @@ class ClaudeLLM:
             return None
         return RewriteProposal(original_sql=sql, rewritten_sql=out.rewritten_sql,
                                explanation=out.explanation)
+
+    def suggest_improvement(self, sql: str, verdict_items: list[str]) -> Optional[SuggestionOut]:
+        """An improved query for a warned or blocked one (guard._suggest
+        validates and prices it; it is never run or swapped in by itself).
+        None when the model returns nothing new."""
+        from . import sql_ast
+
+        name, notes = DIALECTS.get(sql_ast.current_dialect(), DIALECTS["duckdb"])
+        out = self._parse(
+            SUGGEST_SYSTEM.format(dialect=name, dialect_notes=notes),
+            f"Query:\n{sql}\n\nGuard verdict:\n" + "\n".join(f"- {f}" for f in verdict_items)
+            + f"\n\nTables and columns:\n{self._columns(sql)}",
+            SuggestionOut,
+        )
+        if out is None or not out.improved_sql.strip() or (
+                " ".join(out.improved_sql.split()).lower() == " ".join(sql.split()).lower()):
+            return None
+        return out
 
     def explain_flag(self, sql: str, findings: list[str]) -> str:
         """`findings`: what the Guard decided and why — guard.explain_inputs()
