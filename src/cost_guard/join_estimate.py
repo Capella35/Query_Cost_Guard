@@ -29,11 +29,15 @@ over time, so assuming evenly spread dates would overestimate old periods
 and could block wrongly.
 
 Filters `t.col = literal` and `t.col IN (literals)` on a column the registry
-profiled are applied as the share of rows they keep, 1/ndv (n/ndv for an IN
-list, at most 1) — a uniform assumption: a rare value is overestimated and a
-common one underestimated (T08: country = 'Japan' is 1/16 by ndv, ~2.5% in
-the data; 312M estimated, 122.5M real, both far past the cap). Added
-2026-10-17 after the test set's T08 (a filtered fan-out let through).
+profiled are applied as the share of rows they keep. A value with a stored
+count (the registry's value counts, columns with few distinct values) keeps
+count / rows; any other value keeps 1/ndv — a uniform assumption: a rare
+value is overestimated and a common one underestimated (T08: country =
+'Japan' is 1/16 by ndv, ~2.5% in the data; 312M estimated, 122.5M real, both
+far past the cap). 1/ndv added 2026-10-17 after the test set's T08 (a
+filtered fan-out let through); value counts 2026-10-18 after the pool's P11
+(a false block: Colombia is 21 of 100,000 users, 1/15 by ndv; 333M
+estimated, 1.05M real).
 
 `filtered`: some other predicate in the scope is neither a join-key equality
 nor one of the filters above (a range, LIKE, a join condition on an
@@ -101,31 +105,49 @@ def _is_value(node) -> bool:
     return isinstance(node, (exp.Literal, exp.Boolean))
 
 
-def _value_filter_share(p, aliases, tables, ndv):
+def _value_text(node) -> str:
+    """A literal as the registry stores values (CAST to a string)."""
+    if isinstance(node, exp.Neg):
+        return "-" + _value_text(node.this)
+    if isinstance(node, exp.Boolean):
+        return "true" if node.this else "false"
+    return str(node.this)
+
+
+def _value_filter_share(p, aliases, ndv, count, rows):
     """(relation, share of rows kept) for `t.col = literal` or
-    `t.col IN (literals)` on a profiled column; None for anything else."""
+    `t.col IN (literals)` on a profiled column; None for anything else.
+    Per value: its stored count / rows, else 1/ndv."""
     if isinstance(p, exp.EQ):
         col, val = p.this, p.expression
         if isinstance(val, exp.Column):
             col, val = val, col
         if not (isinstance(col, exp.Column) and _is_value(val)):
             return None
-        n = 1
+        vals = [val]
     elif isinstance(p, exp.In) and not p.args.get("query") and not p.args.get("unnest"):
         col, vals = p.this, p.expressions
         if not (isinstance(col, exp.Column) and vals and all(_is_value(v) for v in vals)):
             return None
-        n = len({v.sql() for v in vals})
+        vals = list({v.sql(): v for v in vals}.values())
     else:
         return None
     alias = col.table.lower()
     if alias not in aliases:
         return None
     i = aliases.index(alias)
-    d = ndv(i, col.name.lower())
-    if not d:
-        return None
-    return i, min(1.0, n / d)
+    name = col.name.lower()
+    share = 0.0
+    for v in vals:
+        n = count(i, name, _value_text(v))
+        if n is not None and rows[i]:
+            share += n / rows[i]
+            continue
+        d = ndv(i, name)
+        if not d:
+            return None
+        share += 1 / d
+    return i, min(1.0, share)
 
 
 def _fresh(entry, max_age_days):
@@ -152,6 +174,12 @@ def _scope_estimate(select, rels, ctes, registry, max_age_days, pcols=None,
     def ndv(i: int, col: str) -> Optional[int]:
         e = registry.lookup(tables[i], col)
         return int(e.distinct_count) if _fresh(e, max_age_days) else None
+
+    def count(i: int, col: str, value: str) -> Optional[int]:
+        if not (hasattr(registry, "value_count")
+                and _fresh(registry.lookup(tables[i], col), max_age_days)):
+            return None
+        return registry.value_count(tables[i], col, value)
 
     # Join-key equalities between two relations (ON, USING, WHERE); anything
     # else marks the scope filtered.
@@ -186,7 +214,7 @@ def _scope_estimate(select, rels, ctes, registry, max_age_days, pcols=None,
             if all(c.name.lower() == pcols.get(tables[i]) for c in cols):
                 on_partition.setdefault(i, []).append(p)
                 continue
-        sel = _value_filter_share(p, aliases, tables, ndv)
+        sel = _value_filter_share(p, aliases, ndv, count, table_rows)
         if sel is not None:
             i, share = sel
             value_share[i] = value_share.get(i, 1.0) * share

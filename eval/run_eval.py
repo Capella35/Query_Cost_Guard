@@ -224,6 +224,7 @@ def main() -> None:
             "checks": len(spans),
             "estimate_rows": v.estimated_rows,
             "estimate_source": v.estimate_source,
+            "reason": v.reason,
             "findings": v.findings,
             "skipped_rules": v.skipped_rules,
             "explanation": v.explanation,
@@ -281,7 +282,7 @@ def main() -> None:
     misses = [r for r in results if not r["ok"]]
     print(f"\nmisses ({len(misses)}):")
     for r in misses:
-        why = "; ".join(r["findings"])[:110] or "no finding"
+        why = ("; ".join(r["findings"]) or r.get("reason") or "no finding")[:110]
         print(f"  {r['id']} {r['pattern']}: expected {r['expected']}, got {r['got']} — {why}")
     for r in rewrites:
         print(f"\nrewrite {r['id']} ({r['rewrite_source']}): full-data equivalent="
@@ -371,7 +372,7 @@ def write_summary(ts, metrics, by_pattern, results, suite="thelook", rerun=False
     lines += ["", "## Misses (current labels)", ""]
     for r in results:
         if not r["ok"]:
-            why = "; ".join(r["findings"]) or "no rule fired"
+            why = "; ".join(r["findings"]) or r.get("reason") or "no rule fired"
             lines.append(f"- **{r['id']}** ({r['pattern']}): expected `{r['expected']}`, "
                          f"got `{r['got']}` — {why}")
     rw = [r for r in results if r["got"] == "rewrite"]

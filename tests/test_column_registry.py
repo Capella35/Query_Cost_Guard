@@ -5,9 +5,11 @@ import pytest
 from cost_guard.backends.duckdb_backend import DuckDBWarehouse
 from cost_guard.column_registry import (
     REGISTRY_TABLE,
+    VALUE_COUNTS_TABLE,
     RegistryEntry,
     build_registry,
     default_registry_path,
+    load_registry,
 )
 from cost_guard.guard import decide
 from cost_guard.tracing import Tracer
@@ -135,3 +137,40 @@ def test_registry_is_local_and_warehouse_is_read_only(tmp_path):
         con.close()
     assert REGISTRY_TABLE not in tables  # nothing written into the warehouse
     assert DuckDBWarehouse(db).column_registry().lookup("events", "session_id") is not None
+
+
+def test_value_counts_for_few_valued_columns(tmp_path):
+    """P11: rows per value for columns with few distinct values, so a filter
+    on a rare value is estimated from its real share."""
+    db = str(tmp_path / "w.duckdb")
+    con = duckdb.connect(db)
+    con.execute("CREATE TABLE users AS SELECT range AS id, "
+                "CASE WHEN range < 21 THEN 'Colombia' WHEN range % 2 = 0 THEN 'China' "
+                "ELSE 'Spain' END AS country, range % 2 = 0 AS flag FROM range(10000)")
+    con.close()
+    rep = build_registry(db)
+    assert rep.value_counted == ["users"]
+    reg = load_registry(default_registry_path(db))
+    assert reg.value_count("users", "country", "Colombia") == 21
+    assert reg.value_count("users", "flag", "true") == 5000
+    assert reg.value_count("users", "id", "7") is None  # 10,000 distinct: not counted
+    # A small limit keeps the most common values only.
+    rep = build_registry(db, settings={"value_counts_max_distinct": 2}, mode="all")
+    reg = load_registry(default_registry_path(db))
+    assert reg.value_count("users", "flag", "false") == 5000
+    assert reg.value_count("users", "country", "Colombia") is None  # 3 distinct > 2
+
+
+def test_value_counts_fill_an_older_registry_without_reprofiling(tmp_path):
+    db = _db(tmp_path)
+    build_registry(db)
+    con = duckdb.connect(default_registry_path(db))
+    con.execute(f"DELETE FROM {VALUE_COUNTS_TABLE}")  # as built before value counts
+    con.close()
+    before = _rows(db)
+    rep = build_registry(db, mode="missing")
+    assert rep.profiled == [] and sorted(rep.value_counted) == ["events", "tiny"]
+    assert _rows(db) == before  # profiles untouched
+    reg = load_registry(default_registry_path(db))
+    assert reg.value_count("events", "promo", "x") == 4_000
+    assert build_registry(db, mode="missing").value_counted == []  # nothing left to fill

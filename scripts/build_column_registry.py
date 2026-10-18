@@ -63,6 +63,8 @@ def main() -> None:
     if rep.bytes_processed:
         print(f"  bytes processed by the profiling scans: {rep.bytes_processed:,} "
               f"({rep.bytes_processed / 1024**3:.3f} GiB)")
+    if rep.value_counted:
+        print(f"  value counts written: {', '.join(rep.value_counted)}")
     if rep.up_to_date:
         print(f"  up to date, not scanned: {', '.join(rep.up_to_date)}")
     if rep.oversized:

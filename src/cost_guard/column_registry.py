@@ -25,7 +25,14 @@ Build mechanics:
   (so a scheduled run actually refreshes drifting counts); "all" re-profiles
   everything;
 - each table's rows are replaced atomically (delete + insert in one
-  transaction), and rows for dropped tables/columns are removed.
+  transaction), and rows for dropped tables/columns are removed;
+- value counts: for every column with at most value_counts_max_distinct
+  distinct values (country, status, gender...), a second scan per table
+  stores the rows per value (the most common ones, up to that many) in a
+  `value_counts` table, so a filter `col = 'value'` is estimated from the
+  value's real share instead of 1/distinct (P11, 2026-10-18: Colombia is 21 of
+  100,000 users, 1/15 by distinct count). A registry built before this gets
+  its value counts on the next run of any mode, without re-profiling.
 
 Keyed by (schema_name, table_name, column_name). Entries older than
 max_age_days are treated by the Guard as unverified (rule skipped, visibly).
@@ -42,6 +49,7 @@ from typing import Optional
 from .backends.base import ColumnProfile
 
 REGISTRY_TABLE = "column_registry"
+VALUE_COUNTS_TABLE = "value_counts"
 # Guard rule: distinct/rows at or above = near-unique. 0.8 (owner's call
 # 2026-10-18; was 0.5): the guide warns on GROUP BY a UNIQUE key, and at 0.5
 # a normal per-buyer count (orders.user_id 0.63, ~1.6 orders per buyer) was a
@@ -54,6 +62,9 @@ DEFAULTS = {
     "max_table_rows": 100_000_000,  # size gate: larger tables are not scanned
     "scan_timeout_sec": 900,
     "use_approximate": True,  # HyperLogLog; exact COUNT(DISTINCT) per column is costly
+    # Columns with at most this many distinct values get exact rows per value
+    # (the most common ones, up to this many). 0 turns value counts off.
+    "value_counts_max_distinct": 1000,
 }
 
 
@@ -141,6 +152,7 @@ class BuildReport:
     failed: list[str] = field(default_factory=list)  # scan error or timeout
     removed_rows: int = 0  # rows for dropped tables/columns
     bytes_processed: int = 0  # billed warehouses: bytes the profiling scans processed
+    value_counted: list[str] = field(default_factory=list)  # tables whose value counts were written
 
 
 def _profile_table(con, schema: str, table: str, approximate: bool, now: str,
@@ -188,6 +200,22 @@ def _profile_table(con, schema: str, table: str, approximate: bool, now: str,
     return out
 
 
+def value_count_columns(entries: list[RegistryEntry], max_distinct: int) -> list[tuple[str, str]]:
+    """(column, type) of the columns that get value counts: few distinct values."""
+    return [(e.column_name, e.data_type) for e in entries
+            if max_distinct and 0 < e.distinct_count <= max_distinct]
+
+
+def _value_counts_sql(table_sql: str, cols: list[str], text_type: str, limit: int) -> str:
+    """One scan of the table: rows per value for each column (quoted), the
+    most common `limit` values each. Rows: (column index, value, count)."""
+    return " UNION ALL ".join(
+        f"SELECT * FROM (SELECT {i} AS col_index, CAST({q} AS {text_type}) AS value, "
+        f"COUNT(*) AS value_count FROM {table_sql} WHERE {q} IS NOT NULL "
+        f"GROUP BY 2 ORDER BY 3 DESC, 2 LIMIT {limit})"
+        for i, q in enumerate(cols))
+
+
 class Oversized(Exception):
     """Raised by a source when a table is over the size gate: reported, not scanned."""
 
@@ -219,6 +247,22 @@ class _DuckDBSource:
             raise Oversized(f"{table} (~{rows[0]:,} rows)")
         return _profile_table(self.wh, schema, table, cfg["use_approximate"], now,
                               cfg["scan_timeout_sec"])
+
+    def value_counts(self, schema, table, cols, cfg) -> list[tuple[str, str, int]]:
+        names = [c for c, _ in cols]
+        sql = _value_counts_sql(f'"{schema}"."{table}"',
+                                ['"' + c.replace('"', '""') + '"' for c in names],
+                                "VARCHAR", cfg["value_counts_max_distinct"])
+        timeout_sec = cfg["scan_timeout_sec"]
+        timer = threading.Timer(timeout_sec, self.wh.interrupt) if timeout_sec else None
+        if timer:
+            timer.start()
+        try:
+            rows = self.wh.execute(sql).fetchall()
+        finally:
+            if timer:
+                timer.cancel()
+        return [(names[int(i)], v, int(n)) for i, v, n in rows]
 
     def close(self):
         self.wh.close()
@@ -269,6 +313,9 @@ def _build(source, registry_path: str, tables, settings, mode: str, schema: str)
             # old rows can't be keyed safely.
             reg.execute(f"DROP TABLE {REGISTRY_TABLE}")
         reg.execute(f"CREATE TABLE IF NOT EXISTS {REGISTRY_TABLE} ({cols_sql})")
+        reg.execute(f"CREATE TABLE IF NOT EXISTS {VALUE_COUNTS_TABLE} (schema_name VARCHAR, "
+                    "table_name VARCHAR, column_name VARCHAR, value VARCHAR, "
+                    "value_count BIGINT, profiled_at VARCHAR)")
 
         live = source.catalog(schema)
 
@@ -279,8 +326,9 @@ def _build(source, registry_path: str, tables, settings, mode: str, schema: str)
         ).fetchall()
         gone = [(t, c) for t, c, _ in registered if c not in live.get(t, set())]
         for t, c in gone:
-            reg.execute(f"DELETE FROM {REGISTRY_TABLE} WHERE schema_name = ? AND table_name = ? "
-                        "AND column_name = ?", [schema, t, c])
+            for tbl in (REGISTRY_TABLE, VALUE_COUNTS_TABLE):
+                reg.execute(f"DELETE FROM {tbl} WHERE schema_name = ? AND table_name = ? "
+                            "AND column_name = ?", [schema, t, c])
         report.removed_rows = len(gone)
 
         have: dict[str, set[str]] = {}
@@ -298,6 +346,7 @@ def _build(source, registry_path: str, tables, settings, mode: str, schema: str)
             stale = t in oldest and oldest[t] < cutoff
             if not (mode == "all" or missing or (mode == "stale" and stale)):
                 report.up_to_date.append(t)
+                _fill_value_counts(reg, source, schema, t, cfg, report)
                 continue
             now = datetime.now(timezone.utc).isoformat()
             try:
@@ -309,25 +358,71 @@ def _build(source, registry_path: str, tables, settings, mode: str, schema: str)
             except Exception as e:  # noqa: BLE001 — one bad table must not stop the run
                 report.failed.append(f"{t}: {str(e).splitlines()[0][:100]}")
                 continue
+            counts = _scan_value_counts(source, schema, t,
+                                        value_count_columns(entries, cfg["value_counts_max_distinct"]),
+                                        cfg, report)
             # Replace this table's rows atomically: a failure cannot leave
             # columns deleted and not replaced.
             reg.execute("BEGIN TRANSACTION")
             try:
-                reg.execute(f"DELETE FROM {REGISTRY_TABLE} WHERE schema_name = ? AND table_name = ?",
-                            [schema, t])
+                for tbl in (REGISTRY_TABLE, VALUE_COUNTS_TABLE):
+                    reg.execute(f"DELETE FROM {tbl} WHERE schema_name = ? AND table_name = ?",
+                                [schema, t])
                 placeholders = ", ".join("?" for _ in fields(RegistryEntry))
                 reg.executemany(f"INSERT INTO {REGISTRY_TABLE} VALUES ({placeholders})",
                                 [tuple(asdict(e).values()) for e in entries])
+                _insert_value_counts(reg, schema, t, counts, now)
                 reg.execute("COMMIT")
             except Exception:
                 reg.execute("ROLLBACK")
                 raise
             report.profiled.append(t)
             report.columns += len(entries)
+            if counts:
+                report.value_counted.append(t)
         return report
     finally:
         source.close()
         reg.close()
+
+
+def _scan_value_counts(source, schema, table, cols, cfg, report) -> list[tuple[str, str, int]]:
+    """Value counts for `cols`; a failure is reported and leaves the table's
+    column profiles usable (filters then fall back to 1/distinct)."""
+    if not cols:
+        return []
+    try:
+        counts = source.value_counts(schema, table, cols, cfg)
+        report.bytes_processed += getattr(source, "last_bytes", 0)
+        return counts
+    except Exception as e:  # noqa: BLE001
+        report.failed.append(f"{table} value counts: {str(e).splitlines()[0][:100]}")
+        return []
+
+
+def _insert_value_counts(reg, schema, table, counts, now) -> None:
+    if counts:
+        reg.executemany(f"INSERT INTO {VALUE_COUNTS_TABLE} VALUES (?, ?, ?, ?, ?, ?)",
+                        [(schema, table, c, v, n, now) for c, v, n in counts])
+
+
+def _fill_value_counts(reg, source, schema, table, cfg, report) -> None:
+    """An up-to-date table whose qualifying columns have no value counts yet
+    (a registry built before value counts, or a raised limit): count those
+    columns only, without re-profiling."""
+    cur = reg.execute(f"SELECT * FROM {REGISTRY_TABLE} WHERE schema_name = ? AND table_name = ?",
+                      [schema, table])
+    names = [d[0] for d in cur.description]
+    entries = [RegistryEntry(**dict(zip(names, r))) for r in cur.fetchall()]
+    have = {r[0] for r in reg.execute(
+        f"SELECT DISTINCT column_name FROM {VALUE_COUNTS_TABLE} WHERE schema_name = ? "
+        "AND table_name = ?", [schema, table]).fetchall()}
+    cols = [c for c in value_count_columns(entries, cfg["value_counts_max_distinct"])
+            if c[0] not in have]
+    counts = _scan_value_counts(source, schema, table, cols, cfg, report)
+    if counts:
+        _insert_value_counts(reg, schema, table, counts, datetime.now(timezone.utc).isoformat())
+        report.value_counted.append(table)
 
 
 def bigquery_registry_path(project: str, dataset: str) -> str:
@@ -418,6 +513,23 @@ class _BigQuerySource:
             ))
         return out
 
+    def value_counts(self, schema, table, cols, cfg) -> list[tuple[str, str, int]]:
+        self.last_bytes = 0
+        names = [c for c, _ in cols]
+        sql = _value_counts_sql(f"`{self.project}.{self.dataset}.{table}`",
+                                [f"`{c}`" for c in names], "STRING",
+                                cfg["value_counts_max_distinct"])
+        dry = self.client.query(sql, job_config=self._config(dry_run=True))
+        nbytes = int(dry.total_bytes_processed or 0)
+        if nbytes > self.maximum_bytes_billed:
+            raise Oversized(f"{table} value counts (~{nbytes:,} bytes > maximum_bytes_billed)")
+        timeout = cfg["scan_timeout_sec"]
+        job = self.client.query(sql, job_config=self._config(
+            **({"job_timeout_ms": int(timeout * 1000)} if timeout else {})))
+        rows = list(job.result(timeout=timeout))
+        self.last_bytes = int(getattr(job, "total_bytes_processed", None) or nbytes)
+        return [(names[int(r[0])], r[1], int(r[2])) for r in rows]
+
     def close(self):
         pass
 
@@ -456,7 +568,15 @@ def load_registry(registry_path: str, default_schema: str = "main") -> Optional[
             return None
         cur = con.execute(f"SELECT * FROM {REGISTRY_TABLE}")
         names = [d[0] for d in cur.description]
-        return ColumnRegistry.from_rows(cur.fetchall(), names, default_schema)
+        reg = ColumnRegistry.from_rows(cur.fetchall(), names, default_schema)
+        has_counts = con.execute(
+            "SELECT COUNT(*) FROM information_schema.tables "
+            f"WHERE table_schema = 'main' AND table_name = '{VALUE_COUNTS_TABLE}'").fetchone()[0]
+        if has_counts:
+            reg.add_value_counts(con.execute(
+                "SELECT schema_name, table_name, column_name, value, value_count "
+                f"FROM {VALUE_COUNTS_TABLE}").fetchall())
+        return reg
     finally:
         con.close()
 
@@ -470,6 +590,21 @@ class ColumnRegistry:
             (e.schema_name.lower(), e.table_name.lower(), e.column_name.lower()): e
             for e in entries
         }
+        # (schema, table, column) -> {value as text: rows}; see VALUE_COUNTS_TABLE
+        self._value_counts: dict[tuple[str, str, str], dict[str, int]] = {}
+
+    def add_value_counts(self, rows) -> None:
+        """Rows (schema, table, column, value as text, rows with that value)."""
+        for schema, table, column, value, n in rows:
+            key = (schema.lower(), table.lower(), column.lower())
+            self._value_counts.setdefault(key, {})[value] = int(n)
+
+    def value_count(self, table: str, column: str, value: str,
+                    schema: Optional[str] = None) -> Optional[int]:
+        """Rows with this value (its text, as CAST to a string), or None when
+        the column has no value counts or the value is not among them."""
+        schema = schema or self.default_schema
+        return self._value_counts.get((schema.lower(), table.lower(), column.lower()), {}).get(value)
 
     def __len__(self) -> int:
         return len(self._by_key)

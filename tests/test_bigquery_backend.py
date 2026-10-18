@@ -197,6 +197,10 @@ class RegistryClient:
         assert job_config.maximum_bytes_billed
         if job_config.dry_run:
             return SimpleNamespace(total_bytes_processed=self.dry_bytes)
+        if "value_count" in sql:  # orders: order_id, status, created_at have <= 1000 distinct
+            rows = [(1, "Complete", 700), (1, "Cancelled", 300), (0, "7", 2)]
+            return SimpleNamespace(total_bytes_processed=self.dry_bytes,
+                                   result=lambda timeout=None: rows)
         if ".orders`" in sql:
             row = (1000, 990, 1000, "1", "1000", 5, 1000, None, None,
                    600, 1000, "2019-01-01 00:00:00+00", "2024-01-01 00:00:00+00")
@@ -213,9 +217,12 @@ def test_bigquery_registry_build_and_lookup(tmp_path):
     client = RegistryClient()
     rep = build_bigquery_registry("p", "ds", registry_path=path, client=client)
     assert sorted(rep.profiled) == ["orders", "users"] and rep.columns == 4
-    assert rep.bytes_processed == 2 * client.dry_bytes
+    assert rep.value_counted == ["orders"]  # users.id has 98,000 distinct: no value counts
+    assert rep.bytes_processed == 3 * client.dry_bytes
     # every scan was dry-run first, and nothing ran without a bytes cap
-    assert [bool(c.dry_run) for _, c in client.queries] == [True, False, True, False]
+    assert [bool(c.dry_run) for _, c in client.queries] == [True, False, True, False, True, False]
+    vc_sql = next(q for q, c in client.queries if "value_count" in q and not c.dry_run)
+    assert "`status`" in vc_sql and "`id`" not in vc_sql
     # geography and repeated columns are not profiled
     assert not any("user_geom" in q or "tags" in q for q, _ in client.queries)
     reg = load_registry(path, default_schema="ds")
@@ -224,6 +231,8 @@ def test_bigquery_registry_build_and_lookup(tmp_path):
     assert users_id.total_rows == 100000 and users_id.distinct_count == 98000
     assert reg.lookup("orders", "created_at").min_value.startswith("2019-01-01")
     assert reg.lookup("orders", "status").min_value is None  # no range for strings
+    assert reg.value_count("orders", "status", "Cancelled") == 300
+    assert reg.value_count("orders", "status", "Returned") is None  # not stored
     # stale mode: fresh entries are not re-scanned
     again = build_bigquery_registry("p", "ds", registry_path=path, client=RegistryClient())
     assert again.up_to_date == ["orders", "users"] and again.bytes_processed == 0

@@ -276,6 +276,27 @@ def test_value_filters_are_applied_as_a_share_of_rows():
     assert e.filtered
 
 
+def test_value_counts_replace_one_over_ndv_for_listed_values():
+    """P11: Colombia is 21 of 100,000 users; 1/16 by ndv would be 6,250."""
+    reg = _users_registry()
+    reg.add_value_counts([("ds", "users", "country", "Colombia", 21),
+                          ("ds", "users", "country", "China", 34_000)])
+    (e,) = _est("SELECT a.id, b.id FROM users a JOIN users b ON a.gender = b.gender "
+                "WHERE a.country = 'Colombia'", reg)
+    assert not e.filtered and e.rows == 21 * 100_000 // 2  # 1.05M, under the 5M cap
+    # IN mixes stored and unstored values: Japan has no count, so 1/16
+    (e,) = _est("SELECT a.id, b.id FROM users a JOIN users b ON a.gender = b.gender "
+                "WHERE a.country IN ('Colombia', 'China', 'Japan')", reg)
+    assert e.rows == (21 + 34_000 + 6_250) * 100_000 // 2
+    # a stale entry: the count is not trusted either
+    stale = ColumnRegistry([RegistryEntry("ds", "users", c, "STRING", 100_000, ndv, 0, True,
+                                          "2020-01-01T00:00:00+00:00")
+                            for c, ndv in (("id", 100_000), ("gender", 2), ("country", 16))], "ds")
+    stale.add_value_counts([("ds", "users", "country", "Colombia", 21)])
+    assert _est("SELECT a.id FROM users a JOIN users b ON a.gender = b.gender "
+                "WHERE a.country = 'Colombia'", stale) == []
+
+
 def test_guard_blocks_filtered_fanout_with_a_value_filter(tmp_path):
     from types import SimpleNamespace
 

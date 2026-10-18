@@ -41,6 +41,7 @@ column_registry:
   max_table_rows: 100000000   # size gate: larger tables are reported, not scanned
   scan_timeout_sec: 900       # per-table profiling scan
   use_approximate: true       # HyperLogLog distinct counts (measured on TheLook: -17%..+16% per column)
+  value_counts_max_distinct: 1000  # rows per value for columns with <= this many distinct values (0 = off)
 
 # Escape hatch (PROJECT_BRIEF): a blocked query runs only when this is true AND
 # the caller passes a bypass reason. Every bypass is recorded in the trace.
