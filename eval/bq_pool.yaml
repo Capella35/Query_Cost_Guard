@@ -15,6 +15,11 @@
 #   (`equivalent`, `equivalent_mib`).
 # - Owner queries (P53-P62, 2026-10-18): the owner's SQL; only whitespace was
 #   added where the paste joined words (e.g. `cntFROM`).
+# - Drift (found 2026-10-18, after registration): users, products and
+#   distribution_centers are views on bigquery-public-data.thelook_ecommerce,
+#   which Google regenerates, so their counts change from day to day (orders,
+#   order_items, events, inventory_items are fixed copies). The users-join
+#   facts were remeasured that day and noted in `fact`; every label held.
 # - Split: at registration, a seeded random split stratified by label into
 #   `split: validation` and `split: test` (scripts/split_bq_pool.py, seed
 #   20261018, fixed before any Guard verdict): 31 + 31, each 12 allow /
@@ -138,7 +143,8 @@ queries:
     a.country = 'Spain'
   guard_action_expected: block
   role: bad
-  fact: true output 205,825,330 rows (per-key counts), past 5,000,000
+  fact: true output 205,825,330 rows (per-key counts), past 5,000,000 (users is a view on Google's public TheLook,
+    which drifts; remeasured 2026-10-18 = 208,678,550)
   bytes_mib: 2.498
 - id: P09
   split: test
@@ -150,29 +156,31 @@ queries:
   guard_action_expected: block
   role: bad
   fact: 'true output 169,859,951 rows, past 5,000,000 (guide exception: the Guard only traces fan-out under a range
-    filter, a known miss)'
+    filter, a known miss) (users is a view on Google''s public TheLook, which drifts; remeasured 2026-10-18 = 169,930,240)'
   bytes_mib: 1.812
 - id: P10
   split: test
   author: assistant
   pattern: join_fanout_rare_value
-  description: Polish users (259) paired with every user of the same gender.
+  description: Polish users (259; 256 on 2026-10-18) paired with every user of the same gender.
   sql: SELECT a.id, b.id AS same_gender_user FROM users a JOIN users b ON a.gender = b.gender WHERE a.country =
     'Poland'
   guard_action_expected: block
   role: bad
-  fact: true output 12,949,251 rows, past 5,000,000
+  fact: true output 12,949,251 rows, past 5,000,000 (users is a view on Google's public TheLook, which drifts; remeasured
+    2026-10-18 = 12,799,580)
   bytes_mib: 1.996
 - id: P11
   split: validation
   author: assistant
   pattern: join_rare_value_under_cap
-  description: 'Colombian users (21) paired with every user of the same gender: a rare value.'
+  description: 'Colombian users (21; 10 on 2026-10-18) paired with every user of the same gender: a rare value.'
   sql: SELECT a.id, b.id AS same_gender_user FROM users a JOIN users b ON a.gender = b.gender WHERE a.country =
     'Colombia'
   guard_action_expected: allow
   role: good
-  fact: true output 1,049,679 rows, under 5,000,000 (an even-spread estimate would say ~333M)
+  fact: true output 1,049,679 rows, under 5,000,000 (an even-spread estimate would say ~333M) (users is a view on
+    Google's public TheLook, which drifts; remeasured 2026-10-18 = 500,420)
   bytes_mib: 1.996
 - id: P12
   split: test
@@ -182,7 +190,8 @@ queries:
   sql: SELECT a.id, b.id AS neighbor FROM users a JOIN users b ON a.city = b.city WHERE a.country = 'Belgium'
   guard_action_expected: allow
   role: good
-  fact: true output 10,643 rows, under the cap; 2.8 MiB
+  fact: true output 10,643 rows, under the cap; 2.8 MiB (users is a view on Google's public TheLook, which drifts;
+    remeasured 2026-10-18 = 11,919)
   bytes_mib: 2.754
 - id: P13
   split: test
