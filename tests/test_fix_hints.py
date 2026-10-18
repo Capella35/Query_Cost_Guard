@@ -59,3 +59,25 @@ def test_approximate_counts_get_a_looser_uniqueness_bar():
     e = SimpleNamespace(total_rows=125226, null_count=0, distinct_count=114679, is_approximate=True)
     assert _unique(e)
     assert not _unique(SimpleNamespace(**{**vars(e), "is_approximate": False}))
+
+
+def test_looser_class_named_only_when_the_join_fits_its_row_cap():
+    from types import SimpleNamespace
+
+    from cost_guard.fix_hints import fix_hints
+
+    customer = {"workload_classes": {
+        "interactive": {"max_bytes_scanned": 200 * 1024**3, "max_rows_processed": 1_000_000},
+        "scheduled": {"max_bytes_scanned": 1024**4, "max_rows_processed": 10_000_000}}}
+    verdict = SimpleNamespace(findings=[], caps=customer["workload_classes"]["interactive"],
+                              workload_class="interactive", estimated_bytes=30_000_000,
+                              estimated_rows=0)
+    sql = "SELECT u.id FROM users u JOIN events e ON e.state = u.state"
+
+    def info(rows):
+        est = SimpleNamespace(rows=rows, fanout=rows / 2_400_000, largest_input="events")
+        hints = fix_hints(sql, verdict, {}, None, customer, "bigquery", join_ests=[est])
+        return [h for h in hints if h["kind"] == "info"]
+
+    assert info(1_050_000_000) == []  # over scheduled's 10M rows too: it would block there
+    assert "'scheduled' class" in info(5_000_000)[0]["text"]
