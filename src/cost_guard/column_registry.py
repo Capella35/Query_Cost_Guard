@@ -682,6 +682,19 @@ class ColumnRegistry:
         schema = schema or self.default_schema
         return (schema.lower(), table.lower(), column.lower()) in self._value_counts
 
+    def complete_value_counts(self, table: str, column: str,
+                              schema: Optional[str] = None) -> Optional[dict[str, int]]:
+        """Every non-NULL value of the column with its row count, or None
+        when the stored list is partial (the most common values only) or
+        missing. Complete = the counts add up to the column's non-NULL rows
+        (both exact: COUNT(*) per value, COUNT(*) and COUNT(col) per table)."""
+        schema = schema or self.default_schema
+        counts = self._value_counts.get((schema.lower(), table.lower(), column.lower()))
+        entry = self.lookup(table, column, schema)
+        if not counts or entry is None:
+            return None
+        return counts if sum(counts.values()) == entry.total_rows - entry.null_count else None
+
     def value_count(self, table: str, column: str, value: str,
                     schema: Optional[str] = None) -> Optional[int]:
         """Rows with this value (its text, as CAST to a string), or None when

@@ -319,3 +319,41 @@ def test_guard_blocks_filtered_fanout_with_a_value_filter(tmp_path):
     v = decide("SELECT a.id, b.id AS same_gender_user FROM users a JOIN users b "
                "ON a.gender = b.gender WHERE a.country = 'Japan'", backend=wh, tracer=Tracer())
     assert v.decision == "block" and "join fan-out" in v.reason
+
+
+def _age_registry(complete=True):
+    """users.age: 4 values; complete when the counts add up to the rows."""
+    reg = ColumnRegistry([
+        RegistryEntry("ds", "users", "id", "INTEGER", 100_000, 100_000, 0, True, NOW),
+        RegistryEntry("ds", "users", "gender", "STRING", 100_000, 2, 0, True, NOW),
+        RegistryEntry("ds", "users", "age", "INTEGER", 100_000, 4, 0, True, NOW),
+    ], default_schema="ds")
+    counts = {"29": 40_000, "30": 3_000, "31": 2_000, "32": 55_000}
+    if not complete:
+        counts.pop("32")  # the most common values only: 45,000 of 100,000 rows
+    reg.add_value_counts([("ds", "users", "age", v, n) for v, n in counts.items()])
+    return reg
+
+
+def test_range_filter_uses_complete_value_counts():
+    """P09: age BETWEEN 30 AND 31 keeps exactly 5,000 of 100,000 users."""
+    reg = _age_registry()
+    q = ("SELECT a.id, b.id FROM users a JOIN users b ON a.gender = b.gender "
+         "WHERE a.age {}")
+    for cond in ("BETWEEN 30 AND 31", ">= 30 AND a.age <= 31", "> 29 AND a.age < 32"):
+        (e,) = _est(q.format(cond), reg)
+        assert not e.filtered and e.rows == 5_000 * 100_000 // 2, cond  # combined, not multiplied
+    (e,) = _est(q.format(">= 32"), reg)
+    assert not e.filtered and e.rows == 55_000 * 100_000 // 2
+    (e,) = _est("SELECT a.id FROM users a JOIN users b ON a.gender = b.gender WHERE 31 >= a.age", reg)
+    assert e.rows == 45_000 * 100_000 // 2  # literal on the left
+
+
+def test_range_filter_without_complete_counts_stays_traced():
+    (e,) = _est("SELECT a.id, b.id FROM users a JOIN users b ON a.gender = b.gender "
+                "WHERE a.age BETWEEN 30 AND 31", _age_registry(complete=False))
+    assert e.filtered
+    # a string column, or a column without counts: traced only
+    (e,) = _est("SELECT a.id FROM users a JOIN users b ON a.gender = b.gender "
+                "WHERE a.gender > 'F'", _age_registry())
+    assert e.filtered

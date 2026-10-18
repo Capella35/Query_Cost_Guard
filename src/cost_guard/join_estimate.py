@@ -39,9 +39,17 @@ filtered fan-out let through); value counts 2026-10-18 after the pool's P11
 (a false block: Colombia is 21 of 100,000 users, 1/15 by ndv; 333M
 estimated, 1.05M real).
 
+Range filters (`t.col BETWEEN a AND b`, `t.col >= a`, `<`, ...) on a NUMERIC
+column whose value counts are complete (every value stored, e.g. users.age:
+59 values) keep the exact share of rows in the range; several conditions on
+one column are combined into one range first, not multiplied. Added
+2026-10-18 for the pool's P09 (age BETWEEN 30 AND 31: a 169.9M-row fan-out
+let through). Not min/max interpolation: an even spread over the range can be
+far off on skewed data, and acting on such a guess risks false blocks.
+
 `filtered`: some other predicate in the scope is neither a join-key equality
-nor one of the filters above (a range, LIKE, a join condition on an
-expression). The estimate ignores those, so it can be far too high: Q28
+nor one of the filters above (a range on any other column, LIKE, a join
+condition on an expression). The estimate ignores those, so it can be far too high: Q28
 estimates 8.6M, really 85k (its join has `b.sequence_number =
 a.sequence_number + 1`). The Guard therefore acts only on UNFILTERED
 estimates (block over the rows cap when the join fans out) and only traces
@@ -150,6 +158,55 @@ def _value_filter_share(p, aliases, ndv, count, rows):
     return i, min(1.0, share)
 
 
+_RANGE_OPS = {exp.GT: (">", False), exp.GTE: (">", True), exp.LT: ("<", False), exp.LTE: ("<", True)}
+_FLIP = {">": "<", "<": ">"}
+
+
+def _number(node) -> Optional[float]:
+    if isinstance(node, exp.Neg):
+        v = _number(node.this)
+        return -v if v is not None else None
+    if isinstance(node, exp.Literal) and not node.is_string:
+        try:
+            return float(node.this)
+        except ValueError:
+            return None
+    return None
+
+
+def _range_bounds(p, aliases):
+    """(relation, column, [(side, value, inclusive)]) for `t.col BETWEEN a AND
+    b` or `t.col <op> number` (either order); None for anything else."""
+    if isinstance(p, exp.Between):
+        col, lo, hi = p.this, _number(p.args.get("low")), _number(p.args.get("high"))
+        if not isinstance(col, exp.Column) or lo is None or hi is None:
+            return None
+        bounds = [(">", lo, True), ("<", hi, True)]
+    elif type(p) in _RANGE_OPS:
+        side, inclusive = _RANGE_OPS[type(p)]
+        col, val = p.this, _number(p.expression)
+        if not isinstance(col, exp.Column):
+            col, val, side = p.expression, _number(p.this), _FLIP[side]
+        if not isinstance(col, exp.Column) or val is None:
+            return None
+        bounds = [(side, val, inclusive)]
+    else:
+        return None
+    alias = (col.table or "").lower()
+    if alias not in aliases:
+        return None
+    return aliases.index(alias), col.name.lower(), bounds
+
+
+def _in_range(x: float, bounds) -> bool:
+    for side, v, inclusive in bounds:
+        if side == ">" and not (x > v or (inclusive and x == v)):
+            return False
+        if side == "<" and not (x < v or (inclusive and x == v)):
+            return False
+    return True
+
+
 def _fresh(entry, max_age_days):
     return entry is not None and entry.age_days() <= max_age_days
 
@@ -175,6 +232,23 @@ def _scope_estimate(select, rels, ctes, registry, max_age_days, pcols=None,
         e = registry.lookup(tables[i], col)
         return int(e.distinct_count) if _fresh(e, max_age_days) else None
 
+    def range_share(i: int, col: str, bounds) -> Optional[float]:
+        """Exact share of rows of relation i inside `bounds`, from complete
+        value counts of a numeric column; None when not known exactly."""
+        e = registry.lookup(tables[i], col)
+        if not (_fresh(e, max_age_days) and hasattr(registry, "complete_value_counts")
+                and e.total_rows and not str(e.data_type).upper().startswith(
+                    ("STRING", "VARCHAR", "DATE", "TIMESTAMP", "DATETIME", "TIME", "BOOL"))):
+            return None
+        counts = registry.complete_value_counts(tables[i], col)
+        if counts is None:
+            return None
+        try:
+            kept = sum(n for v, n in counts.items() if _in_range(float(v), bounds))
+        except ValueError:
+            return None
+        return kept / e.total_rows
+
     def count(i: int, col: str, value: str) -> Optional[int]:
         if not (hasattr(registry, "value_count")
                 and _fresh(registry.lookup(tables[i], col), max_age_days)):
@@ -195,6 +269,7 @@ def _scope_estimate(select, rels, ctes, registry, max_age_days, pcols=None,
     filtered = False
     on_partition: dict[int, list[exp.Expression]] = {}  # rel -> its partition-column filters
     value_share: dict[int, float] = {}  # rel -> share of rows its value filters keep
+    ranges: dict[tuple[int, str], list] = {}  # (rel, column) -> range bounds, combined
     for p in preds:
         cols = list(p.find_all(exp.Column))
         if any(not c.table for c in cols):
@@ -219,7 +294,19 @@ def _scope_estimate(select, rels, ctes, registry, max_age_days, pcols=None,
             i, share = sel
             value_share[i] = value_share.get(i, 1.0) * share
             continue
+        rng = _range_bounds(p, aliases)
+        if rng is not None:
+            i, col, bounds = rng
+            ranges.setdefault((i, col), []).extend(bounds)
+            continue
         filtered = True
+
+    for (i, col), bounds in ranges.items():
+        share = range_share(i, col, bounds)
+        if share is None:
+            filtered = True  # a range not known exactly: the estimate stays traced only
+        else:
+            value_share[i] = value_share.get(i, 1.0) * share
 
     for i, share in value_share.items():
         table_rows[i] = max(1, round(table_rows[i] * share))
