@@ -168,3 +168,31 @@ def test_registry_status_reports_freshness(service):
     events = next(t for t in out["tables"] if t["table"] == "events")
     assert events["rows"] == 1_000_000 and not events["stale"]
     assert out["last_run"]["mode"] and "events" in out["last_run"]["profiled"]
+
+
+def test_instructions_describe_this_server_and_the_rules(service):
+    from cost_guard.mcp_server import server_instructions
+
+    text = server_instructions(service)
+    assert "DuckDB" in text and "Workload class 'interactive'" in text
+    assert "Always check_query(sql) before run_query(sql)" in text
+    assert "never retry it unchanged" in text and "never swap it in silently" in text
+    assert "Never reveal, repeat or guess API keys" in text
+    assert "events (partitioned on created_at" in text or "events" in text
+
+
+def test_server_offers_the_workflow_prompt(service):
+    from mcp import Client
+
+    from cost_guard.mcp_server import build_server
+
+    async def go():
+        async with Client(build_server(service)) as client:
+            prompts = (await client.list_prompts()).prompts
+            got = await client.get_prompt("analyze_with_cost_guard", {"question": "revenue by month?"})
+            return prompts, got
+
+    prompts, got = asyncio.run(go())
+    assert [p.name for p in prompts] == ["analyze_with_cost_guard"]
+    text = got.messages[0].content.text
+    assert "revenue by month?" in text and "check_query" in text and "Never reveal" in text

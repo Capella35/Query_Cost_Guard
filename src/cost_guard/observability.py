@@ -146,7 +146,9 @@ def add_content(**attrs: Any) -> None:
         return
     from opentelemetry import trace
 
-    set_attributes(trace.get_current_span(), attrs)
+    from .secret_scan import redact_obj
+
+    set_attributes(trace.get_current_span(), redact_obj(attrs))
 
 
 def current_trace_id() -> Optional[str]:

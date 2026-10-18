@@ -192,7 +192,9 @@ def run_query(
     from .config import caps_for, load_customer, volume_settings
 
     customer = customer if customer is not None else load_customer()
-    fp = fingerprint_query(sql)
+    from .secret_scan import redact
+
+    fp = redact(fingerprint_query(sql))  # a secret outside quotes never reaches the log
     log = read_log(log_path) if log_path is not None else []
     offered = ({r["rewrite_fingerprint"] for r in log if r.get("rewrite_fingerprint")}
                if log_path is not None else None)

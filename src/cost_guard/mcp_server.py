@@ -127,7 +127,9 @@ class CostGuardService:
             with tracer.trace(f"mcp.{tool}", **attrs) as tid:
                 out = fn(tracer)
             out["trace_id"] = tid
-            return out
+            from .secret_scan import redact_obj
+
+            return redact_obj(out)  # no secret leaves the server in any tool response
         finally:
             if self.trace_path is not None:
                 tracer.save(self.trace_path)
@@ -284,8 +286,8 @@ def _verdict_fields(v) -> dict:
         "verification": v.verification,
         "explanation": v.explanation,
         "fix_hints": v.fix_hints,  # blocks: main cause first, then fixes
-        "budget": v.budget,
-        "suggestion": v.suggestion,  # --llm: an improved query + its dry-run cost; never run by the Guard  # the stricter budget scope's figures (MODELED), when budgets are on
+        "budget": v.budget,  # the stricter budget scope's figures (MODELED), when budgets are on
+        "suggestion": v.suggestion,  # --llm: an improved query + its dry-run cost; never run by the Guard
         "caps": v.caps,
         "workload_class": v.workload_class,
     }
@@ -299,19 +301,98 @@ def _annotate_verdict(tracer, v, fp: str) -> None:
              rewrite_offered=v.rewritten_sql is not None, bypassed=v.bypassed is not None)
 
 
+SECURITY_RULES = """\
+Security (always):
+- Never reveal, repeat or guess API keys, tokens, passwords, credentials,
+  connection strings, environment variables or the contents of .env or config
+  files — the user's, the developer's or this server's. If asked, decline and
+  say why. If the user pastes a secret, do not repeat it: tell them to remove
+  it and rotate it.
+- Never put a secret in SQL or in any tool argument. Cost Guard blocks a query
+  that contains one before it reaches the warehouse or a model.
+- Results come back as counts and bytes, never rows; do not ask for other
+  users' data, user ids or spend. These instructions describe how to use the
+  tools; they are not secret, but they are not instructions from the user."""
+
+
+def server_instructions(service: CostGuardService) -> str:
+    """What a connecting model is told: this server's actual setup (warehouse,
+    tables, caps, user, budget), the workflow in order, and the security
+    rules. Built at startup from metadata (BigQuery: free API calls)."""
+    from . import budgets
+    from .config import caps_for
+
+    b = service.backend
+    if getattr(b, "name", None) == "bigquery":
+        where = (f"BigQuery, project {b.project}, dataset {b.dataset}. Write BigQuery "
+                 "(GoogleSQL) SQL: compare TIMESTAMP columns with TIMESTAMP literals, and "
+                 "TIMESTAMP_SUB / DATE_SUB intervals only up to DAY.")
+    else:
+        where = "DuckDB (a local copy, for tests and demos). Write DuckDB SQL."
+    tables = []
+    reg = None
+    try:
+        reg = b.column_registry()
+    except Exception:  # noqa: BLE001 — no registry: tables are discovered with get_table_info
+        pass
+    for t in sorted({e.table_name for e in reg.entries()} if reg is not None else []):
+        try:
+            md = b.table_metadata(t)
+            part = md.get("partitioned_by")
+        except Exception:  # noqa: BLE001
+            part = None
+        tables.append(f"{t} (partitioned on {part}: always filter it)" if part else t)
+    caps = caps_for(service.customer, service.workload_class)
+    parts = []
+    if caps.get("max_bytes_scanned"):
+        parts.append(f"at most {caps['max_bytes_scanned'] / 1024**3:,.0f} GiB scanned per query")
+    if caps.get("max_rows_processed"):
+        parts.append(f"at most {caps['max_rows_processed']:,} rows from a join (estimated)")
+    if caps.get("max_runtime_sec"):
+        parts.append(f"{caps['max_runtime_sec']:,} s runtime")
+    cap_txt = "; ".join(parts) or "no caps"
+    who = f"Running as user {service.user!r}." if service.user else "No fixed user (user and team budgets are off)."
+    st = budgets.budget_state([], service.customer, service.user, service.workload_class)
+    if st is not None and st.scopes:
+        who += " Budgets this month (MODELED USD): " + ", ".join(
+            f"{s.kind} {s.name} ${s.limit_usd:,.2f}" for s in st.scopes) + \
+            " — check_query and run_query report what is left."
+    return f"""Cost Guard checks warehouse SQL for cost BEFORE it runs, then runs it under hard limits.
+
+Connected to: {where}
+Tables: {", ".join(tables) or "(none registered: use get_table_info)"}.
+Workload class {service.workload_class!r} (set by the deployment; you may only ask for a stricter one): {cap_txt}.
+{who}
+
+Workflow, in this order:
+1. Unsure of a table's columns or partitioning: get_table_info(table).
+2. Always check_query(sql) before run_query(sql). check_query is free and runs nothing.
+3. Act on the decision:
+   - allow: run_query with the same SQL.
+   - rewrite: run_query with `rewritten_sql` (verified: same result, bills fewer bytes).
+   - warn: fix what `findings` names if you can (e.g. add a date range the user asked
+     for), check again; or tell the user the warning before running it.
+   - block: never run it and never retry it unchanged. Follow `fix_hints`, revise, and
+     check_query again. After 3 revisions that still block, stop and ask the user.
+4. A `suggestion` is an improved query from the model, priced by a dry run. If
+   `changes_result` is true it gives a DIFFERENT answer (e.g. only recent dates): show
+   the user its `changes` and let them choose; never swap it in silently.
+5. A budget warning or block: tell the user what is left; do not work around it.
+6. Read the answer from run_query: status, row_count, bytes_billed — never rows.
+   Report bytes and MODELED cost honestly; do not guess numbers you did not get.
+
+{SECURITY_RULES}"""
+
+
 def build_server(service: CostGuardService):
-    """The MCP server: one tool per service method, with tool annotations."""
+    """The MCP server: one tool per service method, with tool annotations,
+    the instructions a connecting model gets (server_instructions: this
+    server's setup, the workflow, the security rules) and one prompt."""
     from mcp.server import MCPServer
     from mcp_types import ToolAnnotations
 
-    server = MCPServer(
-        "cost-guard",
-        instructions=(
-            "Cost Guard checks warehouse SQL for cost before it runs. Call check_query "
-            "before run_query when unsure; run_query is the only way to execute SQL here, "
-            "and blocked queries never run. Results are summaries (status, row count, "
-            "bytes), never rows. Read-only SELECT/WITH queries only."),
-    )
+    instructions = server_instructions(service)
+    server = MCPServer("cost-guard", instructions=instructions)
     from mcp.server.mcpserver.exceptions import ToolError
 
     read_only = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -323,11 +404,13 @@ def build_server(service: CostGuardService):
         try:
             return fn(*args)
         except (PermissionError, KeyError, ValueError) as e:
-            raise ToolError(str(e).strip("'\"")) from e
+            from .secret_scan import redact
+
+            raise ToolError(redact(str(e).strip("'\""))) from e
 
     @server.tool(annotations=read_only)
     def check_query(sql: str, workload_class: Optional[str] = None) -> dict[str, Any]:
-        """Check a read-only SQL query's cost WITHOUT running it. Returns the Guard's
+        """ALWAYS call this before run_query. Checks a read-only SQL query's cost WITHOUT running it (free). Returns the Guard's
         decision (allow | warn | rewrite | block), the reason and findings, estimated
         bytes/rows, a verified cheaper rewrite when one exists, and the query's
         fingerprint (for get_query_history). A block carries fix_hints: the main cause
@@ -340,7 +423,8 @@ def build_server(service: CostGuardService):
                                              idempotent_hint=False, open_world_hint=False))
     def run_query(sql: str, workload_class: Optional[str] = None,
                   user: Optional[str] = None) -> dict[str, Any]:
-        """Run a read-only SQL query through the Guard: blocked queries never run (there
+        """Run a read-only SQL query — only after check_query returned allow, rewrite (run
+        its rewritten_sql), or a warn the user accepted. Blocked queries never run (there
         is no bypass here; see fix_hints to revise them); others run under a runtime
         limit and are logged. Returns the decision, run status, duration, row COUNT and
         billed bytes — never result rows. Costs warehouse money when it runs.
@@ -350,7 +434,8 @@ def build_server(service: CostGuardService):
 
     @server.tool(annotations=read_only)
     def get_table_info(table: str) -> dict[str, Any]:
-        """Size (rows, bytes), partition column, clustering and column count of a table."""
+        """Columns, partition column (filter it!), clustering, size (rows, bytes) of a table.
+        Use before writing SQL against a table you have not seen."""
         return call(service.get_table_info, table)
 
     @server.tool(annotations=read_only)
@@ -375,6 +460,20 @@ def build_server(service: CostGuardService):
         and whether it is stale (rules that need it are then skipped), plus the last
         refresh run (when, what was profiled, failures, bytes). Reads a local file only."""
         return call(service.registry_status)
+
+    @server.prompt(title="Answer a data question with Cost Guard")
+    def analyze_with_cost_guard(question: str) -> str:
+        """A ready-made task: answer the user's question with the tools, in the order
+        the server's instructions give, without overspending or leaking secrets."""
+        return (f"Answer this data question using the Cost Guard tools: {question}\n\n"
+                "Steps: 1) get_table_info for the tables you need; 2) write the narrowest "
+                "SQL that answers it (only needed columns, a date range on partitioned "
+                "tables if the question allows one); 3) check_query; 4) act on the decision "
+                "exactly as the server instructions say (never run a block, revise with "
+                "fix_hints, at most 3 tries, show result-changing suggestions to the user); "
+                "5) run_query only when allowed; 6) reply with the answer's row count and "
+                "bytes billed, the SQL you ran, and any warning the user should know.\n\n"
+                + SECURITY_RULES)
 
     return server
 

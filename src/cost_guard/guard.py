@@ -101,6 +101,7 @@ def _verify(sql: str, cand: str, backend, wait_sec: Optional[float]):
         return None, "pending"
 
 Decision = Literal["allow", "warn", "rewrite", "block"]
+SECRET_FINDING = "secret in query"  # never bypassable; no fix hints, suggestion or explanation
 
 
 @dataclass
@@ -190,6 +191,8 @@ def decide(
         ctx: dict = {}
         verdict = _decide(sql, workload_class, customer, backend, tracer, tid, llm,
                            offered_rewrites, rewrite_wait_sec, ctx, shape_runtimes, shape_volume)
+        if SECRET_FINDING in verdict.findings:
+            return verdict  # nothing else may see the query: no hints, bypass or model
         if budget is not None:
             verdict = _apply_budget(sql, verdict, budget, customer, tracer, tid)
         if verdict.decision == "block" and not verdict.budget_only_block:
@@ -493,6 +496,21 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
     caps = caps_for(customer, workload_class)
     base = dict(workload_class=workload_class, caps=caps)
 
+    # A secret in the query (an API key, a token, this deployment's own .env
+    # values) stops everything first: no dry run, no model call, so it reaches
+    # neither the warehouse nor the LLM (secret_scan.py).
+    from .secret_scan import find as find_secrets
+
+    kinds = find_secrets(sql)
+    if kinds:
+        return GuardVerdict(
+            decision="block",
+            reason=(f"the query contains what looks like a secret ({', '.join(kinds)}) — remove it "
+                    "and rotate it if it is real; the query was not sent to the warehouse or the model"),
+            findings=[SECRET_FINDING],
+            skipped_rules=[f"{r.__name__}: query contains a secret" for r in ALL_RULES],
+            **base,
+        )
     violation = sql_ast.read_only_violation(sql)
     if violation:
         return GuardVerdict(
