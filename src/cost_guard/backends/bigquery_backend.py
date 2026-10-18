@@ -158,13 +158,21 @@ class BigQueryWarehouse:
                                        use_query_cache=False, **kw)
 
     @contextmanager
-    def sampled(self, tables: list[str], rows_per_table: int):
+    def sampled(self, tables: list[str], rows_per_table: int, focus: Optional[dict] = None):
         """TEMP-table samples of each input table in one BigQuery session;
         both sides of a comparison read the SAME copies. Tables are sampled
         with TABLESAMPLE SYSTEM (billed for the sampled blocks only, about
         rows_per_table rows); views and small tables are copied with LIMIT
         (any shared copy works for an equivalence check). Every job carries
-        maximum_bytes_billed; the session is aborted afterwards."""
+        maximum_bytes_billed; the session is aborted afterwards.
+
+        focus: {table: (column, lo_sql, hi_sql or None)}. When the column is
+        the table's time-partition column, the sample is every row of that
+        window (up to rows_per_table; the read prunes to the window's
+        partitions) PLUS the usual block sample of the rest, inserted by a second
+        statement (BigQuery cannot sample a table referenced twice in one). A random 10% of
+        blocks often holds no row of a few-day window, so both sides came
+        back empty and a correct rewrite was rejected (T14)."""
         client = self._bq()
         registry = self.column_registry()
         stmts, full = [], 0
@@ -178,9 +186,20 @@ class BigQueryWarehouse:
                 n = int(e.total_rows) if e is not None else None
             full += n or 0
             src = f"`{self.project}.{self.dataset}.{t}`"
+            window = (focus or {}).get(t)
+            part = getattr(getattr(meta, "time_partitioning", None), "field", None)
             if getattr(meta, "table_type", "TABLE") == "TABLE" and n and n > rows_per_table:
                 pct = min(100.0, 100.0 * rows_per_table / n)
-                body = f"SELECT * FROM {src} TABLESAMPLE SYSTEM ({pct:.4f} PERCENT)"
+                sample = f"SELECT * FROM {src} TABLESAMPLE SYSTEM ({pct:.4f} PERCENT)"
+                if window and part and window[0].lower() == part.lower() and _IDENT.match(part):
+                    _, lo, hi = window
+                    cond = f"`{part}` >= {lo}" + (f" AND `{part}` < {hi}" if hi else "")
+                    # Two statements: BigQuery can't sample a table referenced twice in one.
+                    stmts.append(f"CREATE TEMP TABLE `{t}` AS SELECT * FROM {src} "
+                                 f"WHERE {cond} LIMIT {int(rows_per_table)};")
+                    stmts.append(f"INSERT INTO `{t}` {sample} WHERE NOT ({cond}) OR `{part}` IS NULL;")
+                    continue
+                body = sample
             else:
                 body = f"SELECT * FROM {src} LIMIT {int(rows_per_table)}"
             stmts.append(f"CREATE TEMP TABLE `{t}` AS {body};")

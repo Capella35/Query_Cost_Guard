@@ -83,8 +83,12 @@ class WarehouseBackend(Protocol):
         """Run a capped sample; return the result hash — never rows."""
         ...
 
-    def sampled(self, tables: list[str], rows_per_table: int) -> ContextManager[SampledInputs]:
-        """Sampled copies of `tables` for bounded-cost verification."""
+    def sampled(self, tables: list[str], rows_per_table: int,
+                focus: Optional[dict] = None) -> ContextManager[SampledInputs]:
+        """Sampled copies of `tables` for bounded-cost verification. `focus`
+        ({table: (column, lo_sql, hi_sql or None)}, from
+        compare_results.date_windows) asks for every row of a short date
+        window to be in the sample; a backend may ignore it."""
         ...
 
     def execute(self, sql: str, timeout_sec: Optional[float],

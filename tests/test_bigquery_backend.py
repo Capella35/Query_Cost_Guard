@@ -587,3 +587,49 @@ def test_rewrite_gate_compares_billed_bytes(monkeypatch, orig_mib, cand_mib, off
     assert (v.decision == "rewrite") == offered, (v.decision, v.findings)
     if not offered:
         assert any("bills no fewer bytes" in f and "10 MiB-per-table minimum" in f for f in v.findings)
+
+
+# ---- Date-window focus for sampled verification (T14) ---------------------------
+
+def test_date_windows_from_a_rewrite():
+    from datetime import datetime
+
+    from cost_guard import sql_ast
+    from cost_guard.tools.compare_results import date_windows
+
+    now = datetime(2026, 10, 17)
+    with sql_ast.using_dialect("bigquery"):
+        since = date_windows(sql_ast.parse_one(
+            "SELECT id FROM inventory_items WHERE created_at >= CAST('2026-09-30 00:00:00' AS TIMESTAMP)"), now)
+        assert since == {"inventory_items": ("created_at", "CAST('2026-09-29 00:00:00' AS TIMESTAMP)", None)}
+        month = date_windows(sql_ast.parse_one(
+            "SELECT o.order_id FROM orders o WHERE (o.created_at >= TIMESTAMP '2025-06-01' "
+            "AND o.created_at < TIMESTAMP '2025-07-01') AND o.status = 'x'"), now)
+        assert month["orders"][0] == "created_at"
+        assert "2025-05-31" in month["orders"][1] and "2025-07-02" in month["orders"][2]
+        # Over FOCUS_MAX_DAYS (a year; an open 'since 2026-01-01'), or no lower bound: no window.
+        for q in ("SELECT 1 FROM orders WHERE created_at >= TIMESTAMP '2025-01-01' "
+                  "AND created_at < TIMESTAMP '2026-01-01'",
+                  "SELECT 1 FROM orders WHERE created_at >= TIMESTAMP '2026-01-01'",
+                  "SELECT 1 FROM orders WHERE created_at < TIMESTAMP '2026-10-01'"):
+            assert date_windows(sql_ast.parse_one(q), now) == {}
+
+
+def test_sampled_includes_the_whole_window_on_the_partition_column():
+    client = SessionClient()
+    client.get_table = lambda ref: SimpleNamespace(
+        table_type="TABLE", num_rows=1_000_000, time_partitioning=SimpleNamespace(field="created_at"))
+    wh = BigQueryWarehouse("p", "ds", client=client, registry_path="/nonexistent")
+    focus = {"orders": ("created_at", "CAST('2026-09-29 00:00:00' AS TIMESTAMP)", None)}
+    with wh.sampled(["orders"], 50_000, focus=focus):
+        pass
+    setup = client.jobs[0][0]
+    window = "`created_at` >= CAST('2026-09-29 00:00:00' AS TIMESTAMP)"
+    assert f"CREATE TEMP TABLE `orders` AS SELECT * FROM `p.ds.orders` WHERE {window} LIMIT 50000;" in setup
+    assert (f"INSERT INTO `orders` SELECT * FROM `p.ds.orders` TABLESAMPLE SYSTEM (5.0000 PERCENT) "
+            f"WHERE NOT ({window}) OR `created_at` IS NULL;") in setup
+    # A window on a column that is not the partition column: the plain block sample.
+    client.jobs.clear()
+    with wh.sampled(["orders"], 50_000, focus={"orders": ("shipped_at", "'2026-09-29'", None)}):
+        pass
+    assert "INSERT INTO" not in client.jobs[0][0]

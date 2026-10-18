@@ -404,10 +404,11 @@ class DuckDBWarehouse:
         return hashlib.sha256(repr(rows).encode()).hexdigest()
 
     @contextmanager
-    def sampled(self, tables: list[str], rows_per_table: int):
+    def sampled(self, tables: list[str], rows_per_table: int, focus: Optional[dict] = None):
         """Private in-memory DB holding a reservoir sample (fixed seed) of
         each input table, at most rows_per_table rows each. Both sides of a
-        comparison run against this one sample.
+        comparison run against this one sample. `focus` is ignored: DuckDB
+        has no partitions to prune a window by, and it is test-only.
 
         BigQuery equivalent: TABLESAMPLE SYSTEM (n PERCENT) into a temp
         table, with maximum_bytes_billed on the job.
