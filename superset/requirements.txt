@@ -1,0 +1,9 @@
+# Superset's own venv (.venv-superset, Python 3.11), not Cost Guard's:
+#   /usr/local/opt/python@3.11/bin/python3.11 -m venv .venv-superset
+#   .venv-superset/bin/pip install -r superset/requirements.txt
+apache-superset==6.1.0
+sqlalchemy-bigquery==1.17.3
+# missing from apache-superset 6.1.0's dependencies, or too new for it
+rich
+cachetools
+flask-caching==2.3.1

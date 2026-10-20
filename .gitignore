@@ -12,3 +12,5 @@ data/
 # generated eval reports (regenerate with eval/run_eval.py); the summaries
 # eval/RESULTS_*.md are committed on purpose
 eval/results/
+.venv-superset/
+.superset_home/
