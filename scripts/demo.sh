@@ -2,9 +2,12 @@
 # Cost Guard live demo: five checks on BigQuery. Press Enter between steps.
 # Run from anywhere: scripts/demo.sh. Nothing executes a query (BigQuery dry runs;
 # the rewrite check reads a small sample, ~30 MiB billed).
+# Only some steps: scripts/demo.sh 1 3 5
 cd "$(dirname "$0")/.." || exit 1
+STEPS=" $* "
 
 show() {
+  [ "$STEPS" = "  " ] || case "$STEPS" in *" ${1%%.*} "*) ;; *) return ;; esac
   echo
   printf '\033[1m%s\033[0m\n' "$1"
   echo "  $2"
