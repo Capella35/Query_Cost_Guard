@@ -801,6 +801,23 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
             **base,
         )
 
+    # A filter value that matches a stored value only when case is ignored
+    # ('cancelled' vs 'Cancelled'): corrected to the stored spelling and
+    # offered as a rewrite (value_case.py); a cost rewrite below builds on it.
+    case_sql, case_notes = None, []
+    if backend is not None and hasattr(backend, "column_registry"):
+        from .value_case import fix_value_case
+
+        with tracer.span(tid, "value_case") as span:
+            try:
+                reg = registry if registry is not None else backend.column_registry()
+                case_sql, case_notes, ambiguous = fix_value_case(tree, reg, max_age_days, _has_column)
+                findings.extend(ambiguous)
+                span["attrs"].update(fixed=len(case_notes), ambiguous=len(ambiguous))
+            except Exception as e:  # noqa: BLE001 — no registry: no correction
+                span["attrs"]["error"] = str(e)[:200]
+    base_sql = case_sql or sql
+
     if findings and offered_rewrites and fingerprint_query(sql) in offered_rewrites:
         with tracer.span(tid, "rewrite.already_offered"):
             pass
@@ -811,7 +828,7 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
         # configured. Either way an unverified rewrite is never offered.
         candidates = []
         with tracer.span(tid, "suggest_rewrite") as span:
-            cand, applied = deterministic_rewrite(sql, findings)
+            cand, applied = deterministic_rewrite(base_sql, findings)
             span["attrs"]["fixers"] = applied
         if cand:
             candidates.append(("deterministic:" + "+".join(applied), cand))
@@ -833,7 +850,7 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
             if prop is not None and prop.rewritten_sql:
                 candidates.append(("llm", prop.rewritten_sql))
         for source, cand in candidates:
-            if " ".join(cand.split()).lower() == " ".join(sql.split()).lower():
+            if " ".join(cand.split()).lower() == " ".join(base_sql.split()).lower():
                 continue
             if sql_ast.read_only_violation(cand):
                 findings.append(f"{source} rewrite is not read-only — not offered")
@@ -872,7 +889,7 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
                     findings.append(f"{source} rewrite is not cheaper by estimate — not offered")
                     continue
             with tracer.span(tid, "compare_results", source=source) as span:
-                res, how = _verify(sql, cand, backend, rewrite_wait_sec)
+                res, how = _verify(base_sql, cand, backend, rewrite_wait_sec)
                 span["attrs"]["how"] = how
             if res is None:
                 findings.append(
@@ -887,10 +904,10 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
                                and estimate.source == "dry_run"
                                else "same filter in a prunable form" if source.startswith("deterministic:")
                                and pruning_only else "not costlier by estimate")
-                            + "): " + "; ".join(findings)),
+                            + "): " + "; ".join(case_notes + findings)),
                     rewritten_sql=cand,
-                    findings=findings,
-                    rewrite_source=source,
+                    findings=case_notes + findings,
+                    rewrite_source=source + ("+value_case" if case_sql else ""),
                     verification=res.detail + (" (remembered from an earlier check)"
                                                if how == "remembered" else ""),
                     **base,
@@ -898,6 +915,17 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
             findings.append(f"{source} rewrite failed verification — not offered ({res.detail})"
                             + (" (remembered)" if how == "remembered" else ""))
 
+    if case_sql:
+        return GuardVerdict(
+            decision="rewrite",
+            reason="filter value corrected to the stored spelling: " + "; ".join(case_notes + findings),
+            rewritten_sql=case_sql,
+            findings=case_notes + findings,
+            rewrite_source="value_case",
+            verification="stored values from the column registry's complete value counts; "
+                         "the original matches no row with that value",
+            **base,
+        )
     if findings:
         return GuardVerdict(decision="warn", reason="; ".join(findings), findings=findings, **base)
 

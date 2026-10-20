@@ -435,6 +435,9 @@ Workflow, in this order:
 3. Act on the decision:
    - allow: run_query with the same SQL.
    - rewrite: run_query with `rewritten_sql` (verified: same result, bills fewer bytes).
+     If `rewrite_source` contains "value_case", a filter value was corrected to the
+     spelling stored in the column (e.g. 'cancelled' -> 'Cancelled'): the original
+     matched no row, so tell the user the answer changes.
    - warn: fix what `findings` names if you can (e.g. add a date range the user asked
      for), check again; or tell the user the warning before running it.
    - block: never run it and never retry it unchanged. Follow `fix_hints`, revise, and
