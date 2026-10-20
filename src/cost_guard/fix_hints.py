@@ -205,8 +205,12 @@ def fix_hints(sql: str, verdict, table_md: dict[str, dict], registry, customer: 
     # A looser class, for information: the deployment sets the class, not the caller.
     # Named only when the query fits that class's row cap too: a join estimated
     # over it would block there as well (the hint once named 'scheduled' for a
-    # ~1.05B-row fan-out under its bytes cap but over its 10M-row cap).
+    # ~1.05B-row fan-out under its bytes cap but over its 10M-row cap). Only on
+    # a cap block: another class does not change a meaningless-result or
+    # cartesian block (it once named 'scheduled' for SUM(order_id)).
     est = verdict.estimated_bytes if bytes_capped else verdict.estimated_rows
+    if "hard cap of" not in (verdict.reason or ""):
+        est = None
     join_rows = max([verdict.estimated_rows or 0] + ([worst.rows] if worst is not None else []))
     for name in sorted((customer or {}).get("workload_classes") or {}):
         if name == verdict.workload_class or est is None:

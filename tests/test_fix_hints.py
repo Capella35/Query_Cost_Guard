@@ -71,7 +71,8 @@ def test_looser_class_named_only_when_the_join_fits_its_row_cap():
         "scheduled": {"max_bytes_scanned": 1024**4, "max_rows_processed": 10_000_000}}}
     verdict = SimpleNamespace(findings=[], caps=customer["workload_classes"]["interactive"],
                               workload_class="interactive", estimated_bytes=30_000_000,
-                              estimated_rows=0)
+                              estimated_rows=0, reason="join fan-out: ... exceeds the "
+                              "interactive hard cap of 1,000,000 rows — hard caps never adapt")
     sql = "SELECT u.id FROM users u JOIN events e ON e.state = u.state"
 
     def info(rows):
@@ -81,3 +82,13 @@ def test_looser_class_named_only_when_the_join_fits_its_row_cap():
 
     assert info(1_050_000_000) == []  # over scheduled's 10M rows too: it would block there
     assert "'scheduled' class" in info(5_000_000)[0]["text"]
+
+
+def test_looser_class_not_named_on_a_block_that_is_not_a_cap(synthetic_wh):
+    # SUM of an id blocks as a meaningless result: no class makes it meaningful.
+    customer = {"workload_classes": {"interactive": {"max_rows_processed": 1_000_000},
+                                     "scheduled": {"max_rows_processed": 10_000_000}}}
+    v = _check("SELECT SUM(user_id) FROM orders WHERE created_at >= '2024-01-01'", synthetic_wh,
+               customer=customer)
+    assert v.decision == "block" and v.reason.startswith("meaningless result")
+    assert not any(h["kind"] == "info" for h in v.fix_hints)
