@@ -221,10 +221,11 @@ warn and a human chooses.
 
 **One round per query.** A catalog fix removes the pattern it fixed, so its
 output passes the Guard as allow or warn (tested for all three fixers). The
-LLM proposer has no such stop: given its own output, it can offer another
-"improvement" every time. So `run_query` passes the shapes of rewrites
-already offered (`rewrite_fingerprint` in the log) to `decide()`, and a
-query with one of those shapes gets a warn with no second rewrite. `check`
+model has no such stop: given its own output, it can offer another
+"improvement" every time. So `run_query` logs the shape of every rewrite
+offered (the verdict's own, or the model's verified offer from `assist()`)
+as `rewrite_fingerprint` and passes those shapes to `decide()`; a query with
+one of those shapes gets a warn and no second rewrite from either. `check`
 keeps no log, so it stays stateless.
 
 **Acceptance:** a candidate is offered only if it is read-only and differs
@@ -250,8 +251,19 @@ pruning there.
 
 Optional; `NullLLM` makes zero model calls. When configured (`llm.py`):
 
-- **Rewrite proposer:** only for flagged queries, only when the catalog has
-  no fix; its SQL goes through the same acceptance as section 7.
+**Verdict first (owner's principle, 2026-10-23).** `guard.decide()` takes no
+model: the verdict is deterministic, and the model can neither change nor
+delay it. The model's help comes after, from `guard.assist()`, and only
+where the verdict failed (warn or block); it fills `suggestion`,
+`explanation` and `assist_notes`, never the decision or the reason
+(asserted in `assist()`, tested in `tests/test_verdict_first.py`). The CLI
+prints the verdict line first and the help after; the MCP server returns the
+verdict at once and the help through `get_assistance(assist_id)`;
+`run_query` decides, runs, then asks for help.
+
+- **Improved query / rewrite proposer:** warn and block. One the model says
+  keeps the result goes through the same acceptance as section 7 and, on a
+  warn, is OFFERED (`suggestion.verified_rewrite`): the decision stays warn.
 - **Explainer:** plain-language text for warn/block, after the verdict.
 - **Threshold judge:** reviews proposals that already passed the
   deterministic gates; sees aggregates only (no SQL, no fingerprint); may
@@ -484,6 +496,7 @@ changes.
 | 2026-10-23 | Threshold judge records how each call ended (`judge_outcome`: judged / refused / no output (stop reason) / error / no judge) and its MODELED cost (`judge_usd`); an API error now holds instead of raising. `run_judge_eval.py` reports, in order: bad proposals wrongly approved (must be 0), subtle-bad rejected or held, good rejected or held (false alarms), then how many holds were not judgments, and $ per decision; each row shows the judge's reason next to the signal it should cite | From the same review: a refusal or error also holds, which scores as correct on a bad row, so an all-holds run could look perfect. Scoring unchanged (reject or hold is correct on every bad row). Tested with fakes; the live Claude run (14 calls, cents) is still to be run once and recorded as-is |
 | 2026-10-23 | Judge eval: a second number, `2b_subtle_bad_right_verdict` — reject on S1, S2, S4, S5, S6 (clear evidence: tail, drift, threshold at p95, tail with a short span), reject or hold on S3 (one-hour history: the judge prompt allows either); only outcome `judged` counts. The safety number (reject or hold both correct, bad approved must be 0) stays the headline; the judge prompt is unchanged | Owner's call (option B, over keeping safety only (A) and strict-only (C)), set BEFORE the first live run, so it is a pre-registered rule, not tuning. Hold and reject do the same thing in production today (no shadow trial), so safety-only scoring cannot tell a judge that holds on everything from one that understands; strict-only would score a safe judge as failing. Checked with a fake judge that holds on every subtle row: safety 6/6, right verdict 1/6 |
 | 2026-10-23 | First live threshold-judge run (Haiku 5.5, 14 calls, $0.0043 MODELED, commit `ef58b9b`): 0/6 bad approved, 6/6 subtle-bad right verdict, 8/8 good proposals rejected, 0 refusals or errors ([`eval/RESULTS_judge.md`](eval/RESULTS_judge.md)). Recorded as-is; nothing tuned | Owner's go. Cause from the judge's own reasons: every proposal follows a regression (recent median ≥ 1.5× baseline, `REGRESSION_RATIO`), the prompt never explains `recent_median_sec`, so the judge treats the regression as the new normal and rejects. Classified as missing context plus an open design question for the owner: is a 5-run regression a runaway to stop or the new normal to allow? The judge stays optional and is not wired into `decide()`, so nothing in production changes. A fix now makes these 20 proposals a tuning set |
+| 2026-10-23 | **Verdict first, model second** (principle). `guard.decide()` takes no model and is deterministic; the model's help moves to `guard.assist()`, which runs only on warn and block, after the verdict, and fills `suggestion` / `explanation` / `assist_notes` only (an assert checks decision and reason are unchanged). A model rewrite that passes the rewrite gates (shared `_vet_rewrite`: read-only, cheaper, sampled equality) is now an OFFER on a warn (`suggestion.verified_rewrite`), no longer a `rewrite` decision; its shape is logged (`rewrite_fingerprint`) so it gets one round. CLI `check --llm`: the verdict line first, then an `assist` line; MCP: `check_query` returns at once with `assist: {status: pending, assist_id}`, new tool `get_assistance`; `run_query`: decide, run, then assist. Evals measure the verdict's latency and checks before the model's step | Owner's call: "verdict always must be the first" and the model serves the queries the verdict failed; architecture option "all 3" (test first, then the split, then this row). Before, the verdict waited for the model (~1.9–3.5 s per call measured with Haiku) and a verified model rewrite could turn a warn into `rewrite` inside the verdict step (never happened in the measured runs: 0 model rewrites offered). `tests/test_verdict_first.py`: `decide` has no model parameter; on allow / warn / rewrite / block the model changes nothing and is not called on allow or rewrite; MCP returns the verdict while the model is still blocked; the CLI prints the verdict first. Default runs (no `--llm`) are unchanged |
 
 ## 13. Open questions
 

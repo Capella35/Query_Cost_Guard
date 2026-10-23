@@ -7,7 +7,7 @@ import pytest
 
 from query_preflight import guard
 from query_preflight.backends.bigquery_backend import BigQueryWarehouse
-from query_preflight.guard import decide
+from query_preflight.guard import assist, decide
 from query_preflight.llm import SuggestionOut
 from query_preflight.tracing import Tracer
 
@@ -16,6 +16,13 @@ SQL = "SELECT status, COUNT(*) AS n FROM orders GROUP BY status"  # no partition
 BETTER = ("SELECT status, COUNT(*) AS n FROM orders WHERE created_at >= "
           "TIMESTAMP '2026-07-01' GROUP BY status")
 
+
+
+def _check(sql, llm=None, **kw):
+    """The verdict (decide, no model), then the model's help (assist)."""
+    v = decide(sql, **kw)
+    return assist(sql, v, llm, customer=kw.get("customer"), backend=kw.get("backend"),
+                  tracer=kw.get("tracer"))
 
 class Client:
     """orders, partitioned on created_at: 4 GiB unfiltered, 1 GiB with a date filter."""
@@ -64,7 +71,7 @@ def _wh(tmp_path):
 
 def test_a_warned_query_gets_a_priced_suggestion(tmp_path):
     llm = FakeLLM()
-    v = decide(SQL, customer=_customer(), backend=_wh(tmp_path), tracer=Tracer(), llm=llm)
+    v = _check(SQL, customer=_customer(), backend=_wh(tmp_path), tracer=Tracer(), llm=llm)
     assert v.decision == "warn" and v.rewritten_sql is None  # the decision stands
     s = v.suggestion
     assert s["sql"] == BETTER and s["changes_result"] and s["changes"]
@@ -72,14 +79,14 @@ def test_a_warned_query_gets_a_priced_suggestion(tmp_path):
     assert s["saves_usd_per_run_modeled"] == pytest.approx(3 * GiB / 1024**4 * 6.25)
     assert s["runtime_note"].startswith("(the model's reasoning, not measured)")
     assert llm.calls == 1  # one call per query, cached for a repeat
-    decide(SQL, customer=_customer(), backend=_wh(tmp_path), tracer=Tracer(), llm=llm)
+    _check(SQL, customer=_customer(), backend=_wh(tmp_path), tracer=Tracer(), llm=llm)
     assert llm.calls == 1
 
 
 def test_an_unchanged_result_claim_is_tried_as_a_rewrite_and_reported(tmp_path):
     """Claimed equivalent: tried as a rewrite. Here its sampled check can't
     run (fake warehouse), so it is not offered, and the suggestion says so."""
-    v = decide(SQL, customer=_customer(), backend=_wh(tmp_path), tracer=Tracer(),
+    v = _check(SQL, customer=_customer(), backend=_wh(tmp_path), tracer=Tracer(),
                llm=FakeLLM(changes_result=False))
     assert v.decision == "warn"
     assert "sample check found a difference" in v.suggestion["equivalence"]
@@ -91,13 +98,13 @@ def test_invalid_or_writing_suggestions_are_not_shown(tmp_path):
         llm = FakeLLM(sql=bad)
         if "nope" in bad:  # the warehouse rejects it at the dry run
             llm.out.improved_sql = "SELECT DELETE_ME"
-        v = decide(SQL, customer=_customer(), backend=_wh(tmp_path), tracer=Tracer(), llm=llm)
+        v = _check(SQL, customer=_customer(), backend=_wh(tmp_path), tracer=Tracer(), llm=llm)
         assert v.decision == "warn" and v.suggestion is None, bad
 
 
 def test_the_daily_cap_is_a_visible_skip(tmp_path):
     llm = FakeLLM()
-    v = decide(SQL, customer=_customer(cap=0), backend=_wh(tmp_path), tracer=Tracer(), llm=llm)
+    v = _check(SQL, customer=_customer(cap=0), backend=_wh(tmp_path), tracer=Tracer(), llm=llm)
     assert llm.calls == 0 and v.suggestion is None
     assert "llm_suggestion: daily cap of 0 reached" in v.skipped_rules
 
@@ -105,7 +112,7 @@ def test_the_daily_cap_is_a_visible_skip(tmp_path):
 def test_a_cost_block_gets_a_suggestion_too(tmp_path):
     c = _customer()
     c["workload_classes"]["interactive"]["max_bytes_scanned"] = 2 * GiB  # 4 GiB query: blocked
-    v = decide(SQL, customer=c, backend=_wh(tmp_path), tracer=Tracer(), llm=FakeLLM())
+    v = _check(SQL, customer=c, backend=_wh(tmp_path), tracer=Tracer(), llm=FakeLLM())
     assert v.decision == "block" and v.suggestion["bytes_billed"]["suggested"] == 1 * GiB
 
 

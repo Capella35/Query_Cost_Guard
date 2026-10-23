@@ -135,6 +135,60 @@ class GuardVerdict:
     # improved query, what it changes, and its dry-run cost against the
     # original. Never run or swapped in by the Guard; the decision stands.
     suggestion: Optional[dict] = None
+    # Notes from assist() (the model's step, after the verdict): why a model
+    # rewrite was not offered. Never part of the decision or the reason.
+    assist_notes: list[str] = field(default_factory=list)
+
+
+def _vet_rewrite(source, cand, base_sql, estimate_source, orig_bytes, orig_rows, n_tables,
+                 backend, tracer, tid, wait_sec, skip_cost_check=False):
+    """The gates every rewrite passes before it is offered, whoever wrote it:
+    read-only, cheaper (BigQuery: fewer billed bytes; elsewhere not costlier
+    by estimate), then the same rows on sampled inputs. Returns (status,
+    result, how, note): status "offered" | "rejected" | "pending"; note says
+    why it was not offered."""
+    if sql_ast.read_only_violation(cand):
+        return "rejected", None, None, f"{source} rewrite is not read-only — not offered"
+    if estimate_source == "dry_run":
+        # BigQuery: dry-run bytes are exact, so a rewrite must bill FEWER
+        # bytes — "not costlier" would offer ones that save nothing
+        # (CTE/pushdown rewrites measured 0 bytes saved there). Billed,
+        # not read: BigQuery bills at least 10 MiB per table, so on a
+        # small table a rewrite that reads less saves nothing, and its
+        # sampled verification (~30 MiB billed) would cost more (T15).
+        try:
+            cand_bytes = backend.estimate(cand).estimated_bytes_scanned or 0
+        except Exception as e:  # noqa: BLE001 — the warehouse rejected it: not offered
+            return "rejected", None, None, (f"{source} rewrite could not be estimated — not offered "
+                                            f"({str(e).splitlines()[0][:120]})")
+        from .runtime import bigquery_billed
+
+        cand_billed = bigquery_billed(cand_bytes, len(sql_ast.referenced_tables(
+            sql_ast.parse_one(cand))))
+        orig_billed = bigquery_billed(orig_bytes or 0, n_tables)
+        if cand_billed >= orig_billed:
+            return "rejected", None, None, (
+                f"{source} rewrite bills no fewer bytes ({cand_billed:,} vs {orig_billed:,}, "
+                "BigQuery's 10 MiB-per-table minimum included) — not offered")
+    elif estimate_source is not None and not skip_cost_check:
+        try:
+            cand_est = backend.estimate(cand)
+        except Exception as e:  # noqa: BLE001 — the warehouse rejected it: not offered
+            return "rejected", None, None, (f"{source} rewrite could not be estimated — not offered "
+                                            f"({str(e).splitlines()[0][:120]})")
+        if cand_est.rows_processed > orig_rows:
+            return "rejected", None, None, f"{source} rewrite is not cheaper by estimate — not offered"
+    with tracer.span(tid, "compare_results", source=source) as span:
+        res, how = _verify(base_sql, cand, backend, wait_sec)
+        span["attrs"]["how"] = how
+    if res is None:
+        return "pending", None, how, (
+            f"{source} rewrite found and still being verified in the background "
+            f"(over {wait_sec:g}s) — not offered yet; check this query again to get it")
+    if not res.passed:
+        return "rejected", res, how, (f"{source} rewrite failed verification — not offered ({res.detail})"
+                                      + (" (remembered)" if how == "remembered" else ""))
+    return "offered", res, how, None
 
 
 def is_read_only(sql: str) -> bool:
@@ -151,7 +205,6 @@ def decide(
     customer: Optional[dict] = None,
     backend=None,
     tracer=None,
-    llm=None,
     bypass_reason: Optional[str] = None,
     offered_rewrites: Optional[Collection[str]] = None,
     rewrite_wait_sec: Optional[float] = None,
@@ -161,7 +214,9 @@ def decide(
 ) -> GuardVerdict:
     """Guard pipeline: read-only check -> cost estimate -> static rules
     (per referenced table, with column profiles) -> hard caps for the
-    workload class -> verdict -> (optional) LLM rewrite + explanation.
+    workload class -> verdict. Deterministic: it takes no model, so the model
+    can never decide or delay the verdict. The model's help (explanation,
+    improved query, verified rewrite offer) comes after, from assist().
 
     customer: parsed customer.yaml; loaded from the repo root when None.
     offered_rewrites: fingerprints of rewrites the Guard offered earlier (the
@@ -189,7 +244,7 @@ def decide(
     with tracer.trace("guard.decide", workload_class=workload_class) as tid, \
             sql_ast.using_dialect(dialect):
         ctx: dict = {}
-        verdict = _decide(sql, workload_class, customer, backend, tracer, tid, llm,
+        verdict = _decide(sql, workload_class, customer, backend, tracer, tid,
                            offered_rewrites, rewrite_wait_sec, ctx, shape_runtimes, shape_volume)
         if SECRET_FINDING in verdict.findings:
             return verdict  # nothing else may see the query: no hints, bypass or model
@@ -198,17 +253,88 @@ def decide(
         if verdict.decision == "block" and not verdict.budget_only_block:
             _add_fix_hints(sql, verdict, customer, backend, tracer, tid, ctx)
         verdict = _maybe_bypass(verdict, customer, bypass_reason, tracer, tid)
-        if (llm is not None and verdict.decision in ("warn", "block")
-                and hasattr(llm, "suggest_improvement")
-                and "non-read-only statement" not in verdict.findings):
-            _suggest(sql, verdict, llm, customer, backend, tracer, tid, ctx)
-        if llm is not None and verdict.decision in ("warn", "block"):
-            with tracer.span(tid, "llm.explain_flag") as span:
-                try:
-                    verdict.explanation = llm.explain_flag(sql, explain_inputs(verdict))
-                except Exception as e:  # noqa: BLE001 — explanation is optional
-                    span["attrs"]["error"] = str(e)[:200]
         return verdict
+
+
+def assist(sql: str, verdict: GuardVerdict, llm, customer: Optional[dict] = None, backend=None,
+           tracer=None, rewrite_wait_sec: Optional[float] = None) -> GuardVerdict:
+    """The model's help, AFTER the verdict and only where it failed (warn or
+    block): an improved query (checked read-only and valid, priced against
+    the original; one the model says keeps the result is verified like any
+    rewrite and, on a warn, offered), then a plain-language explanation.
+    Never changes the decision or the reason; fills `suggestion`,
+    `explanation` and `assist_notes`. A query holding a secret never reaches
+    the model."""
+    from .config import load_customer
+    from .tracing import get_tracer
+
+    if llm is None or verdict.decision not in ("warn", "block") or SECRET_FINDING in verdict.findings:
+        return verdict
+    customer = customer if customer is not None else load_customer()
+    tracer = tracer or get_tracer()
+    decision, reason = verdict.decision, verdict.reason
+    dialect = "bigquery" if getattr(backend, "name", None) == "bigquery" else sql_ast.DIALECT
+    with tracer.trace("guard.assist", decision=verdict.decision) as tid, \
+            sql_ast.using_dialect(dialect):
+        if "non-read-only statement" not in verdict.findings:
+            if hasattr(llm, "suggest_improvement"):
+                _suggest(sql, verdict, llm, customer, backend, tracer, tid, rewrite_wait_sec)
+            elif hasattr(llm, "propose_rewrite"):
+                _offer_proposed_rewrite(sql, verdict, llm, backend, tracer, tid, rewrite_wait_sec)
+        with tracer.span(tid, "llm.explain_flag") as span:
+            try:
+                verdict.explanation = llm.explain_flag(sql, explain_inputs(verdict))
+            except Exception as e:  # noqa: BLE001 — explanation is optional
+                span["attrs"]["error"] = str(e)[:200]
+    assert (verdict.decision, verdict.reason) == (decision, reason), "assist() changed the verdict"
+    return verdict
+
+
+ALREADY_OFFERED = "this query is a rewrite the Guard already offered"
+
+
+def _model_rewrite_gate(cand, sql, verdict, backend, tracer, tid, wait_sec):
+    """A model rewrite of a warned query through the same gates as the
+    catalog's (_vet_rewrite). Blocks are not rewritten, and an offered
+    rewrite gets no second one (one round per query)."""
+    if verdict.decision != "warn":
+        return "skipped", None, None, "blocked queries are not rewritten"
+    if any(f.startswith(ALREADY_OFFERED) for f in verdict.findings):
+        return "skipped", None, None, "an offered rewrite gets no second rewrite"
+    if " ".join(cand.split()).lower() == " ".join(sql.split()).lower():
+        return "skipped", None, None, "the model returned the query unchanged"
+    n_tables = len(sql_ast.referenced_tables(sql_ast.parse_one(sql)))
+    return _vet_rewrite("llm", cand, sql, verdict.estimate_source, verdict.estimated_bytes,
+                        verdict.estimated_rows or 0, n_tables, backend, tracer, tid, wait_sec)
+
+
+def _offer_proposed_rewrite(sql, verdict, llm, backend, tracer, tid, wait_sec) -> None:
+    """For a model client without suggest_improvement: its rewrite proposal,
+    offered after the verdict only if it passes the gates."""
+    if backend is None:
+        return
+    with tracer.span(tid, "llm.propose_rewrite") as span:
+        try:
+            prop = llm.propose_rewrite(sql, verdict.findings)
+        except Exception as e:  # noqa: BLE001 — LLM failure = no rewrite
+            prop = None
+            span["attrs"]["error"] = str(e)[:200]
+    if prop is None or not prop.rewritten_sql:
+        return
+    status, res, how, note = _model_rewrite_gate(prop.rewritten_sql, sql, verdict, backend,
+                                                 tracer, tid, wait_sec)
+    if status != "offered":
+        verdict.assist_notes.append(note)
+        return
+    verdict.suggestion = {"sql": prop.rewritten_sql, "changes": [prop.explanation],
+                          "changes_result": False, "verified_rewrite": True,
+                          "equivalence": "verified: " + res.detail
+                          + (" (remembered from an earlier check)" if how == "remembered" else ""),
+                          "note": VERIFIED_OFFER_NOTE}
+
+
+VERIFIED_OFFER_NOTE = ("a verified rewrite, offered after the verdict: same rows on sampled inputs "
+                       "and cheaper; the decision stands and nothing is swapped in")
 
 
 def _apply_budget(sql, verdict, budget, customer, tracer, tid) -> GuardVerdict:
@@ -306,15 +432,15 @@ def _llm_suggestion(llm, sql, items, customer, tracer, tid, ctx):
     return prop
 
 
-def _suggest(sql, verdict, llm, customer, backend, tracer, tid, ctx) -> None:
+def _suggest(sql, verdict, llm, customer, backend, tracer, tid, wait_sec) -> None:
     """Attach the model's improved query to a warned or blocked verdict,
     after checking it is read-only and valid (dry run) and pricing it
-    against the original. Not checked for equal results unless it was tried
-    as a rewrite (then the outcome is stated)."""
+    against the original. One the model says keeps the result goes through
+    the rewrite gates (_model_rewrite_gate); the outcome is stated."""
     from .runtime import bigquery_billed
 
-    prop = (ctx.get("suggestion") if ctx.get("suggestion_asked")
-            else _llm_suggestion(llm, sql, explain_inputs(verdict), customer, tracer, tid, ctx))
+    ctx: dict = {}
+    prop = _llm_suggestion(llm, sql, explain_inputs(verdict), customer, tracer, tid, ctx)
     if ctx.get("suggestion_skipped"):
         verdict.skipped_rules.append(ctx["suggestion_skipped"])
     if prop is None:
@@ -335,18 +461,6 @@ def _suggest(sql, verdict, llm, customer, backend, tracer, tid, ctx) -> None:
         out = {"sql": cand, "changes": list(prop.changes), "changes_result": bool(prop.changes_result),
                "runtime_note": f"(the model's reasoning, not measured) {prop.runtime_note}",
                "note": "a suggestion: the Guard never runs it or swaps it in; the decision stands"}
-        tried = [f for f in verdict.findings if f.startswith("llm rewrite")]
-        if not prop.changes_result:
-            why = tried[0] if tried else ""
-            if "bills no fewer bytes" in why:
-                out["equivalence"] = ("the model says the result is unchanged; not offered as a rewrite "
-                                      "because it bills no fewer bytes, so equality was NOT checked")
-            elif "failed verification" in why:
-                out["equivalence"] = ("the model says the result is unchanged, but the Guard's sample "
-                                      f"check found a difference: {why}")
-            else:
-                out["equivalence"] = ("the model says the result is unchanged; NOT verified"
-                                      + (f" ({why})" if why else ""))
         if est.source == "dry_run" and verdict.estimated_bytes is not None:
             price = ((customer or {}).get("cost_model") or {}).get("price_per_tb_usd") or 0
             n_orig = len(sql_ast.referenced_tables(sql_ast.parse_one(sql)))
@@ -365,6 +479,22 @@ def _suggest(sql, verdict, llm, customer, backend, tracer, tid, ctx) -> None:
         span["attrs"].update(changes_result=out["changes_result"], changes=len(out["changes"]),
                              bytes_billed_saved=(out.get("bytes_billed") or {}).get("original", 0)
                              - (out.get("bytes_billed") or {}).get("suggested", 0))
+    if not prop.changes_result:
+        status, res, how, note = _model_rewrite_gate(cand, sql, verdict, backend, tracer, tid,
+                                                     wait_sec)
+        if status == "offered":
+            out.update(verified_rewrite=True, note=VERIFIED_OFFER_NOTE,
+                       equivalence="verified: " + res.detail
+                       + (" (remembered from an earlier check)" if how == "remembered" else ""))
+        elif note and "bills no fewer bytes" in note:
+            out["equivalence"] = ("the model says the result is unchanged; not offered as a rewrite "
+                                  "because it bills no fewer bytes, so equality was NOT checked")
+        elif note and "failed verification" in note:
+            out["equivalence"] = ("the model says the result is unchanged, but the Guard's sample "
+                                  f"check found a difference: {note}")
+        else:
+            out["equivalence"] = ("the model says the result is unchanged; NOT verified"
+                                  + (f" ({note})" if note else ""))
     verdict.suggestion = out
 
 
@@ -485,7 +615,7 @@ def _volume_finding(estimate, tables, volume, customer, backend):
             "once on a schedule and share the result"), None
 
 
-def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
+def _decide(sql, workload_class, customer, backend, tracer, tid,
             offered_rewrites=None, rewrite_wait_sec=None, ctx=None,
             shape_runtimes=None, shape_volume=None) -> GuardVerdict:
     from .column_registry import registry_settings
@@ -821,11 +951,10 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
     if findings and offered_rewrites and fingerprint_query(sql) in offered_rewrites:
         with tracer.span(tid, "rewrite.already_offered"):
             pass
-        findings.append("this query is a rewrite the Guard already offered — "
-                        "no second rewrite (one round per query)")
+        findings.append(ALREADY_OFFERED + " — no second rewrite (one round per query)")
     elif findings and backend is not None:
-        # Deterministic fixers first (chained); then the LLM proposer if
-        # configured. Either way an unverified rewrite is never offered.
+        # Deterministic fixers only (chained). The model's rewrite is not
+        # tried here: it comes after the verdict, as an offer (assist()).
         candidates = []
         with tracer.span(tid, "suggest_rewrite") as span:
             cand, applied = deterministic_rewrite(base_sql, findings)
@@ -833,70 +962,20 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
         if cand:
             candidates.append(("deterministic:" + "+".join(applied), cand))
         pruning_only = bool(applied) and set(applied) <= PRUNING_ONLY_FIXERS
-        if not candidates and llm is not None and hasattr(llm, "suggest_improvement"):
-            # One call: an improvement the model says keeps the result is tried
-            # as a rewrite below (verified like any other); one that changes the
-            # result is attached afterwards as a suggestion (decide -> _suggest).
-            prop = _llm_suggestion(llm, sql, findings, customer, tracer, tid, ctx)
-            if prop is not None and not prop.changes_result:
-                candidates.append(("llm", prop.improved_sql))
-        elif not candidates and llm is not None:
-            with tracer.span(tid, "llm.propose_rewrite") as span:
-                try:
-                    prop = llm.propose_rewrite(sql, findings)
-                except Exception as e:  # noqa: BLE001 — LLM failure = no rewrite
-                    prop = None
-                    span["attrs"]["error"] = str(e)[:200]
-            if prop is not None and prop.rewritten_sql:
-                candidates.append(("llm", prop.rewritten_sql))
         for source, cand in candidates:
             if " ".join(cand.split()).lower() == " ".join(base_sql.split()).lower():
                 continue
-            if sql_ast.read_only_violation(cand):
-                findings.append(f"{source} rewrite is not read-only — not offered")
-                continue
-            if estimate is not None and estimate.source == "dry_run":
-                # BigQuery: dry-run bytes are exact, so a rewrite must bill FEWER
-                # bytes — "not costlier" would offer ones that save nothing
-                # (CTE/pushdown rewrites measured 0 bytes saved there). Billed,
-                # not read: BigQuery bills at least 10 MiB per table, so on a
-                # small table a rewrite that reads less saves nothing, and its
-                # sampled verification (~30 MiB billed) would cost more (T15).
-                try:
-                    cand_bytes = backend.estimate(cand).estimated_bytes_scanned or 0
-                except Exception as e:  # noqa: BLE001 — the warehouse rejected it: not offered
-                    findings.append(f"{source} rewrite could not be estimated — not offered "
-                                    f"({str(e).splitlines()[0][:120]})")
-                    continue
-                from .runtime import bigquery_billed
-
-                cand_billed = bigquery_billed(cand_bytes, len(sql_ast.referenced_tables(
-                    sql_ast.parse_one(cand))))
-                orig_billed = bigquery_billed(base["estimated_bytes"] or 0, len(tables))
-                if cand_billed >= orig_billed:
-                    findings.append(f"{source} rewrite bills no fewer bytes ({cand_billed:,} vs "
-                                    f"{orig_billed:,}, BigQuery's 10 MiB-per-table minimum included)"
-                                    " — not offered")
-                    continue
-            elif estimate is not None and not (source.startswith("deterministic:") and pruning_only):
-                try:
-                    cand_est = backend.estimate(cand)
-                except Exception as e:  # noqa: BLE001 — the warehouse rejected it: not offered
-                    findings.append(f"{source} rewrite could not be estimated — not offered "
-                                    f"({str(e).splitlines()[0][:120]})")
-                    continue
-                if cand_est.rows_processed > rows:
-                    findings.append(f"{source} rewrite is not cheaper by estimate — not offered")
-                    continue
-            with tracer.span(tid, "compare_results", source=source) as span:
-                res, how = _verify(base_sql, cand, backend, rewrite_wait_sec)
-                span["attrs"]["how"] = how
-            if res is None:
-                findings.append(
-                    f"{source} rewrite found and still being verified in the background "
-                    f"(over {rewrite_wait_sec:g}s) — not offered yet; check this query again to get it")
+            status, res, how, note = _vet_rewrite(
+                source, cand, base_sql, estimate.source if estimate is not None else None,
+                base["estimated_bytes"], rows, len(tables), backend, tracer, tid, rewrite_wait_sec,
+                skip_cost_check=source.startswith("deterministic:") and pruning_only)
+            if status == "pending":
+                findings.append(note)
                 break
-            if res.passed:
+            if status == "rejected":
+                findings.append(note)
+                continue
+            if status == "offered":
                 return GuardVerdict(
                     decision="rewrite",
                     reason=("verified rewrite available ("
@@ -912,8 +991,6 @@ def _decide(sql, workload_class, customer, backend, tracer, tid, llm,
                                                if how == "remembered" else ""),
                     **base,
                 )
-            findings.append(f"{source} rewrite failed verification — not offered ({res.detail})"
-                            + (" (remembered)" if how == "remembered" else ""))
 
     if case_sql:
         return GuardVerdict(

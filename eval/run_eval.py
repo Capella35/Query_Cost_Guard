@@ -71,7 +71,7 @@ sys.path.insert(0, str(ROOT / "demo"))
 sys.path.insert(0, str(ROOT / "eval"))
 
 from query_preflight import sql_ast  # noqa: E402
-from query_preflight.guard import decide  # noqa: E402
+from query_preflight.guard import assist, decide  # noqa: E402
 from query_preflight.results import result_hash  # noqa: E402
 from query_preflight.tracing import Tracer  # noqa: E402
 from code_version import code_version, describe  # noqa: E402
@@ -300,9 +300,12 @@ def main() -> None:
     results = []
     for case in cases:
         with _case_span(phoenix, case) as case_span:
-            v = decide(case["sql"], customer=customer, backend=wh, tracer=tracer, llm=llm)
+            v = decide(case["sql"], customer=customer, backend=wh, tracer=tracer)
+            # The verdict's own checks and latency: measured before the model's step.
+            spans = [s for s in tracer.spans if s["name"] != "guard.decide"]
+            if llm is not None:  # after the verdict, warn and block only; never changes it
+                assist(case["sql"], v, llm, customer=customer, backend=wh, tracer=tracer)
             _case_result(case_span, case, v)
-        spans = [s for s in tracer.spans if s["name"] != "guard.decide"]
         r = {
             "id": case["id"],
             "pattern": case["pattern"],
@@ -322,6 +325,7 @@ def main() -> None:
             "skipped_rules": v.skipped_rules,
             "explanation": v.explanation,
             "suggestion": v.suggestion,
+            "assist_notes": v.assist_notes,
         }
         if v.decision == "rewrite":
             r["rewrite_source"] = v.rewrite_source
@@ -360,6 +364,8 @@ def main() -> None:
         "avg_checks_per_decision": round(sum(r["checks"] for r in results) / len(results), 1),
         "llm": args.llm,
         "llm_calls": getattr(llm, "calls", 0),
+        **({"model_rewrites_offered": sum(bool((r["suggestion"] or {}).get("verified_rewrite"))
+                                          for r in results)} if llm is not None else {}),
     }
 
     by_pattern: "OrderedDict[str, dict]" = OrderedDict()

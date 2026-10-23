@@ -91,6 +91,12 @@ class QueryPreflightService:
         self.log_path = Path(log_path)
         self.trace_path = Path(trace_path) if trace_path is not None else None
         self.llm = llm
+        # Verdict first: check_query returns the verdict at once; the model's
+        # help for a warn or block (guard.assist) runs here and is fetched
+        # with get_assistance(assist_id). Kept for the latest ASSIST_KEEP checks.
+        self._assist_pool = (ThreadPoolExecutor(max_workers=2, thread_name_prefix="assist")
+                             if llm is not None else None)
+        self._assist: dict = {}
         self.rewrite_wait_sec = (customer.get("guard") or {}).get("rewrite_wait_sec")
         # The deployment's user (--user): budgets are charged to it, and a
         # caller can't name someone else. None = no trusted identity.
@@ -190,14 +196,61 @@ class QueryPreflightService:
 
             log = read_log(self.log_path)
             v = decide(sql, workload_class, customer=self.customer, backend=self.backend,
-                       tracer=tracer, llm=self.llm, rewrite_wait_sec=self.rewrite_wait_sec,
+                       tracer=tracer, rewrite_wait_sec=self.rewrite_wait_sec,
                        shape_runtimes=shape_runtimes(log, fp),
                        shape_volume=shape_volume(log, fp, volume_settings(self.customer)["window_hours"]),
                        budget=budget_state(log, self.customer, self.user, workload_class))
             _annotate_verdict(tracer, v, fp)
-            return {**_verdict_fields(v), "fingerprint": fp, "rules_fired": _rules_fired(tracer)}
+            return {**_verdict_fields(v), "fingerprint": fp, "rules_fired": _rules_fired(tracer),
+                    "assist": self._start_assist(sql, v)}
 
         return self._count_block(self._traced("check_query", go, workload_class=workload_class))
+
+    def _start_assist(self, sql: str, verdict) -> Optional[dict]:
+        """Queue the model's help for a warn or block; the verdict is already
+        on its way back. None when there is no model or nothing to help with."""
+        import uuid
+
+        from .guard import SECRET_FINDING
+
+        if (self._assist_pool is None or verdict.decision not in ("warn", "block")
+                or SECRET_FINDING in verdict.findings):
+            return None
+
+        def job():
+            tracer = Tracer()
+            try:
+                assist(sql, verdict, self.llm, customer=self.customer, backend=self.backend,
+                       tracer=tracer, rewrite_wait_sec=self.rewrite_wait_sec)
+            finally:
+                if self.trace_path is not None:
+                    tracer.save(self.trace_path)
+            return {"explanation": verdict.explanation, "suggestion": verdict.suggestion,
+                    "assist_notes": verdict.assist_notes}
+
+        from .guard import assist
+
+        assist_id = uuid.uuid4().hex[:16]
+        self._assist[assist_id] = self._assist_pool.submit(job)
+        while len(self._assist) > ASSIST_KEEP:
+            self._assist.pop(next(iter(self._assist)))
+        return {"status": "pending", "assist_id": assist_id}
+
+    def get_assistance(self, assist_id: str, wait_sec: float = 30.0) -> dict:
+        """The model's help for an earlier check: ready, or still pending."""
+        from concurrent.futures import TimeoutError as FutureTimeout
+
+        fut = self._assist.get(assist_id)
+        if fut is None:
+            raise KeyError(f"unknown assist_id {assist_id!r} (help is kept for the latest "
+                           f"{ASSIST_KEEP} checks)")
+        try:
+            help_ = fut.result(timeout=max(0.0, min(float(wait_sec), 120.0)))
+        except FutureTimeout:
+            return {"status": "pending", "assist_id": assist_id}
+        from .secret_scan import redact_obj
+
+        return redact_obj({"status": "ready", "assist_id": assist_id, **help_})
 
     def run_query(self, sql: str, workload_class: Optional[str] = None,
                   user: Optional[str] = None) -> dict:
@@ -331,6 +384,9 @@ def _stop_message(out: dict, blocks: int, pause_sec: float) -> dict:
     }
 
 
+ASSIST_KEEP = 200  # assist results kept for get_assistance
+
+
 def _verdict_fields(v) -> dict:
     return {
         "decision": v.decision,
@@ -344,7 +400,7 @@ def _verdict_fields(v) -> dict:
         "rewritten_sql": v.rewritten_sql,  # the caller's own query, rewritten — returned, not traced
         "rewrite_source": v.rewrite_source,
         "verification": v.verification,
-        "explanation": v.explanation,
+        "explanation": v.explanation,  # run_query with --llm; check_query: get_assistance
         "fix_hints": v.fix_hints,  # blocks: main cause first, then fixes
         "budget": v.budget,  # the stricter budget scope's figures (MODELED), when budgets are on
         "suggestion": v.suggestion,  # --llm: an improved query + its dry-run cost; never run by the Guard
@@ -442,9 +498,15 @@ Workflow, in this order:
      for), check again; or tell the user the warning before running it.
    - block: never run it and never retry it unchanged. Follow `fix_hints`, revise, and
      check_query again. {stop_rule}
-4. A `suggestion` is an improved query from the model, priced by a dry run. If
-   `changes_result` is true it gives a DIFFERENT answer (e.g. only recent dates): show
-   the user its `changes` and let them choose; never swap it in silently.
+4. The decision always comes first and never depends on the model. When this server
+   has a model and the decision is warn or block, check_query also returns
+   `assist: {{status: pending, assist_id}}`: call get_assistance(assist_id) for the
+   model's explanation and `suggestion`. A `suggestion` is an improved query, priced
+   by a dry run. If `verified_rewrite` is true it was checked like a rewrite (same rows
+   on sampled inputs, cheaper): you may offer it. If `changes_result` is true it gives a
+   DIFFERENT answer (e.g. only recent dates): show the user its `changes` and let them
+   choose; never swap it in silently. The decision stands either way: re-check a
+   revised query with check_query.
 5. A budget warning or block: tell the user what is left; do not work around it.
 6. Read the answer from run_query: status, row_count, bytes_billed — never rows.
    Report bytes and MODELED cost honestly; do not guess numbers you did not get.
@@ -486,6 +548,15 @@ def build_server(service: QueryPreflightService):
         and check again. workload_class: omit to use this server's class; only an equal
         or stricter class is accepted."""
         return call(service.check_query, sql, workload_class)
+
+    @server.tool(annotations=read_only)
+    def get_assistance(assist_id: str, wait_sec: float = 30.0) -> dict[str, Any]:
+        """The model's help for a warned or blocked query, AFTER check_query returned its
+        decision: a plain-language explanation and possibly an improved query
+        (`suggestion`). assist_id comes from check_query's `assist`. Waits up to wait_sec
+        (max 120) and returns status "ready" or "pending" (call again). Never changes the
+        decision."""
+        return call(service.get_assistance, assist_id, wait_sec)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False,
                                              idempotent_hint=False, open_world_hint=False))

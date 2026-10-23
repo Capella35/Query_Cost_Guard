@@ -158,10 +158,21 @@ def main(argv: list[str] | None = None) -> int:
 
         backend = _backend(args, customer)
         v = decide(args.sql, args.workload, customer=customer, backend=backend,
-                   llm=_llm(args, backend),
                    budget=budget_state(read_log(DEFAULT_LOG), customer, args.user,
                                        args.workload))
-        print(json.dumps(asdict(v), indent=2, default=str))
+        llm = _llm(args, backend)
+        if llm is None:
+            print(json.dumps(asdict(v), indent=2, default=str))
+            return 2 if v.decision == "block" else 0
+        # Verdict first: one JSON line now, then one with the model's help
+        # (warn and block only) when it is ready.
+        from .guard import assist
+
+        print(json.dumps(asdict(v), default=str), flush=True)
+        if v.decision in ("warn", "block"):
+            assist(args.sql, v, llm, customer=customer, backend=backend)
+            print(json.dumps({"assist": {"explanation": v.explanation, "suggestion": v.suggestion,
+                                         "assist_notes": v.assist_notes}}, default=str))
         return 2 if v.decision == "block" else 0
 
     if args.cmd == "run":
@@ -175,6 +186,9 @@ def main(argv: list[str] | None = None) -> int:
             "reason": out.verdict.reason,
             "execution": asdict(out.execution) if out.execution else None,
             "timeout_sec": out.timeout_sec,
+            **({"assist": {"explanation": out.verdict.explanation,
+                           "suggestion": out.verdict.suggestion,
+                           "assist_notes": out.verdict.assist_notes}} if args.llm != "none" else {}),
         }, indent=2, default=str))
         return 2 if out.verdict.decision == "block" else 0
 

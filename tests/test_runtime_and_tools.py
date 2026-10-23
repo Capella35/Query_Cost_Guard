@@ -5,7 +5,7 @@ import json
 import pytest
 
 from query_preflight.config import load_customer
-from query_preflight.guard import decide
+from query_preflight.guard import assist, decide
 from query_preflight.interfaces import RewriteProposal
 from query_preflight.investigator import ThresholdProposal
 from query_preflight.llm import judge_payload
@@ -15,6 +15,13 @@ from query_preflight.tracing import Tracer
 
 SLOW = "SELECT SUM(range * 2) FROM range(5000000000)"
 
+
+
+def _check(sql, llm=None, **kw):
+    """The verdict (decide, no model), then the model's help (assist)."""
+    v = decide(sql, **kw)
+    return assist(sql, v, llm, customer=kw.get("customer"), backend=kw.get("backend"),
+                  tracer=kw.get("tracer"))
 
 def _loose_customer(runtime_sec):
     cfg = load_customer()
@@ -108,36 +115,38 @@ WRAPPED = ("SELECT order_id, status FROM orders "
 def test_correct_llm_rewrite_is_offered_after_verification(synthetic_wh):
     good = ("SELECT status, COUNT(*) AS n FROM orders WHERE created_at >= '2024-01-01' "
             "AND status <> 'cancelled' GROUP BY status")
-    v = decide(HAVING, backend=synthetic_wh, tracer=Tracer(), llm=FakeLLM(good))
-    assert v.decision == "rewrite" and v.rewrite_source == "llm"
-    assert "match" in v.verification
+    v = _check(HAVING, backend=synthetic_wh, tracer=Tracer(), llm=FakeLLM(good))
+    # Verdict first: the decision stays warn; the verified rewrite is an offer.
+    assert v.decision == "warn" and v.rewritten_sql is None
+    assert v.suggestion["verified_rewrite"] and v.suggestion["sql"] == good
+    assert "match" in v.suggestion["equivalence"]
 
 
 def test_wrong_llm_rewrite_is_rejected(synthetic_wh):
     wrong = ("SELECT status, COUNT(*) AS n FROM orders WHERE created_at >= '2024-06-01' "
              "AND status <> 'cancelled' GROUP BY status")
-    v = decide(HAVING, backend=synthetic_wh, tracer=Tracer(), llm=FakeLLM(wrong))
-    assert v.decision == "warn"
-    assert any("llm rewrite failed verification" in f for f in v.findings)
+    v = _check(HAVING, backend=synthetic_wh, tracer=Tracer(), llm=FakeLLM(wrong))
+    assert v.decision == "warn" and v.suggestion is None
+    assert any("llm rewrite failed verification" in n for n in v.assist_notes)
     assert v.explanation == "plain-language explanation"  # F3.3: warn gets explained
 
 
 def test_deterministic_fixer_runs_before_the_llm(synthetic_wh):
     llm = FakeLLM("SELECT 1")
-    v = decide(WRAPPED, backend=synthetic_wh, tracer=Tracer(), llm=llm)
+    v = _check(WRAPPED, backend=synthetic_wh, tracer=Tracer(), llm=llm)
     assert v.decision == "rewrite" and v.rewrite_source == "deterministic:sargable"
 
 
 def test_llm_not_called_on_clean_queries(synthetic_wh):
     llm = FakeLLM("SELECT 1")
-    v = decide("SELECT id FROM users WHERE id = 1", backend=synthetic_wh, tracer=Tracer(), llm=llm)
+    v = _check("SELECT id FROM users WHERE id = 1", backend=synthetic_wh, tracer=Tracer(), llm=llm)
     assert v.decision == "allow" and llm.explained == 0 and v.explanation is None
 
 
 def test_llm_rewrite_that_writes_is_refused(synthetic_wh):
-    v = decide(HAVING, backend=synthetic_wh, tracer=Tracer(), llm=FakeLLM("DROP TABLE orders"))
-    assert v.decision == "warn"
-    assert any("not read-only" in f for f in v.findings)
+    v = _check(HAVING, backend=synthetic_wh, tracer=Tracer(), llm=FakeLLM("DROP TABLE orders"))
+    assert v.decision == "warn" and v.suggestion is None
+    assert any("not read-only" in n for n in v.assist_notes)
 
 
 # ---- F3.2 -------------------------------------------------------------------
@@ -184,27 +193,31 @@ class PaddingLLM(FakeLLM):
 
 
 def test_llm_would_rewrite_its_own_rewrite_without_the_log(synthetic_wh):
-    first = decide(HAVING, backend=synthetic_wh, tracer=Tracer(), llm=PaddingLLM())
-    assert first.decision == "rewrite"
-    second = decide(first.rewritten_sql, backend=synthetic_wh, tracer=Tracer(), llm=PaddingLLM())
-    assert second.decision == "rewrite"  # the loop the offered-rewrite check exists for
-    stopped = decide(first.rewritten_sql, backend=synthetic_wh, tracer=Tracer(), llm=PaddingLLM(),
-                     offered_rewrites={fingerprint_query(first.rewritten_sql)})
-    assert stopped.decision == "warn" and stopped.rewritten_sql is None
+    first = _check(HAVING, backend=synthetic_wh, tracer=Tracer(), llm=PaddingLLM())
+    offer = first.suggestion["sql"]
+    assert first.decision == "warn" and first.suggestion["verified_rewrite"]
+    second = _check(offer, backend=synthetic_wh, tracer=Tracer(), llm=PaddingLLM())
+    assert second.suggestion["verified_rewrite"]  # the loop the offered-rewrite check exists for
+    stopped = _check(offer, backend=synthetic_wh, tracer=Tracer(), llm=PaddingLLM(),
+                     offered_rewrites={fingerprint_query(offer)})
+    assert stopped.decision == "warn" and stopped.suggestion is None
     assert any("already offered" in f for f in stopped.findings)
+    assert any("no second rewrite" in n for n in stopped.assist_notes)
 
 
 def test_run_query_offers_one_rewrite_round(synthetic_wh, tmp_path):
     log = tmp_path / "log.jsonl"
     first = run_query(HAVING, synthetic_wh, log_path=log, tracer=Tracer(), llm=PaddingLLM())
-    assert first.verdict.decision == "rewrite"
-    second = run_query(first.verdict.rewritten_sql, synthetic_wh, log_path=log, tracer=Tracer(),
-                       llm=PaddingLLM())
+    assert first.verdict.decision == "warn" and first.verdict.suggestion["verified_rewrite"]
+    offer = first.verdict.suggestion["sql"]
+    assert read_log(log)[0]["rewrite_fingerprint"] == fingerprint_query(offer)  # logged
+    second = run_query(offer, synthetic_wh, log_path=log, tracer=Tracer(), llm=PaddingLLM())
     assert second.verdict.decision == "warn" and second.execution.status == "completed"
-    assert [r["decision"] for r in read_log(log)] == ["rewrite", "warn"]
+    assert second.verdict.suggestion is None  # no second round
+    assert [r["decision"] for r in read_log(log)] == ["warn", "warn"]
     # The original query's own shape was never an offered rewrite: still offered.
     third = run_query(HAVING, synthetic_wh, log_path=log, tracer=Tracer(), llm=PaddingLLM())
-    assert third.verdict.decision == "rewrite"
+    assert third.verdict.suggestion["verified_rewrite"]
 
 
 def test_load_dotenv_sets_only_missing_nonempty_and_never_overrides(tmp_path, monkeypatch):

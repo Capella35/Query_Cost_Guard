@@ -54,11 +54,14 @@ Three points in time (`DESIGN.md` §3):
    query; backends reload it when the file changes); runs `rules/static_rules.py` plus the join fan-out
    estimate (`join_estimate.py`, rows from the registry since a dry run has no
    row counts); compares against the workload class caps; then tries rewrites
-   (`rewrites.py` deterministic catalog first, the LLM proposer only if there
-   is none). A rewrite is offered only after `tools/compare_results` returns the
+   (`rewrites.py` deterministic catalog only: `decide()` takes no model). A
+   rewrite is offered only after `tools/compare_results` returns the
    same rows on sampled inputs and, on BigQuery, it bills fewer bytes
    (`runtime.bigquery_billed`: at least 10 MiB per table). Blocks get
-   `fix_hints.py`. Every step is a span in `tracing.py`.
+   `fix_hints.py`. Every step is a span in `tracing.py`. **Verdict first:**
+   the model's help comes after, from `guard.assist()` (warn and block only;
+   explanation, improved query, a verified model rewrite as an OFFER), and
+   never changes the decision (`tests/test_verdict_first.py`).
 2. **During the run: `runtime.run_query()`.** Executes only non-blocked queries,
    with the class's runtime cap (or a learned lower limit) as `job_timeout_ms`
    and its bytes cap as `maximum_bytes_billed`. It reads the query log first,

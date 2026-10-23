@@ -89,7 +89,8 @@ def test_mcp_lists_five_tools_and_calls_them(service):
 
     tools, res = asyncio.run(go())
     assert set(tools) == {"check_query", "run_query", "get_table_info", "get_query_history",
-                          "workload_report", "registry_status"}
+                          "workload_report", "registry_status", "get_assistance"}
+    assert tools["get_assistance"].annotations.read_only_hint is True
     assert tools["registry_status"].annotations.read_only_hint is True
     assert tools["check_query"].annotations.read_only_hint is True
     assert tools["run_query"].annotations.read_only_hint is False

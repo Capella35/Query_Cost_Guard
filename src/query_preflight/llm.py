@@ -2,9 +2,10 @@
 
 Where the LLM earns its place, and where it is fenced in:
 
-- propose_rewrite (F3.1): called only on a flagged query. Its SQL is never
-  offered unless guard.decide() verifies it with compare_results and it is
-  read-only and not costlier by estimate. A wrong rewrite costs a sampled
+- propose_rewrite (F3.1): called only on a warned or blocked query, AFTER
+  the verdict (guard.assist). Its SQL is never offered unless it passes the
+  rewrite gates (read-only, cheaper, compare_results) — and even then it is
+  an offer: the decision stays as decided. A wrong rewrite costs a sampled
   check, never a wrong answer.
 - explain_flag (F3.3): plain-language explanation of a warn/block, written
   AFTER the deterministic verdict. It cannot change the verdict.

@@ -3,12 +3,19 @@ the warehouse or the model sees it, and no tool response or log carries it."""
 import json
 
 from query_preflight import secret_scan
-from query_preflight.guard import SECRET_FINDING, decide
+from query_preflight.guard import SECRET_FINDING, assist, decide
 from query_preflight.tracing import Tracer
 
 FAKE_ANTHROPIC = "sk-ant-api03-" + "x" * 40
 FAKE_GOOGLE = "AIza" + "B" * 35
 
+
+
+def _check(sql, llm=None, **kw):
+    """The verdict (decide, no model), then the model's help (assist)."""
+    v = decide(sql, **kw)
+    return assist(sql, v, llm, customer=kw.get("customer"), backend=kw.get("backend"),
+                  tracer=kw.get("tracer"))
 
 def test_find_and_redact_known_formats(monkeypatch):
     text = f"key {FAKE_ANTHROPIC} and {FAKE_GOOGLE} and AKIAABCDEFGHIJKLMNOP"
@@ -43,7 +50,7 @@ class Spy:
 
 def test_a_query_with_a_secret_is_blocked_before_the_warehouse_or_the_model():
     backend, llm = Spy(), Spy()
-    v = decide(f"SELECT '{FAKE_ANTHROPIC}' AS k FROM users", backend=backend, tracer=Tracer(), llm=llm,
+    v = _check(f"SELECT '{FAKE_ANTHROPIC}' AS k FROM users", backend=backend, tracer=Tracer(), llm=llm,
                bypass_reason="please")
     assert v.decision == "block" and v.findings == [SECRET_FINDING]
     assert "Anthropic API key" in v.reason and FAKE_ANTHROPIC not in v.reason

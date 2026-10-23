@@ -176,6 +176,10 @@ def run_query(
     """Guard the query, run it under the watchdog unless blocked, log it,
     and feed the duration to the threshold updater's shadow/probation.
 
+    Order: the verdict (deterministic, no model) decides whether it runs;
+    then, with `llm`, the model's help for a warn or block (guard.assist),
+    which never changes the decision; then the log line.
+
     Rewrites already offered (rewrite_fingerprint in the log) are passed to
     the Guard so a run rewrite is not rewritten again. The log is read whole
     each call — fine for a POC log, an index for a real one.
@@ -200,7 +204,7 @@ def run_query(
                if log_path is not None else None)
     t0 = time.perf_counter()
     verdict = decide(sql, workload_class, customer=customer, backend=backend, tracer=tracer,
-                     llm=llm, bypass_reason=bypass_reason, offered_rewrites=offered,
+                     bypass_reason=bypass_reason, offered_rewrites=offered,
                      rewrite_wait_sec=rewrite_wait_sec, shape_runtimes=shape_runtimes(log, fp),
                      shape_volume=shape_volume(log, fp, volume_settings(customer)["window_hours"]),
                      budget=budget_state(log, customer, user if budget_user == "" else budget_user,
@@ -221,6 +225,11 @@ def run_query(
         execution = backend.execute(sql, timeout_sec=timeout, max_bytes_billed=bytes_ceiling)
         if updater is not None and execution.status in ("completed", "killed"):
             updater.observe(fp, execution.duration_sec)
+    if llm is not None:
+        from .guard import assist
+
+        assist(sql, verdict, llm, customer=customer, backend=backend, tracer=tracer,
+               rewrite_wait_sec=rewrite_wait_sec)
     ts = datetime.now(timezone.utc).isoformat()
     size, anomaly = None, None
     if execution is not None and execution.status == "completed":
@@ -245,8 +254,7 @@ def run_query(
                 timeout_sec=timeout,
                 user=user,
                 sql_hash=query_hash(sql, log_path),
-                rewrite_fingerprint=(fingerprint_query(verdict.rewritten_sql)
-                                     if verdict.rewritten_sql else None),
+                rewrite_fingerprint=_offered_fingerprint(verdict),
                 bytes_estimate=verdict.estimated_bytes,
                 bypassed=verdict.bypassed is not None,
                 check_ms=check_ms,
@@ -262,6 +270,15 @@ def run_query(
         on_anomaly({**_asdict(anomaly), "ts": ts, "workload_class": workload_class,
                     "user": user, "sql": sql})
     return RunOutcome(verdict, execution, timeout, fp, anomaly)
+
+
+def _offered_fingerprint(verdict) -> Optional[str]:
+    """The rewrite this check offered: the verdict's own, or the model's
+    verified one (assist), so an offered rewrite run later gets no second."""
+    offered = verdict.rewritten_sql or (
+        (verdict.suggestion or {}).get("sql") if (verdict.suggestion or {}).get("verified_rewrite")
+        else None)
+    return fingerprint_query(offered) if offered else None
 
 
 def _anomaly_size(sql: str, verdict, backend) -> Optional[int]:
