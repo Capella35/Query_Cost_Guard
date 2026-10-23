@@ -183,9 +183,12 @@ class ClaudeLLM:
         self.backend = backend
         self.schema_lookup = schema_lookup
         self.calls = 0
+        self.last_stop_reason: Optional[str] = None  # of the latest call
+        self.last_usd: Optional[float] = None  # MODELED cost of the latest call
 
     def _parse(self, system: str, user: str, schema: type[BaseModel]):
         self.calls += 1
+        self.last_stop_reason, self.last_usd = None, None
         resp = self.client.beta.messages.parse(
             model=self.model,
             max_tokens=16000,
@@ -196,6 +199,7 @@ class ClaudeLLM:
             betas=[FALLBACK_BETA],
             fallbacks="default",
         )
+        self.last_stop_reason = getattr(resp, "stop_reason", None)
         usage = getattr(resp, "usage", None)
         if usage is not None:  # counts only — the prompt holds the query, so it is not traced
             from .tracing import annotate
@@ -207,6 +211,7 @@ class ClaudeLLM:
             if self.model == MODEL:  # price known for this model only
                 usd = (tin * PRICE_PER_MTOK["input"] + tout * PRICE_PER_MTOK["output"]
                        + tcache * PRICE_PER_MTOK["cache_read"]) / 1e6
+            self.last_usd = usd
             annotate(model=self.model, input_tokens=tin, output_tokens=tout, cache_read_tokens=tcache,
                      # OpenInference names, so Phoenix shows tokens (and cost) per call
                      **{"llm.provider": "anthropic", "llm.model_name": self.model,
@@ -312,10 +317,21 @@ class ClaudeLLM:
         return out.summary if out is not None else None
 
     def judge(self, proposal) -> str:
-        """approve | reject | hold, from aggregates only."""
-        out = self._parse(JUDGE_SYSTEM, judge_payload(proposal), JudgmentOut)
-        if out is None:
+        """approve | reject | hold, from aggregates only. Records on the
+        proposal how the call ended (judge_outcome) and its MODELED cost, so a
+        refusal or an error, which hold, is never read as a judgment."""
+        try:
+            out = self._parse(JUDGE_SYSTEM, judge_payload(proposal), JudgmentOut)
+        except Exception as e:  # noqa: BLE001 — an error means no output: the judge holds
+            proposal.judge_outcome = f"error: {type(e).__name__}"
             return "hold"
+        finally:
+            proposal.judge_usd = self.last_usd
+        if out is None:
+            proposal.judge_outcome = ("refused" if self.last_stop_reason == "refusal"
+                                      else f"no output ({self.last_stop_reason})")
+            return "hold"
+        proposal.judge_outcome = "judged"
         proposal.judge_reason = out.reason
         return out.decision
 

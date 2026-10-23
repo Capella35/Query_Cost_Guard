@@ -65,6 +65,7 @@ class NullLLM:
         return None
 
     def judge(self, proposal) -> str:
+        proposal.judge_outcome = "no judge"
         return "hold"  # no judge: never auto-approve on an LLM's behalf
 
 

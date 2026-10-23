@@ -52,6 +52,10 @@ class ThresholdProposal:
     would_block_rate_on_history: Optional[float] = None
     gate_violations: list[str] = field(default_factory=list)
     judge_reason: Optional[str] = None
+    # How the judge call ended: "judged", "refused", "no output (<stop reason>)",
+    # "error: <type>" or "no judge". Only "judged" is a judgment; the rest hold.
+    judge_outcome: Optional[str] = None
+    judge_usd: Optional[float] = None  # MODELED cost of the judge call
 
 
 @dataclass
