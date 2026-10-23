@@ -55,7 +55,7 @@ What exists in code today. "How it works" below only describes rows marked **bui
 | Investigator: regression check vs a pre-regression baseline, bounded tightening, rule-store lookup, episodic memory | **built** | `investigator.py` |
 | Threshold updater: deterministic gates → optional judge → shadow trial → enforce → probation, auto-rollback | **built** (offline-tested) | `thresholds.ThresholdUpdater` |
 | CLI: `check`, `run` (`--user`, `--bypass-reason`), `investigate`, `investigate-anomalies`, `accept-normal`, `report` | **built** | `python -m query_preflight` |
-| LLM rewrite proposer, flag explainer, threshold judge (Claude) | **built, live eval not yet run** — tested with fakes; needs Anthropic credentials | `llm.py` |
+| LLM rewrite proposer, flag explainer, threshold judge (Claude) | **built**; threshold judge **measured live 2026-10-23: safe but not usable** — 0/6 bad approved, 6/6 subtle-bad right verdict, but 8/8 good proposals rejected (it reads the regression that triggers every proposal as the new normal; [`eval/RESULTS_judge.md`](eval/RESULTS_judge.md)) | `llm.py` |
 | Adaptive anomaly rule (a completed run far above its own shape's history: size clause on the two-way estimate / BigQuery bytes, drift-aware runtime clause). Runs after every completed run in `run_query`, logged on the run (`anomaly`, `anomaly_size`); never blocks or kills. The replays import the same code. Trend extrapolated at most one history span past the last run. Flagged runs stay out of the history (option B, `customer.yaml anomaly.exclude_flagged`); a person accepts a lasting change with `accept-normal <shape_id>` (CLI only, append-only audit file; later spikes still flagged) | **built** — evidence from the replays: batch, held-out hard seeds: FP 1.1%, catch 72.5%; online, held-out seeds 201–220, option B: catch 70.1%, FP 4.1% (A: 53.2%, 1.9%; [`eval/RESULTS_replay_online.md`](eval/RESULTS_replay_online.md)); live: a 5-year window over a weekly shape flagged at 262× its median size (TheLook DuckDB) | `anomaly.py`, `runtime.py` |
 | Report-only investigator agent: started by an anomaly (MCP server, background) or `investigate-anomalies` (batch from the log). Fixed steps through the MCP tools (history, tables, check, neighbouring shapes, past incidents), deterministic diagnosis (size jump vs warehouse-wide slowdown vs this shape alone, recurring), report in `runs/investigations/`, incident in memory. Changes nothing. Optional Claude summary from aggregates only, off by default (`investigator.llm_max_per_day`), capped per day and cached. Cooldown per shape and a daily cap | **built** — tested with a fake warehouse and end to end over stdio on TheLook; LLM summary tested with a fake model only | `investigator_agent.py` |
 | BigQuery backend: dry-run bytes, table metadata (incl. partition column), watchdog execute | **partial** — `check` run live (dry runs) on the 30-query set: 26 of 30 verdicts match DuckDB, 0 errors ([`eval/RESULTS_bq_live_check.md`](eval/RESULTS_bq_live_check.md)); `run` never executed live; rewrites verified on TEMP-table samples in a BigQuery session (live: ~30 MiB billed and ~8–10 s per verification, mostly BigQuery's 10 MiB-per-table minimum); a check takes about one dry run (~0.6 s warm: table metadata cached 10 min, independent calls overlapped); column registry built and read (the GROUP BY check now runs instead of being skipped); join fan-out estimated from the registry (`join_estimate.py`): Q13 now blocks, 26 of 30 match | `backends/bigquery_backend.py`, `scripts/bq_live_check.py` |
@@ -289,9 +289,12 @@ model label never blocks on its own.
 [`eval/RESULTS_judge.md`](eval/RESULTS_judge.md)): 20 labeled proposals.
 Deterministic gates reject 6/6 gate-type bad proposals (loosened to p99, tiny
 sample, above hard cap, 60% jump, below p95) and pass 8/8 good ones; 6 subtle
-bad proposals pass the gates by design and are the judge's job. **The Claude
-judge's agreement has not been measured yet** (`--llm claude` needs
-credentials).
+bad proposals pass the gates by design and are the judge's job. **First live
+Claude judge run (2026-10-23, Haiku 5.5, $0.0043 MODELED): safe but not
+usable.** 0/6 bad approved, 6/6 subtle-bad right verdict, but all 8 good
+proposals rejected. Cause: every proposal follows a regression (recent median
+≥ 1.5× baseline), the prompt never says so, and the judge reads that regression
+as the new normal. Not fixed yet; a fix makes the set a tuning set.
 
 **Adaptive-threshold replay** (`eval/run_replay.py`): split the log by time
 (70% history / 30% test), baselines from history, test replayed through
@@ -489,8 +492,9 @@ PYTHONPATH=src .venv/bin/python demo/demo.py
     `decide()`.
   - **Spend before vs after:** needs a pilot with real billing data. The
     report's weekly ledger is the in-product proxy.
-- Run and publish the live LLM evals (rewrite equivalence rate, judge
-  agreement and wrongly-approved count).
+- Run and publish the live LLM evals (rewrite equivalence rate). The judge
+  eval ran on 2026-10-23 (0 bad approved, 8/8 false alarms): decide what a
+  5-run regression means, then tell the judge.
 - BigQuery: live dry-run validation, sampled verification, JOBS history.
 - Streaming queries: out of scope for the POC.
 - **Deferred explicitly:** a tool-calling (ReAct) Guard loop — only if the
