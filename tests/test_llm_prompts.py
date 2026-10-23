@@ -3,9 +3,9 @@ rewrite prompt names the dialect in use, and the explainer is told the
 decision and its reason, not only the findings."""
 from types import SimpleNamespace
 
-from cost_guard import sql_ast
-from cost_guard.guard import GuardVerdict, explain_inputs
-from cost_guard.llm import ClaudeLLM
+from query_preflight import sql_ast
+from query_preflight.guard import GuardVerdict, explain_inputs
+from query_preflight.llm import ClaudeLLM
 
 
 class Capture:

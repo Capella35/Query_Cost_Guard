@@ -3,7 +3,7 @@ a recurring peak is normal, and a broken trend is not extrapolated."""
 import math
 import random
 
-from cost_guard.thresholds import DriftAwareBaseline
+from query_preflight.thresholds import DriftAwareBaseline
 
 HOURS = [12.0 * i for i in range(42)]
 

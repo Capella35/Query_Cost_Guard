@@ -63,8 +63,8 @@ def main() -> None:
     import sys
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-    from cost_guard.column_registry import build_registry, registry_settings
-    from cost_guard.config import load_customer
+    from query_preflight.column_registry import build_registry, registry_settings
+    from query_preflight.config import load_customer
 
     rep = build_registry(str(db_path), settings=registry_settings(load_customer()), mode="all")
     print(f"column registry: {rep.columns} columns profiled -> {db_path.with_name(db_path.stem + '.registry.duckdb')}"

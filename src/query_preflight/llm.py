@@ -213,7 +213,7 @@ class ClaudeLLM:
                         "llm.token_count.prompt": tin + tcache, "llm.token_count.completion": tout,
                         "llm.token_count.total": tin + tcache + tout,
                         "llm.token_count.prompt_details.cache_read": tcache,
-                        "llm.cost.total": usd, "cost_guard.llm_usd_modeled": usd})
+                        "llm.cost.total": usd, "query_preflight.llm_usd_modeled": usd})
         from . import observability
 
         # Content mode (evals on TheLook only): the prompt and reply on the

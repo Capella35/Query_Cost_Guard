@@ -8,11 +8,11 @@ import time
 import pytest
 
 import importlib
-from cost_guard.guard import decide
-from cost_guard.tracing import Tracer
+from query_preflight.guard import decide
+from query_preflight.tracing import Tracer
 
-# the module (cost_guard.tools re-exports the function under the same name)
-cr = importlib.import_module("cost_guard.tools.compare_results")
+# the module (query_preflight.tools re-exports the function under the same name)
+cr = importlib.import_module("query_preflight.tools.compare_results")
 
 WRAPPED = ("SELECT order_id, status FROM orders "
            "WHERE DATE_TRUNC('month', created_at) = DATE '2024-01-01'")

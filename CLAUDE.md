@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Cost Guard checks warehouse SQL before it runs (allow / warn / rewrite / block),
+Query Preflight checks warehouse SQL before it runs (allow / warn / rewrite / block),
 runs allowed queries under hard limits, logs them, and learns from the log.
 **BigQuery is the target warehouse**; DuckDB is used for the unit tests and the
 offline demo. `DESIGN.md` is the source of truth for decisions (newer than
@@ -15,9 +15,9 @@ offline demo. `DESIGN.md` is the source of truth for decisions (newer than
 .venv/bin/python -m pytest -q tests/test_join_estimate.py::test_name   # one test
 # The CLI, MCP server and registry build open customer.yaml warehouse.backend
 # (BigQuery) unless --backend is given; --db FILE alone means DuckDB (tests, demo).
-PYTHONPATH=src .venv/bin/python -m cost_guard check "SELECT ..."       # verdict only, nothing runs (a free dry run)
-PYTHONPATH=src .venv/bin/python -m cost_guard run "SELECT ..."         # guard + watchdog + query log (BILLED on BigQuery)
-PYTHONPATH=src .venv/bin/python -m cost_guard report                   # workload report from the log
+PYTHONPATH=src .venv/bin/python -m query_preflight check "SELECT ..."       # verdict only, nothing runs (a free dry run)
+PYTHONPATH=src .venv/bin/python -m query_preflight run "SELECT ..."         # guard + watchdog + query log (BILLED on BigQuery)
+PYTHONPATH=src .venv/bin/python -m query_preflight report                   # workload report from the log
 
 # BigQuery evals (GCP_PROJECT is in .env; the project is agentic-project1-511621,
 # dataset cost_guard_thelook). Dry runs are free; rewrite verification bills ~30 MiB.
@@ -29,8 +29,8 @@ PHOENIX_HOST=127.0.0.1 .venv-phoenix/bin/phoenix serve   # local Phoenix UI on :
 .venv/bin/python eval/run_eval.py --suite bq-validation --project $GCP_PROJECT --phoenix [--phoenix-content]
 
 # Column registry (REQUIRED to be refreshed on a schedule in a deployment; not scheduled here — run on demand)
-PYTHONPATH=src .venv/bin/python -m cost_guard registry status --backend bigquery    # local file, free
-PYTHONPATH=src .venv/bin/python -m cost_guard registry refresh --backend bigquery   # --mode stale (default) | missing | all
+PYTHONPATH=src .venv/bin/python -m query_preflight registry status --backend bigquery    # local file, free
+PYTHONPATH=src .venv/bin/python -m query_preflight registry refresh --backend bigquery   # --mode stale (default) | missing | all
 ```
 
 There is no linter or build step. Tests import `src/` and `demo/` via
@@ -44,13 +44,13 @@ makes no model calls. `.env` holds `ANTHROPIC_API_KEY` and `GCP_PROJECT`: never 
 
 Three points in time (`DESIGN.md` §3):
 
-1. **Before the run: `guard.decide()`** (`src/cost_guard/guard.py`). Parses SQL
+1. **Before the run: `guard.decide()`** (`src/query_preflight/guard.py`). Parses SQL
    with sqlglot (`sql_ast.py`, the dialect is switched per backend with
    `using_dialect`); runs the read-only check; gets the estimate from
    `backend.estimate()` (BigQuery dry-run bytes, DuckDB EXPLAIN rows corrected
    by `plan_estimate.py`); fetches table metadata and the **column registry**
    (`column_registry.py`: pre-built distinct counts, row counts and per-value
-   counts, refreshed with `cost_guard registry refresh`, never scanned per
+   counts, refreshed with `query_preflight registry refresh`, never scanned per
    query; backends reload it when the file changes); runs `rules/static_rules.py` plus the join fan-out
    estimate (`join_estimate.py`, rows from the registry since a dry run has no
    row counts); compares against the workload class caps; then tries rewrites

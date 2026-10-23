@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cost Guard live demo: five checks on BigQuery. Press Enter between steps.
+# Query Preflight live demo: five checks on BigQuery. Press Enter between steps.
 # Run from anywhere: scripts/demo.sh. Nothing executes a query (BigQuery dry runs;
 # the rewrite check reads a small sample, ~30 MiB billed).
 # Only some steps: scripts/demo.sh 1 3 5
@@ -12,7 +12,7 @@ show() {
   printf '\033[1m%s\033[0m\n' "$1"
   echo "  $2"
   read -r -p "  [Enter to check]" _
-  PYTHONPATH=src .venv/bin/python -m cost_guard check "$2" 2>/dev/null | .venv/bin/python -c '
+  PYTHONPATH=src .venv/bin/python -m query_preflight check "$2" 2>/dev/null | .venv/bin/python -c '
 import json, sys
 v = json.load(sys.stdin)
 d = v["decision"]

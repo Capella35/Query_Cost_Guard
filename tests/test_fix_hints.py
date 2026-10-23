@@ -3,9 +3,9 @@ change the result, nothing on non-blocks, no change to any decision."""
 
 from types import SimpleNamespace
 
-from cost_guard.fix_hints import _unique
-from cost_guard.guard import decide
-from cost_guard.tracing import Tracer
+from query_preflight.fix_hints import _unique
+from query_preflight.guard import decide
+from query_preflight.tracing import Tracer
 
 
 def _check(sql, wh, **kw):
@@ -64,7 +64,7 @@ def test_approximate_counts_get_a_looser_uniqueness_bar():
 def test_looser_class_named_only_when_the_join_fits_its_row_cap():
     from types import SimpleNamespace
 
-    from cost_guard.fix_hints import fix_hints
+    from query_preflight.fix_hints import fix_hints
 
     customer = {"workload_classes": {
         "interactive": {"max_bytes_scanned": 200 * 1024**3, "max_rows_processed": 1_000_000},

@@ -5,11 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from cost_guard import guard
-from cost_guard.backends.bigquery_backend import BigQueryWarehouse
-from cost_guard.guard import decide
-from cost_guard.llm import SuggestionOut
-from cost_guard.tracing import Tracer
+from query_preflight import guard
+from query_preflight.backends.bigquery_backend import BigQueryWarehouse
+from query_preflight.guard import decide
+from query_preflight.llm import SuggestionOut
+from query_preflight.tracing import Tracer
 
 GiB = 1024**3
 SQL = "SELECT status, COUNT(*) AS n FROM orders GROUP BY status"  # no partition filter -> warn

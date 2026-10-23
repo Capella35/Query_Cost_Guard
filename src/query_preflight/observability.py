@@ -1,4 +1,4 @@
-"""Optional OpenTelemetry export of Cost Guard traces — e.g. to a local Phoenix.
+"""Optional OpenTelemetry export of Query Preflight traces — e.g. to a local Phoenix.
 
 Off by default: tests, evals and the CLI write JSONL traces only (tracing.py)
 and need no OpenTelemetry packages. Turned on by setup(), which the MCP
@@ -24,7 +24,7 @@ Content mode (setup(content=True); only eval/run_eval.py --phoenix-content
 turns it on, on TheLook): add_content() also attaches the SQL, the verdict
 and the model's prompt and reply as OpenInference input/output attributes —
 to the EXPORTED spans only, never to the JSONL trace. Such traces go to
-their own Phoenix project and carry `cost_guard.content = included`.
+their own Phoenix project and carry `query_preflight.content = included`.
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ from contextlib import contextmanager, nullcontext
 from typing import Any, Optional
 
 DEFAULT_ENDPOINT = "http://localhost:6006/v1/traces"
-SERVICE_NAME = "cost-guard"
+SERVICE_NAME = "query-preflight"
 
 _tracer = None  # OpenTelemetry tracer once setup() ran; None = export off
 _provider = None
@@ -68,7 +68,7 @@ def setup(endpoint: Optional[str] = None, exporter=None, set_global: bool = True
     except ImportError:
         return False
     resource = {"service.name": SERVICE_NAME,
-                "cost_guard.content": "included" if content else "none"}
+                "query_preflight.content": "included" if content else "none"}
     if project:
         resource["openinference.project.name"] = project  # Phoenix's project key
     provider = TracerProvider(resource=Resource.create(resource))
@@ -81,7 +81,7 @@ def setup(endpoint: Optional[str] = None, exporter=None, set_global: bool = True
     if set_global:
         trace.set_tracer_provider(provider)
     _provider = provider
-    _tracer = provider.get_tracer("cost_guard")
+    _tracer = provider.get_tracer("query_preflight")
     _content = bool(content)
     return True
 

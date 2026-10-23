@@ -33,7 +33,7 @@ from .thresholds import fingerprint_query
 # query's dry run, each table's metadata, and the join check's dry run. On
 # BigQuery each is a network round trip (~0.2-0.9 s); one after another they
 # added up (eval: a dated join took 3.8 s before caching and overlap).
-_POOL = ThreadPoolExecutor(max_workers=16, thread_name_prefix="cost-guard")
+_POOL = ThreadPoolExecutor(max_workers=16, thread_name_prefix="query-preflight")
 
 # Rewrite verification runs real (small) queries — ~8-10 s on BigQuery. A
 # long-running service can cap how long a check waits for it
@@ -50,7 +50,7 @@ SELECT_STAR_MIN_RUNS = 20  # runs of history before the runtime half applies (= 
 
 VERIFY_MEMORY_TTL_SEC = 24 * 3600
 VERIFY_MEMORY_MAX = 10_000
-_VERIFY_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="cost-guard-verify")
+_VERIFY_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="query-preflight-verify")
 _verify_lock = threading.Lock()
 _verified: dict = {}  # key -> (expires_at, ComparisonOutcome)
 _pending: dict = {}  # key -> Future

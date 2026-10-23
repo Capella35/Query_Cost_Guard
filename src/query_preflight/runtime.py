@@ -19,7 +19,7 @@ Two fields exist for the workload report (ledger.py):
 - sql_hash: a KEYED hash (HMAC-SHA256) of the exact query, literals
   included. It answers "was this identical query run before?" (result-cache
   opportunity) without storing the literals; the key stays with the
-  deployment (COST_GUARD_LOG_KEY, else a generated key file next to the log),
+  deployment (QUERY_PREFLIGHT_LOG_KEY, else a generated key file next to the log),
   so a guessable literal like user_id = 5 can't be confirmed by hashing
   candidates without it.
 - user: an opaque caller id, as passed by the caller (pseudonymize upstream).
@@ -74,7 +74,7 @@ class LogRecord:
 
 
 def _log_key(log_path: Path) -> bytes:
-    env = os.environ.get("COST_GUARD_LOG_KEY")
+    env = os.environ.get("QUERY_PREFLIGHT_LOG_KEY")
     if env:
         return env.encode()
     key_file = log_path.parent / ".log_key"

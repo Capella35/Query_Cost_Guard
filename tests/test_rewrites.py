@@ -1,6 +1,6 @@
 """Tests for the deterministic rewrite fixers."""
 
-from cost_guard.rewrites import parenthesized_subqueries, suggest_cte_rewrite
+from query_preflight.rewrites import parenthesized_subqueries, suggest_cte_rewrite
 
 
 def test_extracts_nested_subqueries():

@@ -40,8 +40,8 @@ from bq_dryrun_compare import to_bigquery  # noqa: E402
 from eval_config import load_eval_customer  # noqa: E402
 from run_eval import load_thelook_cases  # noqa: E402
 
-from cost_guard.guard import decide  # noqa: E402
-from cost_guard.tracing import Tracer  # noqa: E402
+from query_preflight.guard import decide  # noqa: E402
+from query_preflight.tracing import Tracer  # noqa: E402
 
 MIB = 1024**2
 # Everything below this line in the results file is hand-written (what the
@@ -73,8 +73,8 @@ def main() -> None:
     ap.add_argument("--db", default=str(ROOT / "data" / "thelook.duckdb"))
     args = ap.parse_args()
 
-    from cost_guard.backends.bigquery_backend import BigQueryWarehouse
-    from cost_guard.backends.duckdb_backend import DuckDBWarehouse
+    from query_preflight.backends.bigquery_backend import BigQueryWarehouse
+    from query_preflight.backends.duckdb_backend import DuckDBWarehouse
 
     customer = load_eval_customer()
     duck = DuckDBWarehouse(args.db)

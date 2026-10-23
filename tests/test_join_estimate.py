@@ -4,9 +4,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from cost_guard import sql_ast
-from cost_guard.column_registry import ColumnRegistry, RegistryEntry
-from cost_guard.join_estimate import join_estimates
+from query_preflight import sql_ast
+from query_preflight.column_registry import ColumnRegistry, RegistryEntry
+from query_preflight.join_estimate import join_estimates
 
 NOW = datetime.now(timezone.utc).isoformat()
 TABLES = {  # table: (rows, {column: ndv})
@@ -93,7 +93,7 @@ def _bq_warehouse(tmp_path, pruned_share=0.01):
     pytest.importorskip("google.cloud.bigquery")
     from types import SimpleNamespace
 
-    from cost_guard.backends.bigquery_backend import BigQueryWarehouse
+    from query_preflight.backends.bigquery_backend import BigQueryWarehouse
 
     class Client:
         def query(self, sql, job_config=None):
@@ -116,8 +116,8 @@ def _bq_warehouse(tmp_path, pruned_share=0.01):
 
 
 def test_guard_blocks_unfiltered_fanout_on_bigquery(tmp_path):
-    from cost_guard.guard import decide
-    from cost_guard.tracing import Tracer
+    from query_preflight.guard import decide
+    from query_preflight.tracing import Tracer
 
     v = decide("SELECT a.user_id, COUNT(*) AS pairs FROM events a JOIN events b "
                "ON a.user_id = b.user_id GROUP BY a.user_id",
@@ -126,8 +126,8 @@ def test_guard_blocks_unfiltered_fanout_on_bigquery(tmp_path):
 
 
 def test_guard_does_not_act_on_filtered_or_lookup_joins(tmp_path):
-    from cost_guard.guard import decide
-    from cost_guard.tracing import Tracer
+    from query_preflight.guard import decide
+    from query_preflight.tracing import Tracer
 
     wh = _bq_warehouse(tmp_path)
     filtered = decide("SELECT a.user_id FROM events a JOIN events b ON a.user_id = b.user_id "
@@ -168,8 +168,8 @@ def test_group_by_column_is_judged_in_its_own_scope():
 
 
 def test_group_by_qualified_column_is_judged_on_its_own_table(tmp_path):
-    from cost_guard.guard import decide
-    from cost_guard.tracing import Tracer
+    from query_preflight.guard import decide
+    from query_preflight.tracing import Tracer
 
     v = decide("SELECT u.id, COUNT(*) AS n FROM users u JOIN events e ON e.user_id = u.id "
                "WHERE e.created_at >= TIMESTAMP '2023-12-01' GROUP BY u.id",
@@ -182,8 +182,8 @@ def test_partition_filter_scales_the_join_by_the_measured_fraction(tmp_path):
     """A date filter on the partition column is applied as the share of
     partitions a dry run reads (B19's shape): 30% of events still fans out
     past the cap, 1% does not."""
-    from cost_guard.guard import decide
-    from cost_guard.tracing import Tracer
+    from query_preflight.guard import decide
+    from query_preflight.tracing import Tracer
 
     q = ("SELECT a.user_id FROM events a JOIN events b ON a.user_id = b.user_id "
          "WHERE a.created_at >= TIMESTAMP '2023-12-01' AND b.created_at >= TIMESTAMP '2023-12-01'")
@@ -194,8 +194,8 @@ def test_partition_filter_scales_the_join_by_the_measured_fraction(tmp_path):
 
 
 def test_other_filters_still_keep_the_estimate_out_of_decisions(tmp_path):
-    from cost_guard.guard import decide
-    from cost_guard.tracing import Tracer
+    from query_preflight.guard import decide
+    from query_preflight.tracing import Tracer
 
     v = decide("SELECT a.user_id FROM events a JOIN events b ON a.user_id = b.user_id "
                "WHERE a.event_type = 'purchase'",
@@ -224,9 +224,9 @@ def test_cartesian_reads_a_view_row_count_from_the_registry(tmp_path):
     profiled the view; its row count decides."""
     from types import SimpleNamespace
 
-    from cost_guard.backends.bigquery_backend import BigQueryWarehouse
-    from cost_guard.guard import decide
-    from cost_guard.tracing import Tracer
+    from query_preflight.backends.bigquery_backend import BigQueryWarehouse
+    from query_preflight.guard import decide
+    from query_preflight.tracing import Tracer
 
     class Client:
         def query(self, sql, job_config=None):
@@ -300,9 +300,9 @@ def test_value_counts_replace_one_over_ndv_for_listed_values():
 def test_guard_blocks_filtered_fanout_with_a_value_filter(tmp_path):
     from types import SimpleNamespace
 
-    from cost_guard.backends.bigquery_backend import BigQueryWarehouse
-    from cost_guard.guard import decide
-    from cost_guard.tracing import Tracer
+    from query_preflight.backends.bigquery_backend import BigQueryWarehouse
+    from query_preflight.guard import decide
+    from query_preflight.tracing import Tracer
 
     class Client:
         def query(self, sql, job_config=None):

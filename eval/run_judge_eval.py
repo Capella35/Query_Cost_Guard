@@ -31,8 +31,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from cost_guard.investigator import ThresholdProposal, _trend  # noqa: E402
-from cost_guard.thresholds import FingerprintStats, gate_violations  # noqa: E402
+from query_preflight.investigator import ThresholdProposal, _trend  # noqa: E402
+from query_preflight.thresholds import FingerprintStats, gate_violations  # noqa: E402
 
 HARD_CAP = 300.0
 rng = random.Random(20261013)
@@ -117,7 +117,7 @@ def main() -> None:
     args = ap.parse_args()
     judge = None
     if args.llm == "claude":
-        from cost_guard.llm import ClaudeLLM
+        from query_preflight.llm import ClaudeLLM
 
         judge = ClaudeLLM()
 

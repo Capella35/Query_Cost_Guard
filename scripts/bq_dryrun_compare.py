@@ -179,9 +179,9 @@ def to_bigquery(sql: str) -> str:
 def thelook_rewrite_cases(db: str) -> list[tuple[str, str, str, str]]:
     """(id, source, original, rewrite) for the 30-query set's offered rewrites."""
     import yaml
-    from cost_guard.backends.duckdb_backend import DuckDBWarehouse
-    from cost_guard.guard import decide
-    from cost_guard.tracing import Tracer
+    from query_preflight.backends.duckdb_backend import DuckDBWarehouse
+    from query_preflight.guard import decide
+    from query_preflight.tracing import Tracer
     from eval_config import load_eval_customer
 
     wh, customer = DuckDBWarehouse(db), load_eval_customer()
@@ -432,7 +432,7 @@ def write_summary(rows: list[dict], project_dataset: str, price_per_tb: float, t
 
 
 def main() -> None:
-    from cost_guard.config import load_customer
+    from query_preflight.config import load_customer
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--project", required=True)

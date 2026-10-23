@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cost Guard + Investigator — 5-minute demo. Zero setup.
+"""Query Preflight + Investigator — 5-minute demo. Zero setup.
 
 Builds a synthetic e-commerce warehouse in DuckDB (/tmp) and walks through
 four beats:
@@ -23,12 +23,12 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "demo"))
 
 from warehouse import build_synthetic_warehouse
-from cost_guard.guard import decide
-from cost_guard.config import caps_for, load_customer
-from cost_guard.investigator import THRESHOLD_HEADROOM, propose_threshold
-from cost_guard.thresholds import BaselineStore, fingerprint_query
+from query_preflight.guard import decide
+from query_preflight.config import caps_for, load_customer
+from query_preflight.investigator import THRESHOLD_HEADROOM, propose_threshold
+from query_preflight.thresholds import BaselineStore, fingerprint_query
 
-DB = "/tmp/cost_guard_demo.duckdb"
+DB = "/tmp/query_preflight_demo.duckdb"
 
 
 def beat(n: int, title: str) -> None:

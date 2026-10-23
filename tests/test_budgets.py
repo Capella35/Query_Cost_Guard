@@ -4,11 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from cost_guard import budgets
-from cost_guard.backends.bigquery_backend import BigQueryWarehouse
-from cost_guard.guard import decide
-from cost_guard.runtime import run_query
-from cost_guard.tracing import Tracer
+from query_preflight import budgets
+from query_preflight.backends.bigquery_backend import BigQueryWarehouse
+from query_preflight.guard import decide
+from query_preflight.runtime import run_query
+from query_preflight.tracing import Tracer
 
 TB = 1024**4
 NOW = datetime(2026, 10, 18, 12, tzinfo=timezone.utc)
@@ -110,20 +110,20 @@ def test_budget_approval_keeps_the_per_query_bytes_cap(tmp_path, monkeypatch):
 
 
 def test_mcp_server_runs_as_the_deployment_user(synthetic_wh, tmp_path):
-    from cost_guard.config import load_customer
-    from cost_guard.mcp_server import CostGuardService
+    from query_preflight.config import load_customer
+    from query_preflight.mcp_server import QueryPreflightService
 
-    svc = CostGuardService(synthetic_wh, load_customer(), log_path=tmp_path / "log.jsonl",
+    svc = QueryPreflightService(synthetic_wh, load_customer(), log_path=tmp_path / "log.jsonl",
                            trace_path=None, investigations=False, user="alice")
     with pytest.raises(PermissionError, match="fixed user"):
         svc.run_query("SELECT 1", user="mallory")
     svc.run_query("SELECT 1")
-    from cost_guard.runtime import read_log
+    from query_preflight.runtime import read_log
 
     assert read_log(tmp_path / "log.jsonl")[-1]["user"] == "alice"
     rep = svc.workload_report()
     assert "budgets" not in rep and [s["name"] for s in rep["budget"]["scopes"]] == ["alice"]
-    anon = CostGuardService(synthetic_wh, load_customer(), log_path=tmp_path / "log2.jsonl",
+    anon = QueryPreflightService(synthetic_wh, load_customer(), log_path=tmp_path / "log2.jsonl",
                             trace_path=None, investigations=False)
     out = anon.check_query("SELECT 1")
     assert any(s.startswith("budget: no trusted user identity") for s in out["skipped_rules"])

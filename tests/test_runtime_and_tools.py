@@ -4,14 +4,14 @@ import json
 
 import pytest
 
-from cost_guard.config import load_customer
-from cost_guard.guard import decide
-from cost_guard.interfaces import RewriteProposal
-from cost_guard.investigator import ThresholdProposal
-from cost_guard.llm import judge_payload
-from cost_guard.runtime import read_log, run_query
-from cost_guard.thresholds import RuleStore, ThresholdRule, ThresholdUpdater, fingerprint_query
-from cost_guard.tracing import Tracer
+from query_preflight.config import load_customer
+from query_preflight.guard import decide
+from query_preflight.interfaces import RewriteProposal
+from query_preflight.investigator import ThresholdProposal
+from query_preflight.llm import judge_payload
+from query_preflight.runtime import read_log, run_query
+from query_preflight.thresholds import RuleStore, ThresholdRule, ThresholdUpdater, fingerprint_query
+from query_preflight.tracing import Tracer
 
 SLOW = "SELECT SUM(range * 2) FROM range(5000000000)"
 
@@ -57,7 +57,7 @@ def test_blocked_query_never_executes(synthetic_wh, tmp_path):
 # ---- F4.3 -------------------------------------------------------------------
 
 def test_tools(synthetic_wh, tmp_path):
-    from cost_guard.tools import get_query_history, get_table_metadata, run_sample_query
+    from query_preflight.tools import get_query_history, get_table_metadata, run_sample_query
 
     md = get_table_metadata("orders", backend=synthetic_wh)
     assert md.num_rows == 1_000_000 and md.partitioned_by == "created_at"
@@ -73,7 +73,7 @@ def test_tools(synthetic_wh, tmp_path):
 
 
 def test_cli_check_and_investigate(synthetic_wh, tmp_path, capsys):
-    from cost_guard.__main__ import main
+    from query_preflight.__main__ import main
 
     assert main(["--db", synthetic_wh.db_path, "check", "SELECT id FROM users WHERE id = 1"]) == 0
     assert json.loads(capsys.readouterr().out)["decision"] == "allow"
@@ -208,7 +208,7 @@ def test_run_query_offers_one_rewrite_round(synthetic_wh, tmp_path):
 
 
 def test_load_dotenv_sets_only_missing_nonempty_and_never_overrides(tmp_path, monkeypatch):
-    from cost_guard.config import load_dotenv
+    from query_preflight.config import load_dotenv
 
     env = tmp_path / ".env"
     env.write_text("# comment\nCG_A=one\nCG_B=\nexport CG_C=\"three\"\nCG_D=from_file\nnot a line\n")
@@ -224,8 +224,8 @@ def test_load_dotenv_sets_only_missing_nonempty_and_never_overrides(tmp_path, mo
 
 
 def test_run_query_gives_the_guard_the_shapes_runtimes(synthetic_wh, tmp_path, monkeypatch):
-    from cost_guard import runtime
-    from cost_guard.runtime import LogRecord, append_log
+    from query_preflight import runtime
+    from query_preflight.runtime import LogRecord, append_log
 
     q = "SELECT * FROM users WHERE id = 7"
     log = tmp_path / "log.jsonl"

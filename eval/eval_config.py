@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from cost_guard.config import load_customer
+from query_preflight.config import load_customer
 
 EVAL_CAPS = Path(__file__).resolve().parent / "eval_caps.yaml"
 

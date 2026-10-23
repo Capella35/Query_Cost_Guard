@@ -12,12 +12,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from cost_guard.backends.duckdb_backend import DuckDBWarehouse
-from cost_guard.column_registry import build_registry, default_registry_path, registry_settings
-from cost_guard.config import load_customer
+from query_preflight.backends.duckdb_backend import DuckDBWarehouse
+from query_preflight.column_registry import build_registry, default_registry_path, registry_settings
+from query_preflight.config import load_customer
 
 
-def build_synthetic_warehouse(db_path: str = "/tmp/cost_guard_demo.duckdb") -> DuckDBWarehouse:
+def build_synthetic_warehouse(db_path: str = "/tmp/query_preflight_demo.duckdb") -> DuckDBWarehouse:
     import duckdb
 
     Path(db_path).unlink(missing_ok=True)

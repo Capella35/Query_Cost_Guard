@@ -1,11 +1,11 @@
-"""Secrets never pass through Cost Guard (module secret_scan: not the stdlib `secrets`) (owner's rule, 2026-10-18).
+"""Secrets never pass through Query Preflight (module secret_scan: not the stdlib `secrets`) (owner's rule, 2026-10-18).
 
 Two kinds of match:
 - known credential formats (Anthropic / OpenAI / Google API keys, AWS access
   keys, GitHub and Slack tokens, JWTs, private-key blocks);
 - the exact values of this process's own secrets: environment variables whose
   name ends in _KEY, _TOKEN, _SECRET or _PASSWORD (e.g. ANTHROPIC_API_KEY
-  from .env, COST_GUARD_LOG_KEY). Exact values cannot false-alarm.
+  from .env, QUERY_PREFLIGHT_LOG_KEY). Exact values cannot false-alarm.
 
 Used three ways: the Guard blocks a query that contains a secret BEFORE any
 dry run or model call (guard.decide), so it reaches neither the warehouse

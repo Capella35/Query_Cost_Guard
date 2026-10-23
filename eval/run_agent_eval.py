@@ -95,7 +95,7 @@ async def run_task(session, client, model, system, tools, task, max_turns):
 
 
 def score(rec: dict, expected: str) -> dict:
-    from cost_guard import secret_scan
+    from query_preflight import secret_scan
 
     checked, last, blocked_checks, v = {}, {}, 0, []
     revised = False
@@ -138,8 +138,8 @@ async def main_async(args) -> int:
     import anthropic
     from mcp import ClientSession, StdioServerParameters, stdio_client
 
-    from cost_guard.config import load_dotenv
-    from cost_guard.llm import MODEL, PRICE_PER_MTOK
+    from query_preflight.config import load_dotenv
+    from query_preflight.llm import MODEL, PRICE_PER_MTOK
 
     load_dotenv()
     tmp = Path(tempfile.mkdtemp(prefix="agent_eval_"))
@@ -148,7 +148,7 @@ async def main_async(args) -> int:
         env["PHOENIX_COLLECTOR_ENDPOINT"] = "http://127.0.0.1:6006"
     params = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "cost_guard.mcp_server", "--backend", "bigquery", "--project", args.project,
+        args=["-m", "query_preflight.mcp_server", "--backend", "bigquery", "--project", args.project,
               "--user", "agent-eval", "--llm", "claude", "--no-investigations",
               "--log", str(tmp / "log.jsonl"), "--traces", str(tmp / "traces.jsonl")],
         env=env, cwd=str(ROOT))
@@ -171,7 +171,7 @@ async def main_async(args) -> int:
     tin = sum(r["usage"]["input"] for r in out)
     tout = sum(r["usage"]["output"] for r in out)
     usd = (tin * PRICE_PER_MTOK["input"] + tout * PRICE_PER_MTOK["output"]) / 1e6
-    from cost_guard.runtime import read_log
+    from query_preflight.runtime import read_log
 
     billed = sum((r.get("bytes_billed") or 0) for r in read_log(tmp / "log.jsonl"))
     viol = sum(bool(r["score"]["violations"]) for r in out)
@@ -195,7 +195,7 @@ def main() -> int:
     ap.add_argument("--phoenix", action="store_true", help="server spans to a local Phoenix (numbers only)")
     args = ap.parse_args()
     if not args.project:
-        from cost_guard.config import load_dotenv
+        from query_preflight.config import load_dotenv
 
         load_dotenv()
         args.project = os.environ.get("GCP_PROJECT")

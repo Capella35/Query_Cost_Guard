@@ -3,11 +3,11 @@ ignored is offered with the stored spelling (REWRITE); two stored values that
 differ only by case are named (WARN), not guessed."""
 from datetime import datetime, timedelta, timezone
 
-from cost_guard import sql_ast
-from cost_guard.column_registry import ColumnRegistry, RegistryEntry
-from cost_guard.guard import decide
-from cost_guard.tracing import Tracer
-from cost_guard.value_case import fix_value_case
+from query_preflight import sql_ast
+from query_preflight.column_registry import ColumnRegistry, RegistryEntry
+from query_preflight.guard import decide
+from query_preflight.tracing import Tracer
+from query_preflight.value_case import fix_value_case
 
 
 def _registry(values: dict[str, int], data_type="VARCHAR", age_days=0):

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Type a SQL query at the prompt and see Cost Guard's verdict. Nothing runs:
+# Type a SQL query at the prompt and see Query Preflight's verdict. Nothing runs:
 # BigQuery dry runs (free); a rewrite check reads a small sample.
 # Run from anywhere: scripts/try_query.sh. Empty line or "quit" exits.
 cd "$(dirname "$0")/.." || exit 1
@@ -9,7 +9,7 @@ while true; do
   echo
   read -r -e -p "SQL> " q || break
   case "$q" in ""|quit|exit) break ;; esac
-  out=$(PYTHONPATH=src .venv/bin/python -m cost_guard check "$q" 2>&1)
+  out=$(PYTHONPATH=src .venv/bin/python -m query_preflight check "$q" 2>&1)
   printf '%s' "$out" | .venv/bin/python -c '
 import json, re, sys
 raw = sys.stdin.read()

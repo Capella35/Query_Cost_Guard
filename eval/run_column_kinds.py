@@ -21,7 +21,7 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from cost_guard.column_kinds import baseline_kind, score  # noqa: E402
+from query_preflight.column_kinds import baseline_kind, score  # noqa: E402
 
 RESULTS = ROOT / "eval" / "RESULTS_column_kinds.md"
 
@@ -43,7 +43,7 @@ def main() -> None:
     if RESULTS.exists() and not args.rerun:
         raise SystemExit("the column-kind eval has already been run (eval/RESULTS_column_kinds.md); "
                          "pass --rerun to run again — the summary will say it is a rerun")
-    from cost_guard.llm import ClaudeLLM
+    from query_preflight.llm import ClaudeLLM
 
     data = yaml.safe_load((ROOT / "eval" / "column_kinds.yaml").read_text())
     llm = ClaudeLLM()

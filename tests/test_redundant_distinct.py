@@ -1,9 +1,9 @@
 """no_redundant_distinct: DISTINCT that provably cannot change the result."""
 import pytest
 
-from cost_guard import sql_ast
-from cost_guard.guard import decide
-from cost_guard.tracing import Tracer
+from query_preflight import sql_ast
+from query_preflight.guard import decide
+from query_preflight.tracing import Tracer
 
 
 def _found(sql):

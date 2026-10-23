@@ -1,4 +1,4 @@
-"""The Superset hook (superset/cost_guard_hook.py): a block stops the query
+"""The Superset hook (superset/query_preflight_hook.py): a block stops the query
 with the reason and hints; anything else, or a failed check, passes the SQL
 through unchanged. Superset itself is not needed (it runs in its own venv)."""
 import sys
@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "superset"))
-import cost_guard_hook as hook  # noqa: E402
+import query_preflight_hook as hook  # noqa: E402
 
 BQ = SimpleNamespace(backend="bigquery")
 
@@ -21,9 +21,9 @@ def _verdict(decision, hints=()):
 def test_block_stops_the_query_with_reason_and_hints(monkeypatch):
     monkeypatch.setattr(hook, "check", lambda sql: _verdict(
         "block", [("info", "LIMIT doesn't reduce bytes"), ("cause", "aggregate first"), ("fix", "add a date")]))
-    with pytest.raises(hook.CostGuardBlocked) as e:
+    with pytest.raises(hook.QueryPreflightBlocked) as e:
         hook.mutator("SELECT 1", database=BQ)
-    assert "Cost Guard blocked this query: block reason" in str(e.value)
+    assert "Query Preflight blocked this query: block reason" in str(e.value)
     assert "- aggregate first\n- add a date" in str(e.value) and "LIMIT" not in str(e.value)
 
 

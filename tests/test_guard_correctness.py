@@ -2,10 +2,10 @@
 F1.4 bounded verification, F1.5 read-only classifier."""
 import pytest
 
-from cost_guard import sql_ast
-from cost_guard.guard import decide, is_read_only
-from cost_guard.tools.compare_results import compare_results
-from cost_guard.tracing import Tracer
+from query_preflight import sql_ast
+from query_preflight.guard import decide, is_read_only
+from query_preflight.tools.compare_results import compare_results
+from query_preflight.tracing import Tracer
 
 
 def _decide(sql, wh, **kw):

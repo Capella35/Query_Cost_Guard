@@ -2,8 +2,8 @@
 import duckdb
 import pytest
 
-from cost_guard.backends.duckdb_backend import DuckDBWarehouse
-from cost_guard.column_registry import (
+from query_preflight.backends.duckdb_backend import DuckDBWarehouse
+from query_preflight.column_registry import (
     REGISTRY_TABLE,
     VALUE_COUNTS_TABLE,
     RegistryEntry,
@@ -11,8 +11,8 @@ from cost_guard.column_registry import (
     default_registry_path,
     load_registry,
 )
-from cost_guard.guard import decide
-from cost_guard.tracing import Tracer
+from query_preflight.guard import decide
+from query_preflight.tracing import Tracer
 
 GROUP_SESSION = "SELECT session_id, COUNT(*) FROM events GROUP BY session_id"
 
@@ -179,7 +179,7 @@ def test_value_counts_fill_an_older_registry_without_reprofiling(tmp_path):
 def test_registry_status_and_run_log(tmp_path):
     from datetime import datetime, timedelta, timezone
 
-    from cost_guard.column_registry import registry_status
+    from query_preflight.column_registry import registry_status
 
     db = _db(tmp_path)
     path = default_registry_path(db)
@@ -217,7 +217,7 @@ def test_backend_reloads_the_registry_when_the_file_changes(tmp_path):
 
 
 def test_cli_registry_refresh_and_status(tmp_path, capsys):
-    from cost_guard.__main__ import main
+    from query_preflight.__main__ import main
 
     db = _db(tmp_path)
     assert main(["--db", db, "registry", "status"]) == 1  # not built yet

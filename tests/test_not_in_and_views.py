@@ -4,11 +4,11 @@ over a column with NULLs (P37, T23)."""
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from cost_guard import sql_ast
-from cost_guard.backends.bigquery_backend import BigQueryWarehouse
-from cost_guard.column_registry import ColumnRegistry, RegistryEntry
-from cost_guard.guard import decide
-from cost_guard.tracing import Tracer
+from query_preflight import sql_ast
+from query_preflight.backends.bigquery_backend import BigQueryWarehouse
+from query_preflight.column_registry import ColumnRegistry, RegistryEntry
+from query_preflight.guard import decide
+from query_preflight.tracing import Tracer
 
 NOW = datetime.now(timezone.utc).isoformat()
 NOT_IN = ("SELECT COUNT(*) AS n FROM users WHERE id NOT IN "

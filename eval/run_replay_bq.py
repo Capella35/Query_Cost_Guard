@@ -46,7 +46,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "eval"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from cost_guard.thresholds import FingerprintStats, fingerprint_query  # noqa: E402
+from query_preflight.thresholds import FingerprintStats, fingerprint_query  # noqa: E402
 from run_replay import COLD_START_RUNS, anomaly_flag, split_chronological  # noqa: E402
 
 FIRST, LAST = date(2019, 2, 1), date(2023, 12, 1)
@@ -92,8 +92,8 @@ def gen_traffic(seed: int = 20261014) -> list[dict]:
 def measure(runs: list[dict], duck, bq_client, dataset: str, max_bytes: int, customer: dict) -> None:
     """Add verdict, DuckDB row estimate and BigQuery dry-run bytes to each run."""
     from bq_dryrun_compare import dry_run_bytes, to_bigquery
-    from cost_guard.guard import decide
-    from cost_guard.tracing import Tracer
+    from query_preflight.guard import decide
+    from query_preflight.tracing import Tracer
 
     for r in runs:
         v = decide(r["sql"], customer=customer, backend=duck, tracer=Tracer())
@@ -194,7 +194,7 @@ def main() -> None:
 
     from google.cloud import bigquery
 
-    from cost_guard.backends.duckdb_backend import DuckDBWarehouse
+    from query_preflight.backends.duckdb_backend import DuckDBWarehouse
     from eval_config import load_eval_customer
 
     runs = gen_traffic()

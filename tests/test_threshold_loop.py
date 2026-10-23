@@ -1,9 +1,9 @@
 """F2.3 ratchet fix and F4.1 updater lifecycle (gates, shadow, rollback)."""
 import random
 
-from cost_guard.investigator import ThresholdProposal, investigate
-from cost_guard.memory import EpisodicMemory
-from cost_guard.thresholds import (
+from query_preflight.investigator import ThresholdProposal, investigate
+from query_preflight.memory import EpisodicMemory
+from query_preflight.thresholds import (
     BaselineStore,
     RuleStore,
     ThresholdRule,

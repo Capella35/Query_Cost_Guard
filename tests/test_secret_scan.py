@@ -1,10 +1,10 @@
-"""Secrets never pass through Cost Guard: a query holding one is blocked before
+"""Secrets never pass through Query Preflight: a query holding one is blocked before
 the warehouse or the model sees it, and no tool response or log carries it."""
 import json
 
-from cost_guard import secret_scan
-from cost_guard.guard import SECRET_FINDING, decide
-from cost_guard.tracing import Tracer
+from query_preflight import secret_scan
+from query_preflight.guard import SECRET_FINDING, decide
+from query_preflight.tracing import Tracer
 
 FAKE_ANTHROPIC = "sk-ant-api03-" + "x" * 40
 FAKE_GOOGLE = "AIza" + "B" * 35
@@ -52,11 +52,11 @@ def test_a_query_with_a_secret_is_blocked_before_the_warehouse_or_the_model():
 
 
 def test_mcp_never_returns_or_logs_a_secret(synthetic_wh, tmp_path):
-    from cost_guard.config import load_customer
-    from cost_guard.mcp_server import CostGuardService
-    from cost_guard.runtime import read_log
+    from query_preflight.config import load_customer
+    from query_preflight.mcp_server import QueryPreflightService
+    from query_preflight.runtime import read_log
 
-    svc = CostGuardService(synthetic_wh, load_customer(), log_path=tmp_path / "log.jsonl",
+    svc = QueryPreflightService(synthetic_wh, load_customer(), log_path=tmp_path / "log.jsonl",
                            trace_path=tmp_path / "t.jsonl", investigations=False)
     sql = f"SELECT id FROM users /* {FAKE_GOOGLE} */ WHERE id = 1"
     for out in (svc.check_query(sql), svc.run_query(sql)):

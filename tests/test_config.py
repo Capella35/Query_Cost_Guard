@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from cost_guard.config import caps_for, load_customer
-from cost_guard.guard import decide
-from cost_guard.tracing import Tracer
+from query_preflight.config import caps_for, load_customer
+from query_preflight.guard import decide
+from query_preflight.tracing import Tracer
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -63,7 +63,7 @@ def test_unimplemented_rule_is_reported_not_swallowed(monkeypatch, synthetic_wh)
     def stub_rule(sql, md):
         raise NotImplementedError
 
-    from cost_guard.rules import static_rules
+    from query_preflight.rules import static_rules
 
     monkeypatch.setattr(static_rules, "ALL_RULES", static_rules.ALL_RULES + [stub_rule])
     v = decide("SELECT id FROM users WHERE id = 1", backend=synthetic_wh, tracer=Tracer())

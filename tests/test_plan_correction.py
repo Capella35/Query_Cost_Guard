@@ -3,11 +3,11 @@ import duckdb
 
 import pytest
 
-from cost_guard.backends.duckdb_backend import DuckDBWarehouse
-from cost_guard.column_registry import ColumnRegistry, RegistryEntry, build_registry
-from cost_guard.guard import decide
-from cost_guard.plan_estimate import plan_cardinality
-from cost_guard.tracing import Tracer
+from query_preflight.backends.duckdb_backend import DuckDBWarehouse
+from query_preflight.column_registry import ColumnRegistry, RegistryEntry, build_registry
+from query_preflight.guard import decide
+from query_preflight.plan_estimate import plan_cardinality
+from query_preflight.tracing import Tracer
 
 WINDOW = ("SELECT status, SUM(amount_cents) OVER (PARTITION BY status) FROM orders "
           "WHERE created_at >= '2024-01-01'")
@@ -188,13 +188,13 @@ def test_two_way_range_estimate_is_opt_in(thelook_wh):
     ("created_at>='2023-01-01 08:00:00+00'::TIMESTAMP WITH TIME ZONE", None),
 ])
 def test_temporal_range_reads_plan_text(conjunct, expected):
-    from cost_guard.backends.duckdb_backend import temporal_range
+    from query_preflight.backends.duckdb_backend import temporal_range
 
     assert temporal_range(conjunct) == expected
 
 
 def test_split_conjuncts_respects_strings_and_parentheses():
-    from cost_guard.backends.duckdb_backend import _split_conjuncts
+    from query_preflight.backends.duckdb_backend import _split_conjuncts
 
     assert _split_conjuncts("(\"year\"(created_at) = 2023) AND (status = 'A AND B') "
                             "AND (x BETWEEN 1 AND 2)") == [
@@ -252,7 +252,7 @@ def test_registry_stores_no_value_range_for_identifiers(tmp_path):
                 "FROM range(2000)")
     con.close()
     build_registry(db, registry_path=str(tmp_path / "r.duckdb"))
-    from cost_guard.column_registry import load_registry
+    from query_preflight.column_registry import load_registry
 
     reg = load_registry(str(tmp_path / "r.duckdb"))
     for c in ("id", "user_id"):  # objects: distinct counts yes, min/max no
@@ -285,7 +285,7 @@ def test_range_filter_on_an_identifier_is_not_a_value_range(thelook_wh):
     ("SELECT 1", False),
 ])
 def test_basic_query_is_one_select_over_one_table(sql, basic):
-    from cost_guard import sql_ast
+    from query_preflight import sql_ast
 
     assert sql_ast.is_basic_query(sql_ast.try_parse(sql, "duckdb")) is basic
 

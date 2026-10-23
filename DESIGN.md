@@ -1,4 +1,4 @@
-# Cost Guard + Investigator — Design
+# Query Preflight + Investigator — Design
 
 What the system is meant to do, the decisions that shape it, and why. What is
 built and what each eval scored lives in [README.md](README.md) (Status,
@@ -8,7 +8,7 @@ file and the brief disagree, this file is newer.
 ## 1. Problem and scope
 
 Analysts write warehouse queries but cannot see what they cost; the platform
-sees the cost but does not write the queries. Cost Guard sits between them
+sees the cost but does not write the queries. Query Preflight sits between them
 and controls query cost without taking the warehouse away from the analyst.
 
 In scope: batch analytics queries, one mocked customer (`customer.yaml`),
@@ -347,7 +347,7 @@ Integrity rules:
   `customer.yaml`), so a policy change does not silently re-score old labels.
 
 **The report measures behavior and money** (`ledger.py`,
-`python -m cost_guard report`), from the query log:
+`python -m query_preflight report`), from the query log:
 - **Warn follow-through:** the warned user's next run within 30 minutes —
   adopted the rewrite / changed to a clean query / re-ran unchanged / still
   flagged / nothing. The "acted" rate is an upper bound, since the next query
@@ -369,7 +369,7 @@ Kept swappable behind small interfaces (`interfaces.py`): the rules, the LLM
 client, the telemetry export. The query log stores:
 - the fingerprint (literal-free shape) and numbers;
 - `sql_hash`: an HMAC-SHA256 of the exact query, keyed per deployment
-  (`COST_GUARD_LOG_KEY`, else a generated key file next to the log). It
+  (`QUERY_PREFLIGHT_LOG_KEY`, else a generated key file next to the log). It
   detects repeats without storing literals, and without the key a guessable
   literal can't be confirmed by hashing candidates;
 - `user`: an opaque id exactly as the caller passes it — pseudonymize
@@ -390,7 +390,7 @@ query history drops the caller id and the keyed query hash.
 
 ### Requirement: scheduled column-registry refresh
 
-A deployment MUST run `python -m cost_guard registry refresh` on a schedule
+A deployment MUST run `python -m query_preflight registry refresh` on a schedule
 (`--mode stale`). The Guard's join, GROUP BY and value-filter estimates read
 the registry; its entries go unverified after `max_age_days` (35) and the
 rules that need them are then skipped, so without a schedule the Guard
@@ -404,7 +404,7 @@ machine, or Cloud Scheduler → a Cloud Run job with the registry file in a
 bucket where the Guard runs. A plain scheduler, not an agent: the refresh is
 deterministic. Cost, dry-run measured: a full re-profile bills ~668 MiB
 ($0.004 MODELED); a stale-mode run on a fresh registry processes 0 bytes.
-`cost_guard registry status` (or the MCP tool `registry_status`) shows each
+`query_preflight registry status` (or the MCP tool `registry_status`) shows each
 table's age and the last run; a running Guard reloads the file when it
 changes.
 
@@ -479,6 +479,7 @@ changes.
 | 2026-10-20 | Apache Superset integration via `SQL_QUERY_MUTATOR`: a BLOCK stops the SQL Lab / chart query with Cost Guard's reason and hints; other verdicts pass unchanged (as `cost_guard run`); the check runs as a subprocess in Cost Guard's venv | Owner asked. Superset 6.1 pins sqlglot 28 and other versions, so one process can't hold both. Fails open: no verdict = not stopped (BigQuery's own errors and `maximum_bytes_billed` remain). Setup needed `rich`, `cachetools` and `flask-caching==2.3.1` beyond `pip install apache-superset` (6.1.0 as installed 2026-10-20) |
 | 2026-10-19 | Filter value case: a filter value that matches one stored value only when case is ignored is offered as a REWRITE with the stored spelling (`value_case.py`, from the registry's complete value counts); two stored values that differ only by case WARN. The stored spelling, not `LOWER(col)` | Owner's call (chose REWRITE over WARN and over `LOWER()`). Changes the result on purpose (the original matches no row with that value), so it is the one rewrite without sample verification, marked `rewrite_source` `value_case` and "the result changes". Changes verdicts: on the run-once owner set O06 (`NOT IN ('cancelled', 'Returned')`, labeled warn) would now get rewrite; its recorded 12/12 stands for the code that ran and the set is not rerun. No other eval query is affected (all sets scanned offline against the BigQuery registry) |
 | 2026-10-16 | Rewrite verification: 2 s limit for long-running services, results remembered (passed and failed) in memory for 24 h; dry runs of identical SQL reused for 10 min | Live, one process: first check of a rewritable query 4.0 s (answer without the rewrite, verification continues), the same query again 0.01 s with the verified rewrite. Failed verifications are not re-run (cost). Nothing written to disk; the CLI and evals wait, so their results stay deterministic |
+| 2026-10-23 | Project renamed Cost Guard → Query Preflight: package `query_preflight`, CLI `python -m query_preflight`, MCP server `query-preflight`, `superset/query_preflight_hook.py`, env vars `QUERY_PREFLIGHT_*` (the log key renamed in `.env`, value kept, so fingerprints are unchanged), Phoenix projects `query-preflight-evals[-content]` | Owner's call: "Cost Guard" made people expect a dollar-savings figure, but the job is the pre-run verdict ("ready to fly or not"), cost being one reason among wrong results and runaway joins. "Query", not "SQL": leaves room for other query languages without claiming them; the evidence is SQL warehouses only (BigQuery, DuckDB). Unchanged on purpose: the BigQuery dataset `cost_guard_thelook` (a real GCP resource), committed RESULTS / PREREG files, pre-registered sets, earlier decision-log rows, and the generic "cost guard" wording inside LLM prompts (changing a prompt would change measured LLM behavior). No verdict or label changed; 457 tests pass |
 
 ## 13. Open questions
 
@@ -561,7 +562,7 @@ nothing that can block wrongly without a person's confirmation.
    (columns with ≤ 1,000 distinct values) now set the share a `col = value`
    filter keeps; join KEYS are still assumed evenly spread.
 5. **MCP server and a report-only investigator agent**, if the project is
-   to be agentic: Cost Guard's tools (check, run through the Guard, table
+   to be agentic: Query Preflight's tools (check, run through the Guard, table
    info, history, report) for AI apps, with `run` the only path to the
    warehouse and no raw rows returned; an agent triggered only when a query
    shape breaks its own history, writing a report, changing nothing.

@@ -2,7 +2,7 @@
 
 Trigger: the adaptive anomaly rule (anomaly.py) flags a completed run in
 runtime.run_query; the MCP server starts an investigation in the background,
-and `python -m cost_guard investigate-anomalies` runs any the log holds that
+and `python -m query_preflight investigate-anomalies` runs any the log holds that
 have no report yet (offline / batch).
 
 It changes NOTHING: no rules, caps, thresholds, kills, rewrites or labels.
@@ -12,7 +12,7 @@ incident in episodic memory, so the next investigation of the shape can say
 investigator.py proposes thresholds through gates and a shadow trial; this
 one does not touch that path.)
 
-Fixed steps, each a call to the MCP server's tools (CostGuardService) and
+Fixed steps, each a call to the MCP server's tools (QueryPreflightService) and
 traced as agent.step.* under one agent.investigate trace:
   1. history     get_query_history: runs, statuses, median, recent runs
   2. tables      get_table_info for the tables the shape reads
@@ -88,7 +88,7 @@ class InvestigationReport:
 class InvestigatorAgent:
     def __init__(self, service, customer: Optional[dict] = None, out_dir: str | Path = DEFAULT_DIR,
                  memory: Optional[EpisodicMemory] = None, llm=None):
-        """service: a CostGuardService (the MCP tools). llm: anything with
+        """service: a QueryPreflightService (the MCP tools). llm: anything with
         summarize_investigation(facts) — used only within llm_max_per_day."""
         self.service = service
         self.customer = customer if customer is not None else service.customer
@@ -341,7 +341,7 @@ def diagnose(kind: str, trigger: dict, facts: dict) -> tuple[list[str], list[str
         causes.insert(0, f"looks like a lasting change, not a one-off: {hist['anomalies_in_last_10'] + 1} "
                          "of this shape's last 11 runs were flagged — if this is the new normal, a "
                          "person should accept it (flagged runs stay out of the baseline until then)")
-        nxt.insert(0, f"if this is the new normal: python -m cost_guard accept-normal "
+        nxt.insert(0, f"if this is the new normal: python -m query_preflight accept-normal "
                       f"{facts.get('shape_id') or '<shape_id>'} --by <you> --note <why>")
     if facts.get("past_incidents"):
         causes.append(f"recurring: {facts['past_incidents']} earlier incident(s) for this shape")

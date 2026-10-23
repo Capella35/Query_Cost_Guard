@@ -26,7 +26,7 @@ def thelook_wh():
     db = ROOT / "data" / "thelook.duckdb"
     if not db.exists():
         pytest.skip("data/thelook.duckdb not built — see README quickstart")
-    from cost_guard.backends.duckdb_backend import DuckDBWarehouse
+    from query_preflight.backends.duckdb_backend import DuckDBWarehouse
 
     return DuckDBWarehouse(str(db))
 
@@ -35,7 +35,7 @@ def thelook_wh():
 def _fresh_verification_memory():
     """Verification results are remembered per process (guard._verify); each
     test starts without them, so no test sees another's outcome."""
-    from cost_guard.guard import clear_verification_memory
+    from query_preflight.guard import clear_verification_memory
 
     clear_verification_memory()
     yield

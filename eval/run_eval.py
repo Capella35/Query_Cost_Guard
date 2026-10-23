@@ -39,10 +39,10 @@ to the rules: 100% there is expected, not evidence.
 
 --phoenix exports each case as one trace to a local Phoenix (PHOENIX_COLLECTOR_ENDPOINT,
 default http://localhost:6006): root span `eval <id>` with pattern, expected, got, ok,
-and the Guard's spans under it; numbers only, project "cost-guard-evals".
+and the Guard's spans under it; numbers only, project "query-preflight-evals".
 --phoenix-content (TheLook only) also attaches the SQL, the verdict and the model's
 prompt and reply, to the exported spans only (the JSONL trace stays numbers-only),
-in its own project "cost-guard-evals-content".
+in its own project "query-preflight-evals-content".
 
 --llm claude enables the Claude rewrite proposer + explainer (F3.1/F3.3;
 needs Anthropic credentials). Default: no LLM.
@@ -70,10 +70,10 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "demo"))
 sys.path.insert(0, str(ROOT / "eval"))
 
-from cost_guard import sql_ast  # noqa: E402
-from cost_guard.guard import decide  # noqa: E402
-from cost_guard.results import result_hash  # noqa: E402
-from cost_guard.tracing import Tracer  # noqa: E402
+from query_preflight import sql_ast  # noqa: E402
+from query_preflight.guard import decide  # noqa: E402
+from query_preflight.results import result_hash  # noqa: E402
+from query_preflight.tracing import Tracer  # noqa: E402
 
 FLAGGED = ("warn", "block", "rewrite")
 FULL_RUN_TIMEOUT_SEC = 60
@@ -143,9 +143,9 @@ def _phoenix_setup(args) -> bool:
     if args.phoenix_content and args.suite in BQ_SUITES and args.dataset != "cost_guard_thelook":
         raise SystemExit("--phoenix-content is for the TheLook evals only (dataset "
                          "cost_guard_thelook): it exports SQL and prompts")
-    from cost_guard import observability
+    from query_preflight import observability
 
-    project = "cost-guard-evals-content" if args.phoenix_content else "cost-guard-evals"
+    project = "query-preflight-evals-content" if args.phoenix_content else "query-preflight-evals"
     if not observability.setup(project=project, content=args.phoenix_content):
         raise SystemExit("--phoenix needs the OpenTelemetry SDK (opentelemetry-sdk, "
                          "opentelemetry-exporter-otlp-proto-http)")
@@ -163,7 +163,7 @@ def _case_span(phoenix: bool, case: dict):
 
     if not phoenix:
         return nullcontext(None)
-    from cost_guard import observability
+    from query_preflight import observability
 
     return observability.otel_span(f"eval {case['id']}")
 
@@ -171,7 +171,7 @@ def _case_span(phoenix: bool, case: dict):
 def _case_result(span, case: dict, v) -> None:
     if span is None:
         return
-    from cost_guard import observability
+    from query_preflight import observability
 
     observability.set_attributes(span, {
         "eval.case_id": case["id"], "eval.pattern": case["pattern"],
@@ -179,7 +179,7 @@ def _case_result(span, case: dict, v) -> None:
         "eval.ok": v.decision == case["expected"], "eval.role": case["role"],
         "eval.findings": len(v.findings), "eval.estimate_source": v.estimate_source,
         **_case_cost(case["sql"], v),
-        "cost_guard.content": "included" if observability.content_enabled() else "none"})
+        "query_preflight.content": "included" if observability.content_enabled() else "none"})
     observability.add_content(**{
         "input.value": case["sql"],
         "output.value": json.dumps({"decision": v.decision, "reason": v.reason,
@@ -192,9 +192,9 @@ def _case_cost(sql: str, v) -> dict:
     """Bytes and the MODELED BigQuery cost of running the checked query once
     (customer.yaml cost_model; billed = at least 10 MiB per table). The check
     itself is a dry run: free."""
-    from cost_guard import sql_ast
-    from cost_guard.config import load_customer
-    from cost_guard.runtime import bigquery_billed
+    from query_preflight import sql_ast
+    from query_preflight.config import load_customer
+    from query_preflight.runtime import bigquery_billed
 
     est = v.estimated_bytes
     if est is None or v.estimate_source != "dry_run":
@@ -263,14 +263,14 @@ def main() -> None:
             )
         rerun = True
     if args.suite in BQ_SUITES:
-        from cost_guard.backends.bigquery_backend import BigQueryWarehouse
+        from query_preflight.backends.bigquery_backend import BigQueryWarehouse
 
         if not args.project:
             raise SystemExit("--suite bigquery needs --project")
         wh = BigQueryWarehouse(args.project, args.dataset, maximum_bytes_billed=20 * 1024**3)
         cases = load_suite_cases(args.suite)
     elif args.suite in SUITE_FILES:
-        from cost_guard.backends.duckdb_backend import DuckDBWarehouse
+        from query_preflight.backends.duckdb_backend import DuckDBWarehouse
 
         if not Path(args.db).exists():
             raise SystemExit(f"{args.db} missing — run scripts/load_thelook_duckdb.py first")
@@ -285,7 +285,7 @@ def main() -> None:
 
     llm = None
     if args.llm == "claude":
-        from cost_guard.llm import ClaudeLLM
+        from query_preflight.llm import ClaudeLLM
 
         llm = ClaudeLLM(backend=wh)
 

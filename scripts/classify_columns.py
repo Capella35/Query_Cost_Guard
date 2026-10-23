@@ -27,14 +27,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from cost_guard.column_kinds import (  # noqa: E402
+from query_preflight.column_kinds import (  # noqa: E402
     classify_edge_cases,
     confirm,
     kinds_path,
     load_kinds,
     triage,
 )
-from cost_guard.column_registry import (  # noqa: E402
+from query_preflight.column_registry import (  # noqa: E402
     bigquery_registry_path,
     default_registry_path,
     load_registry,
@@ -48,7 +48,7 @@ def main() -> None:
     ap.add_argument("--dataset", default="cost_guard_thelook")
     ap.add_argument("--max-columns", type=int, default=50,
                     help="at most this many edge cases per model call (cost limit)")
-    ap.add_argument("--model", help="model for the edge cases (default: cost_guard.llm.MODEL)")
+    ap.add_argument("--model", help="model for the edge cases (default: query_preflight.llm.MODEL)")
     ap.add_argument("--dry-run", action="store_true", help="list edge cases; no model call")
     ap.add_argument("--list", action="store_true", help="show labels and their review state")
     ap.add_argument("--confirm", action="append", default=[], metavar="TABLE.COLUMN=KIND",
@@ -79,7 +79,7 @@ def main() -> None:
     entries = registry.entries()
     llm = None
     if not args.dry_run:
-        from cost_guard.llm import MODEL, ClaudeLLM
+        from query_preflight.llm import MODEL, ClaudeLLM
 
         llm = ClaudeLLM(model=args.model or MODEL)
     rep = classify_edge_cases(entries, path, llm=llm, max_columns=args.max_columns)

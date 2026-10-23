@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Apache Superset with Cost Guard, local only (http://127.0.0.1:8088).
+# Apache Superset with Query Preflight, local only (http://127.0.0.1:8088).
 #   scripts/superset.sh setup   one time: Superset's database, admin login, BigQuery connection
 #   scripts/superset.sh         start the server (Ctrl+C stops it)
-# Superset lives in .venv-superset (Python 3.11); Cost Guard checks every query
-# on the BigQuery database before it runs (superset/cost_guard_hook.py).
+# Superset lives in .venv-superset (Python 3.11); Query Preflight checks every query
+# on the BigQuery database before it runs (superset/query_preflight_hook.py).
 cd "$(dirname "$0")/.." || exit 1
 set -a; . ./.env; set +a
 export SUPERSET_CONFIG_PATH="$PWD/superset/superset_config.py"

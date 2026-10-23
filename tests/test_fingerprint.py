@@ -1,6 +1,6 @@
 """Tests for thresholds.fingerprint_query (the one implemented piece)."""
 
-from cost_guard.thresholds import fingerprint_query
+from query_preflight.thresholds import fingerprint_query
 
 
 def test_literals_normalized():

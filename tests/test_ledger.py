@@ -3,10 +3,10 @@ opportunity, spend ledger — from hand-built logs and from real run_query logs.
 import json
 from datetime import datetime, timedelta, timezone
 
-from cost_guard.config import load_customer
-from cost_guard.ledger import build_report
-from cost_guard.runtime import query_hash, read_log, run_query
-from cost_guard.tracing import Tracer
+from query_preflight.config import load_customer
+from query_preflight.ledger import build_report
+from query_preflight.runtime import query_hash, read_log, run_query
+from query_preflight.tracing import Tracer
 
 T0 = datetime(2026, 10, 1, 9, 0, tzinfo=timezone.utc)
 
@@ -86,7 +86,7 @@ def test_spend_ledger_and_false_block_proxy():
 
 
 def test_run_query_logs_report_fields(synthetic_wh, tmp_path, monkeypatch):
-    monkeypatch.delenv("COST_GUARD_LOG_KEY", raising=False)
+    monkeypatch.delenv("QUERY_PREFLIGHT_LOG_KEY", raising=False)
     log = tmp_path / "log.jsonl"
     q = "SELECT id FROM users WHERE email = 'alice@example.com'"
     run_query(q, synthetic_wh, log_path=log, tracer=Tracer(), user="analyst-7")
@@ -99,9 +99,9 @@ def test_run_query_logs_report_fields(synthetic_wh, tmp_path, monkeypatch):
 
 
 def test_query_hash_is_keyed(tmp_path, monkeypatch):
-    monkeypatch.setenv("COST_GUARD_LOG_KEY", "k1")
+    monkeypatch.setenv("QUERY_PREFLIGHT_LOG_KEY", "k1")
     a = query_hash("SELECT 1", tmp_path / "l.jsonl")
-    monkeypatch.setenv("COST_GUARD_LOG_KEY", "k2")
+    monkeypatch.setenv("QUERY_PREFLIGHT_LOG_KEY", "k2")
     assert query_hash("SELECT 1", tmp_path / "l.jsonl") != a
     assert query_hash("SELECT  1", tmp_path / "l.jsonl") == query_hash("SELECT 1", tmp_path / "l.jsonl")
 
@@ -119,7 +119,7 @@ def test_run_logs_offered_rewrite_shape(synthetic_wh, tmp_path):
 
 
 def test_cli_report(tmp_path, capsys):
-    from cost_guard.__main__ import main
+    from query_preflight.__main__ import main
 
     log = tmp_path / "log.jsonl"
     log.write_text("\n".join(json.dumps(_rec(i, "s")) for i in range(3)) + "\n")

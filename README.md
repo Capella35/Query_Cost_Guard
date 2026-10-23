@@ -1,8 +1,10 @@
-# Cost Guard + Investigator
+# Query Preflight + Investigator
 
-Automated cost-control layer for analytics queries: a **Guard** checks queries
-before they run, and an **Investigator** learns from query history to propose
-tighter per-query-shape runtime thresholds.
+A pre-run check for analytics queries: a **Guard** decides before a query runs
+whether it is ready to fly (allow / warn / rewrite / block): wrong results,
+runaway joins and cost. An **Investigator** learns from query history to propose
+tighter per-query-shape runtime thresholds. Formerly *Cost Guard* (renamed
+2026-10-23); files written before then keep the old name.
 
 > **Mock customer.** The pilot "customer" is fictional. Its warehouse is the public
 > TheLook e-commerce dataset, in **BigQuery** (copies in our own project, dry
@@ -37,22 +39,22 @@ What exists in code today. "How it works" below only describes rows marked **bui
 | LLM suggestions (`--llm claude`): for a warned or cost-blocked query the model writes an improved query, lists every change and whether it changes the result; the Guard checks it is read-only and valid (dry run) and prices it against the original (bytes read / billed, MODELED $); one claimed to keep the result is tried as a verified rewrite. Never run or swapped in; the decision stands. Capped per day (`llm.suggestions_per_day`, per process), cached per exact query | **built** — owner test with Haiku: 9 suggestions for 11 warns, all valid; fixed the owner's double count, wrong join key and lowercase status value; $0.0107 for 22 calls ([`eval/RESULTS_bq_owner_test_llm_haiku.md`](eval/RESULTS_bq_owner_test_llm_haiku.md)) | `guard.py`, `llm.py` |
 | Plan red flag from `EXPLAIN`: full in-memory sort of ≥ 100k rows (ORDER BY with no LIMIT — a LIMIT plans as TOP_N, a sort after GROUP BY sorts only the groups). DuckDB only; on a BigQuery dry run (no plan shape) the check is listed in `skipped_rules` | **built** | `plan_estimate.py`, `guard.py` |
 | Skipped-rule reporting on every verdict and trace | **built** | `GuardVerdict.skipped_rules` |
-| Column registry: a data-profiling lookup table (distinct count, NULL count, total rows, and min/max for numeric and date/time columns — not for identifier columns (`id`, `*_id`, `*_key`, `*_code`, …), which are objects, not numbers), one scan per table, stored in a local file next to the warehouse (`data/thelook.registry.duckdb`) — the build only reads the warehouse, and reading the registry is free; size gate, scan timeout, refresh modes (missing / stale / all), dropped-column cleanup; the Guard looks profiles up instead of scanning, and treats entries older than `max_age_days` as unverified; value counts (rows per value for columns with ≤ 1,000 distinct values) for filters on a value; every build recorded in `registry_runs`; backends reload the file when it changes; MCP tool `registry_status`; `cost_guard registry status|refresh` on demand. **Requirement:** a deployment refreshes it on a schedule (DESIGN.md §11); not scheduled here yet | **built** — DuckDB, and BigQuery (`--bigquery-project`: catalog from the API, each table's scan dry-run first and capped by `maximum_bytes_billed`, views profiled through the view, geography/repeated columns skipped; TheLook: 7 tables, 73 columns, 0.472 GiB, file `data/bigquery/<project>.<dataset>.registry.duckdb`) | `column_registry.py`, `scripts/build_column_registry.py` |
+| Column registry: a data-profiling lookup table (distinct count, NULL count, total rows, and min/max for numeric and date/time columns — not for identifier columns (`id`, `*_id`, `*_key`, `*_code`, …), which are objects, not numbers), one scan per table, stored in a local file next to the warehouse (`data/thelook.registry.duckdb`) — the build only reads the warehouse, and reading the registry is free; size gate, scan timeout, refresh modes (missing / stale / all), dropped-column cleanup; the Guard looks profiles up instead of scanning, and treats entries older than `max_age_days` as unverified; value counts (rows per value for columns with ≤ 1,000 distinct values) for filters on a value; every build recorded in `registry_runs`; backends reload the file when it changes; MCP tool `registry_status`; `query_preflight registry status|refresh` on demand. **Requirement:** a deployment refreshes it on a schedule (DESIGN.md §11); not scheduled here yet | **built** — DuckDB, and BigQuery (`--bigquery-project`: catalog from the API, each table's scan dry-run first and capped by `maximum_bytes_billed`, views profiled through the view, geography/repeated columns skipped; TheLook: 7 tables, 73 columns, 0.472 GiB, file `data/bigquery/<project>.<dataset>.registry.duckdb`) | `column_registry.py`, `scripts/build_column_registry.py` |
 | Deterministic rewrite catalog: repeated subquery → CTE; `DATE_TRUNC(unit, col) = X` / `CAST(col AS DATE) = X` → range on the bare column; `EXTRACT(YEAR) = Y AND EXTRACT(MONTH) = M [AND EXTRACT(DAY) = D]` on one column → one month (day) range (T15; live dry run 0.721 → 0.058 MiB); filter after join → pushed into the derived table. No catalog entry for SELECT * or a missing date filter: any fix changes the result. Every candidate must pass `compare_results`; all but the date-range fix must also be not costlier by estimate. The date-range fix is exempt because it only restates the filter (same rows, reads no more), and DuckDB estimates the two forms inconsistently (`CAST(col AS DATE) = X` from the distinct count, a range at a flat 20%), which used to reject it. Measured on TheLook: ×39 (`orders`), ×48 (`events`) | **built** | `rewrites.py` |
 | `compare_results`: both queries on the same sampled inputs, timeout, order-insensitive / float-tolerant / NULL-consistent hash | **built** | `tools/compare_results.py`, `results.py` |
 | Filter value case (`value_case.py`): a filter value that matches a stored value only when case is ignored (`status = 'cancelled'`, stored `'Cancelled'`) is offered as a REWRITE with the stored spelling (`rewrite_source` `value_case`; not `LOWER(col)`, which would merge values that differ only by case and stop pruning by the column). `=`, `IN`, `NOT IN` on string columns with complete, fresh registry value counts; two stored values that differ only by case WARN and are named. A cost rewrite builds on the corrected query. The result changes, so it is said so; no sample verification (the original matches no row with that value) | **built** — BigQuery dry runs: `'cancelled'` → `'Cancelled'` (18,786 rows), `IN ('cancelled','RETURNED')` and `gender = 'f'` in one query, `event_type = 'PURCHASE'` combined with the date-range rewrite | `value_case.py`, `guard.py` |
-| Apache Superset integration (local): Superset 6.1 in its own `.venv-superset` (Python 3.11), SQLite metadata, 127.0.0.1:8088; `scripts/superset.sh setup` once, then `scripts/superset.sh`. Every SQL Lab / chart query on the BigQuery database goes through `SQL_QUERY_MUTATOR` → `cost_guard check` (in Cost Guard's venv: Superset pins other library versions); a BLOCK stops it with the reason, causes and fixes as the query's error; allow / warn / rewrite pass unchanged; a failed check does not stop the query. Tables must be dataset-qualified (`cost_guard_thelook.orders`): Superset's BigQuery connection sets no default dataset | **built** — SQL Lab API on BigQuery: the users × events fan-out blocked with its hints, `orders` by status ran, DELETE refused by Superset itself (DML off) | `superset/`, `scripts/superset.sh` |
+| Apache Superset integration (local): Superset 6.1 in its own `.venv-superset` (Python 3.11), SQLite metadata, 127.0.0.1:8088; `scripts/superset.sh setup` once, then `scripts/superset.sh`. Every SQL Lab / chart query on the BigQuery database goes through `SQL_QUERY_MUTATOR` → `query_preflight check` (in Query Preflight's venv: Superset pins other library versions); a BLOCK stops it with the reason, causes and fixes as the query's error; allow / warn / rewrite pass unchanged; a failed check does not stop the query. Tables must be dataset-qualified (`cost_guard_thelook.orders`): Superset's BigQuery connection sets no default dataset | **built** — SQL Lab API on BigQuery: the users × events fan-out blocked with its hints, `orders` by status ran, DELETE refused by Superset itself (DML off) | `superset/`, `scripts/superset.sh` |
 | Fix hints on blocks: main cause first (a table alone over the cap, a many-to-many join key from the registry, the joins' estimated fan-out, a cartesian product), then ranked fixes (aggregate before the join, a date filter with a 30-day estimate labeled "if rows are spread evenly", column list), each marked whether it changes the result; on BigQuery, a query with a LIMIT is told that LIMIT doesn't reduce bytes billed (dry runs: `SELECT * FROM events` 367.2 MiB with or without `LIMIT 10`). Never a rewrite, never a different decision | **built** | `fix_hints.py` |
 | Escape hatch: block → warn only with `guard.allow_bypass: true` + a reason; traced; never for writes | **built** | `guard._maybe_bypass` |
 | Tracing of every decision: JSONL by default (spans nested, thread-safe); optional OpenTelemetry export to a local Phoenix (`PHOENIX_COLLECTOR_ENDPOINT`), OpenInference span kinds, the JSONL trace id = the Phoenix trace id. Spans carry shape ids, counts, verdicts, reasons and LLM token counts — never SQL text, prompts or rows (LLM calls are not auto-instrumented for that reason) | **built** — export tested in-memory and against a local OTLP receiver; viewed in a running Phoenix 2026-10-18 (evals: `run_eval.py --phoenix`, one trace per case; `--phoenix-content` adds SQL, verdicts and LLM prompts/replies to the exported spans only, TheLook evals only, own Phoenix project) | `tracing.py`, `observability.py` |
 | MCP server (stdio): `check_query`, `run_query` (the only path to the warehouse; blocked queries never run), `get_table_info`, `get_query_history` (numbers only), `workload_report`, `registry_status`. The deployment sets the workload class (`--workload`; callers may only pick a stricter one) and there is no bypass through MCP. No result rows returned; one trace per tool call, nested under the MCP SDK's own request span | **built** — tested in-process and end to end over stdio on TheLook DuckDB; BigQuery: smoke test over stdio 2026-10-18, 15/15 (`scripts/mcp_smoke_bigquery.py`: every tool but `run_query`, dry runs only, 0 BigQuery jobs); `run_query` not run live through MCP yet | `mcp_server.py` |
-| MCP server guidance and security: instructions generated at startup from the server's setup (warehouse, tables and partition columns, caps, user, budget), the workflow in order (check before run; act on allow / rewrite / warn / block; show result-changing suggestions; stop after 3 blocked revisions, enforced by the server: after 3 blocked `check_query`/`run_query` results in a row both refuse for 5 min (`customer.yaml` `mcp`)) and security rules; prompt `analyze_with_cost_guard`. Secrets (`secret_scan.py`): a query holding a credential or this deployment's own key is blocked before the warehouse or model sees it; tool responses, errors, log fingerprints and content traces are redacted | **built** — unit-tested; BigQuery smoke test 15/15; agent eval with Haiku 10/10 tasks clean ([`eval/RESULTS_agent_eval.md`](eval/RESULTS_agent_eval.md)) | `mcp_server.py`, `secret_scan.py` |
+| MCP server guidance and security: instructions generated at startup from the server's setup (warehouse, tables and partition columns, caps, user, budget), the workflow in order (check before run; act on allow / rewrite / warn / block; show result-changing suggestions; stop after 3 blocked revisions, enforced by the server: after 3 blocked `check_query`/`run_query` results in a row both refuse for 5 min (`customer.yaml` `mcp`)) and security rules; prompt `analyze_with_query_preflight`. Secrets (`secret_scan.py`): a query holding a credential or this deployment's own key is blocked before the warehouse or model sees it; tool responses, errors, log fingerprints and content traces are redacted | **built** — unit-tested; BigQuery smoke test 15/15; agent eval with Haiku 10/10 tasks clean ([`eval/RESULTS_agent_eval.md`](eval/RESULTS_agent_eval.md)) | `mcp_server.py`, `secret_scan.py` |
 | Runtime watchdog: per-query timeout (learned threshold or hard cap), DuckDB interrupt; on BigQuery every run also carries the class bytes cap as `maximum_bytes_billed` (a bypassed block keeps only the project ceiling) | **built** | `runtime.py` |
 | Query log (fingerprints + numbers, no raw SQL) and `get_query_history`; optional caller id, keyed hash of the exact query (repeat detection without storing literals), offered-rewrite shape, bypass flag | **built** | `runtime.py`, `tools/` |
 | Workload report (`report`): warn follow-through (did the warned user adopt the rewrite, change the query, or re-run it unchanged), block follow-through (fixed and ran, retried unchanged, still blocked, bypassed, nothing), cost by query shape, result-cache opportunity, spend ledger (executed / killed / blocked, bypasses, by week), Guard health (decision mix, block / flag / bypass rates, check latency p50/p95, billed ÷ estimated bytes on BigQuery), LLM usage from the trace file (calls, tokens, errors per LLM span). Dollars are MODELED and appear only when a price is set | **built** — measured on test logs only; no real users yet | `ledger.py` |
 | Investigator: regression check vs a pre-regression baseline, bounded tightening, rule-store lookup, episodic memory | **built** | `investigator.py` |
 | Threshold updater: deterministic gates → optional judge → shadow trial → enforce → probation, auto-rollback | **built** (offline-tested) | `thresholds.ThresholdUpdater` |
-| CLI: `check`, `run` (`--user`, `--bypass-reason`), `investigate`, `investigate-anomalies`, `accept-normal`, `report` | **built** | `python -m cost_guard` |
+| CLI: `check`, `run` (`--user`, `--bypass-reason`), `investigate`, `investigate-anomalies`, `accept-normal`, `report` | **built** | `python -m query_preflight` |
 | LLM rewrite proposer, flag explainer, threshold judge (Claude) | **built, live eval not yet run** — tested with fakes; needs Anthropic credentials | `llm.py` |
 | Adaptive anomaly rule (a completed run far above its own shape's history: size clause on the two-way estimate / BigQuery bytes, drift-aware runtime clause). Runs after every completed run in `run_query`, logged on the run (`anomaly`, `anomaly_size`); never blocks or kills. The replays import the same code. Trend extrapolated at most one history span past the last run. Flagged runs stay out of the history (option B, `customer.yaml anomaly.exclude_flagged`); a person accepts a lasting change with `accept-normal <shape_id>` (CLI only, append-only audit file; later spikes still flagged) | **built** — evidence from the replays: batch, held-out hard seeds: FP 1.1%, catch 72.5%; online, held-out seeds 201–220, option B: catch 70.1%, FP 4.1% (A: 53.2%, 1.9%; [`eval/RESULTS_replay_online.md`](eval/RESULTS_replay_online.md)); live: a 5-year window over a weekly shape flagged at 262× its median size (TheLook DuckDB) | `anomaly.py`, `runtime.py` |
 | Report-only investigator agent: started by an anomaly (MCP server, background) or `investigate-anomalies` (batch from the log). Fixed steps through the MCP tools (history, tables, check, neighbouring shapes, past incidents), deterministic diagnosis (size jump vs warehouse-wide slowdown vs this shape alone, recurring), report in `runs/investigations/`, incident in memory. Changes nothing. Optional Claude summary from aggregates only, off by default (`investigator.llm_max_per_day`), capped per day and cached. Cooldown per shape and a daily cap | **built** — tested with a fake warehouse and end to end over stdio on TheLook; LLM summary tested with a fake model only | `investigator_agent.py` |
@@ -108,7 +110,7 @@ verdict, never silently skipped.
 **Runtime:** every query that runs gets a timeout — the shape's learned
 threshold if one is enforced, else the hard cap — and lands in the query log.
 
-**Report:** `python -m cost_guard report` reads the query log and measures
+**Report:** `python -m query_preflight report` reads the query log and measures
 what the verdicts don't: whether warned users changed their next query
 (within 30 minutes), which query shapes cost the most in total, how often an
 identical query is recomputed within an hour (what a result cache would
@@ -127,7 +129,7 @@ or after enforcement. Hard caps never adapt.
 
 **Private-deployment seams:** static rules, the LLM client (`NullLLM` = no
 model calls), and telemetry stay behind small interfaces in
-`src/cost_guard/interfaces.py`. Result comparison returns pass/fail + hash,
+`src/query_preflight/interfaces.py`. Result comparison returns pass/fail + hash,
 never rows.
 
 ## Results
@@ -366,7 +368,7 @@ static-only vs static+adaptive.
 │   ├── run_judge_eval.py     # 20 labeled threshold proposals: gates + judge
 │   ├── run_replay.py         # 70/30 adaptive replay, standard + --variant hard
 │   └── RESULTS_*.md          # committed result summaries
-├── src/cost_guard/
+├── src/query_preflight/
 │   ├── sql_ast.py            # every structural SQL question, on the sqlglot AST
 │   ├── config.py             # load_customer(), caps per workload class
 │   ├── guard.py              # pre-execution decision
@@ -401,14 +403,14 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python scripts/build_column_registry.py   # refresh stale/new profiles into data/thelook.registry.duckdb (schedule it)
 .venv/bin/python -m pytest -q
 .venv/bin/python eval/run_eval.py --suite thelook          # the DuckDB-era set, on the local copy
-PYTHONPATH=src .venv/bin/python -m cost_guard --db data/thelook.duckdb check "SELECT * FROM users, orders"
+PYTHONPATH=src .venv/bin/python -m query_preflight --db data/thelook.duckdb check "SELECT * FROM users, orders"
 ```
 
 `data/` is gitignored. Cost on this path is modeled from EXPLAIN row
 estimates and measured runtime; every dollar figure stays labeled as modeled.
 
 **LLM components (optional):** put `ANTHROPIC_API_KEY` in `.env` (copy
-`.env.example`; `.env` is gitignored and read by `cost_guard.config.load_dotenv`,
+`.env.example`; `.env` is gitignored and read by `query_preflight.config.load_dotenv`,
 a shell variable wins), then `eval/run_column_kinds.py`,
 `eval/run_eval.py --llm claude` and `eval/run_judge_eval.py --llm claude`.
 Model: `claude-haiku-5-5`, Anthropic's cheapest (since 2026-10-18; earlier LLM results above were measured with `claude-opus-5-5`). These runs spend real API credit, about $0.0003 per call.
@@ -419,11 +421,11 @@ running anything**, then: `scripts/bq_dryrun_compare.py --project $GCP_PROJECT
 `scripts/build_column_registry.py --bigquery-project $GCP_PROJECT` (~0.5 GB),
 `scripts/bq_live_check.py --project $GCP_PROJECT` (dry runs, free).
 
-**MCP server:** Cost Guard's tools for AI apps (Claude Code, Claude Desktop,
+**MCP server:** Query Preflight's tools for AI apps (Claude Code, Claude Desktop,
 any MCP client), over stdio:
 
 ```bash
-claude mcp add cost-guard -e PYTHONPATH=src -- .venv/bin/python -m cost_guard.mcp_server
+claude mcp add query-preflight -e PYTHONPATH=src -- .venv/bin/python -m query_preflight.mcp_server
 # BigQuery instead of the DuckDB file: append  --backend bigquery  (GCP_PROJECT from .env)
 ```
 
@@ -443,12 +445,12 @@ PHOENIX_HOST=127.0.0.1 .venv-phoenix/bin/phoenix serve        # UI: http://local
 
 Then either start the MCP server with
 `PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006` (one trace per tool call), or
-run an eval with `--phoenix` (one trace per case, project `cost-guard-evals`:
+run an eval with `--phoenix` (one trace per case, project `query-preflight-evals`:
 pattern, expected, got, ok, and the Guard's steps). Numbers only: no SQL text,
 prompts or rows (DESIGN.md §11). For reading eval traces on TheLook,
 `--phoenix --phoenix-content` also attaches each case's SQL, the verdict and
 the model's prompt and reply, to the exported spans only (the JSONL trace stays
-numbers-only), in a separate project `cost-guard-evals-content`. A hosted
+numbers-only), in a separate project `query-preflight-evals-content`. A hosted
 endpoint would receive whatever the spans carry: keep Phoenix local.
 
 ## Demo (5 minutes, zero setup)

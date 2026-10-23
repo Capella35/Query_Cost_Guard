@@ -9,8 +9,8 @@ import pytest
 pytest.importorskip("opentelemetry.sdk")
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter  # noqa: E402
 
-from cost_guard import observability  # noqa: E402
-from cost_guard.tracing import Tracer  # noqa: E402
+from query_preflight import observability  # noqa: E402
+from query_preflight.tracing import Tracer  # noqa: E402
 
 SQL = "SELECT email FROM users WHERE email = 'alice@example.com'"
 
@@ -40,7 +40,7 @@ def test_numbers_only_exports_no_content(export, tmp_path):
     jsonl = _run(tmp_path)
     (span,) = exporter.get_finished_spans()
     assert "input.value" not in span.attributes and span.attributes["findings"] == 2
-    assert span.resource.attributes["cost_guard.content"] == "none"
+    assert span.resource.attributes["query_preflight.content"] == "none"
     assert "alice" not in jsonl
 
 
@@ -49,7 +49,7 @@ def test_content_mode_exports_sql_but_never_writes_it_to_jsonl(export, tmp_path)
     jsonl = _run(tmp_path)
     (span,) = exporter.get_finished_spans()
     assert span.attributes["input.value"] == SQL
-    assert span.resource.attributes["cost_guard.content"] == "included"
+    assert span.resource.attributes["query_preflight.content"] == "included"
     assert span.resource.attributes["openinference.project.name"] == "p"
     assert "alice" not in jsonl and "input.value" not in jsonl
 

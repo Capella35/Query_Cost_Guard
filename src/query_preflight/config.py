@@ -54,13 +54,13 @@ def warehouse_settings(customer: Optional[dict]) -> dict:
 def choose_backend(customer: Optional[dict], backend: Optional[str] = None,
                    db: Optional[str] = None) -> str:
     """Which warehouse an entry point opens: an explicit --backend; else
-    --db alone means DuckDB (tests, the demo); else COST_GUARD_BACKEND; else
+    --db alone means DuckDB (tests, the demo); else QUERY_PREFLIGHT_BACKEND; else
     customer.yaml warehouse.backend (BigQuery, the target). One rule for the
     CLI, the MCP server and the registry build, so none silently defaults to
     the local DuckDB copy."""
     import os
 
-    choice = backend or ("duckdb" if db else None) or os.environ.get("COST_GUARD_BACKEND") \
+    choice = backend or ("duckdb" if db else None) or os.environ.get("QUERY_PREFLIGHT_BACKEND") \
         or warehouse_settings(customer)["backend"]
     if choice not in BACKENDS:
         raise SystemExit(f"unknown backend {choice!r} (expected one of {', '.join(BACKENDS)})")

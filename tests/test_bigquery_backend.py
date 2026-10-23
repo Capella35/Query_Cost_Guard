@@ -7,9 +7,9 @@ import pytest
 
 pytest.importorskip("google.cloud.bigquery")
 
-from cost_guard.backends.bigquery_backend import BigQueryWarehouse  # noqa: E402
-from cost_guard.guard import decide  # noqa: E402
-from cost_guard.tracing import Tracer  # noqa: E402
+from query_preflight.backends.bigquery_backend import BigQueryWarehouse  # noqa: E402
+from query_preflight.guard import decide  # noqa: E402
+from query_preflight.tracing import Tracer  # noqa: E402
 
 
 class FakeClient:
@@ -211,7 +211,7 @@ class RegistryClient:
 
 
 def test_bigquery_registry_build_and_lookup(tmp_path):
-    from cost_guard.column_registry import build_bigquery_registry, load_registry
+    from query_preflight.column_registry import build_bigquery_registry, load_registry
 
     path = str(tmp_path / "reg.duckdb")
     client = RegistryClient()
@@ -239,7 +239,7 @@ def test_bigquery_registry_build_and_lookup(tmp_path):
 
 
 def test_bigquery_registry_size_gate_uses_dry_run_bytes(tmp_path):
-    from cost_guard.column_registry import build_bigquery_registry
+    from query_preflight.column_registry import build_bigquery_registry
 
     client = RegistryClient(dry_bytes=5 * 1024**3)
     rep = build_bigquery_registry("p", "ds", registry_path=str(tmp_path / "r.duckdb"),
@@ -249,7 +249,7 @@ def test_bigquery_registry_size_gate_uses_dry_run_bytes(tmp_path):
 
 
 def test_backend_reads_the_dataset_registry(tmp_path):
-    from cost_guard.column_registry import build_bigquery_registry
+    from query_preflight.column_registry import build_bigquery_registry
 
     path = str(tmp_path / "reg.duckdb")
     build_bigquery_registry("p", "ds", registry_path=path, client=RegistryClient())
@@ -262,7 +262,7 @@ def test_backend_reads_the_dataset_registry(tmp_path):
 def test_guard_reads_bigquery_sql_in_the_bigquery_dialect():
     """Backticked names are everyday BigQuery SQL; the DuckDB parser rejects
     them. The Guard parses with the backend's dialect, per decision."""
-    from cost_guard import sql_ast
+    from query_preflight import sql_ast
 
     wh = BigQueryWarehouse("proj", client=FakeClient(0))
     v = decide("SELECT `status`, COUNT(*) AS n FROM `proj.thelook_ecommerce.orders` "
@@ -281,7 +281,7 @@ def test_filter_after_join_is_not_flagged_on_bigquery():
     """BigQuery pushes the filter down itself (pushdown rewrites billed the same
     bytes); the BigQuery eval's B10 was a false warn from this rule. HAVING
     without an aggregate is off too (Q15: same bytes and slot time as WHERE)."""
-    from cost_guard.rules.static_rules import filter_before_join
+    from query_preflight.rules.static_rules import filter_before_join
 
     q = ("SELECT t.order_id FROM (SELECT o.order_id, o.created_at, u.state FROM orders o "
          "JOIN users u ON u.id = o.user_id) t WHERE t.state = 'California'")
@@ -296,7 +296,7 @@ def test_filter_after_join_is_not_flagged_on_bigquery():
 
 def test_repeated_subquery_is_not_flagged_on_bigquery():
     """Q09: the CTE version billed the same bytes and slot time on BigQuery."""
-    from cost_guard.rules.static_rules import repeated_subquery_to_cte
+    from query_preflight.rules.static_rules import repeated_subquery_to_cte
 
     sub = "(SELECT MAX(created_at) FROM orders)"
     q = f"SELECT {sub} AS a, {sub} AS b FROM users"
@@ -418,7 +418,7 @@ def test_table_metadata_is_cached_and_returned_as_a_copy():
 
 
 def test_cache_expires(monkeypatch):
-    import cost_guard.backends.bigquery_backend as bq
+    import query_preflight.backends.bigquery_backend as bq
 
     monkeypatch.setattr(bq, "METADATA_TTL_SEC", 0)
     client = SlowClient()
@@ -524,8 +524,8 @@ def _execute_config(fake):
 def test_run_carries_the_class_bytes_cap_as_maximum_bytes_billed(tmp_path):
     """BigQuery refuses a job over the class cap even if the dry-run check
     let it through; the backend's project-wide ceiling only applies above it."""
-    from cost_guard.config import caps_for, load_customer
-    from cost_guard.runtime import run_query
+    from query_preflight.config import caps_for, load_customer
+    from query_preflight.runtime import run_query
 
     customer = load_customer()
     q = "SELECT order_id FROM orders WHERE created_at >= '2024-01-01'"
@@ -545,8 +545,8 @@ def test_run_carries_the_class_bytes_cap_as_maximum_bytes_billed(tmp_path):
 def test_bypassed_block_keeps_only_the_project_ceiling(tmp_path):
     import copy
 
-    from cost_guard.config import load_customer
-    from cost_guard.runtime import run_query
+    from query_preflight.config import load_customer
+    from query_preflight.runtime import run_query
 
     customer = copy.deepcopy(load_customer())
     customer.setdefault("guard", {})["allow_bypass"] = True
@@ -579,7 +579,7 @@ def test_rewrite_gate_compares_billed_bytes(monkeypatch, orig_mib, cand_mib, off
     and the sampled verification (~30 MiB billed) would cost more."""
     import importlib
 
-    cr = importlib.import_module("cost_guard.tools.compare_results")  # the module, not the re-export
+    cr = importlib.import_module("query_preflight.tools.compare_results")  # the module, not the re-export
 
     class Client(FakeClient):
         def query(self, sql, job_config=None):
@@ -603,8 +603,8 @@ def test_rewrite_gate_compares_billed_bytes(monkeypatch, orig_mib, cand_mib, off
 def test_date_windows_from_a_rewrite():
     from datetime import datetime
 
-    from cost_guard import sql_ast
-    from cost_guard.tools.compare_results import date_windows
+    from query_preflight import sql_ast
+    from query_preflight.tools.compare_results import date_windows
 
     now = datetime(2026, 10, 17)
     with sql_ast.using_dialect("bigquery"):

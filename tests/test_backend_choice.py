@@ -5,7 +5,7 @@ import argparse
 
 import pytest
 
-from cost_guard import config
+from query_preflight import config
 
 BQ = {"warehouse": {"backend": "bigquery", "bigquery": {"project": "p", "dataset": "ds"},
                     "duckdb": {"db_path": "data/thelook.duckdb"}}}
@@ -13,17 +13,17 @@ BQ = {"warehouse": {"backend": "bigquery", "bigquery": {"project": "p", "dataset
 
 @pytest.fixture(autouse=True)
 def no_env(monkeypatch):
-    monkeypatch.delenv("COST_GUARD_BACKEND", raising=False)
+    monkeypatch.delenv("QUERY_PREFLIGHT_BACKEND", raising=False)
 
 
 def test_choose_backend_order(monkeypatch):
     assert config.choose_backend(BQ) == "bigquery"
     assert config.choose_backend(BQ, db="x.duckdb") == "duckdb"  # --db alone: tests, the demo
     assert config.choose_backend(BQ, backend="bigquery", db="x.duckdb") == "bigquery"  # explicit wins
-    monkeypatch.setenv("COST_GUARD_BACKEND", "duckdb")
+    monkeypatch.setenv("QUERY_PREFLIGHT_BACKEND", "duckdb")
     assert config.choose_backend(BQ) == "duckdb"
     assert config.choose_backend({}) == "duckdb"  # the env var still decides
-    monkeypatch.delenv("COST_GUARD_BACKEND")
+    monkeypatch.delenv("QUERY_PREFLIGHT_BACKEND")
     assert config.choose_backend({}) == "bigquery"  # no warehouse section: the target
     with pytest.raises(SystemExit, match="unknown backend"):
         config.choose_backend(BQ, backend="sqlite")
@@ -44,11 +44,11 @@ def _args(**kw):
     return argparse.Namespace(**{"backend": None, "project": None, "dataset": None, "db": None, **kw})
 
 
-@pytest.mark.parametrize("module", ["cost_guard.__main__", "cost_guard.mcp_server"])
+@pytest.mark.parametrize("module", ["query_preflight.__main__", "query_preflight.mcp_server"])
 def test_cli_and_mcp_server_open_bigquery_by_default(module, monkeypatch):
     import importlib
 
-    import cost_guard.backends.bigquery_backend as bqb
+    import query_preflight.backends.bigquery_backend as bqb
 
     monkeypatch.setattr(bqb, "BigQueryWarehouse", FakeBQ)
     mod = importlib.import_module(module)

@@ -50,7 +50,7 @@ async def smoke(project: str, dataset: str, tmp: Path) -> list[tuple[str, bool, 
 
     params = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "cost_guard.mcp_server", "--backend", "bigquery", "--project", project,
+        args=["-m", "query_preflight.mcp_server", "--backend", "bigquery", "--project", project,
               "--dataset", dataset, "--log", str(tmp / "log.jsonl"),
               "--traces", str(tmp / "traces.jsonl"), "--no-investigations"],
         env={**os.environ, "PYTHONPATH": str(ROOT / "src")}, cwd=str(ROOT))
@@ -94,7 +94,7 @@ async def smoke(project: str, dataset: str, tmp: Path) -> list[tuple[str, bool, 
 
 
 def main() -> int:
-    from cost_guard.config import load_dotenv
+    from query_preflight.config import load_dotenv
 
     load_dotenv()
     ap = argparse.ArgumentParser()

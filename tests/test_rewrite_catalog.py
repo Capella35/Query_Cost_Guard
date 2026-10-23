@@ -3,11 +3,11 @@ Every rewrite must return the same rows as the original — checked here on
 the full synthetic data, not just the Guard's sample."""
 import pytest
 
-from cost_guard import sql_ast
-from cost_guard.guard import decide
-from cost_guard.results import result_hash
-from cost_guard.rewrites import suggest_pushdown_rewrite, suggest_sargable_rewrite
-from cost_guard.tracing import Tracer
+from query_preflight import sql_ast
+from query_preflight.guard import decide
+from query_preflight.results import result_hash
+from query_preflight.rewrites import suggest_pushdown_rewrite, suggest_sargable_rewrite
+from query_preflight.tracing import Tracer
 
 
 def _same(wh, a, b):
@@ -83,8 +83,8 @@ def test_cast_date_rewrite_not_held_to_estimate_gate(synthetic_wh):
     and the equivalent range at a flat 20% (200k), so the estimate gate used to
     reject this rewrite. A pruning-only fix reads no more than the original;
     compare_results still has to pass."""
-    from cost_guard.guard import decide
-    from cost_guard.tracing import Tracer
+    from query_preflight.guard import decide
+    from query_preflight.tracing import Tracer
 
     q = "SELECT order_id FROM orders WHERE CAST(created_at AS DATE) = DATE '2024-03-01'"
     v = decide(q, backend=synthetic_wh, tracer=Tracer())

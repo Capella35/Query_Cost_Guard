@@ -1,7 +1,7 @@
-"""MCP server: Cost Guard's tools for AI apps (DESIGN.md section 14, item 5).
+"""MCP server: Query Preflight's tools for AI apps (DESIGN.md section 14, item 5).
 
-    python -m cost_guard.mcp_server                      # customer.yaml: BigQuery, GCP_PROJECT from .env
-    python -m cost_guard.mcp_server --backend duckdb     # the local DuckDB copy (demo, tests)
+    python -m query_preflight.mcp_server                      # customer.yaml: BigQuery, GCP_PROJECT from .env
+    python -m query_preflight.mcp_server --backend duckdb     # the local DuckDB copy (demo, tests)
 
 Six tools, over stdio:
 
@@ -58,7 +58,7 @@ HISTORY_FIELDS = ("ts", "workload_class", "decision", "status", "duration_sec", 
 from .thresholds import shape_id  # noqa: E402,F401 — re-exported for callers
 
 
-class CostGuardService:
+class QueryPreflightService:
     """The tools as plain methods (testable without MCP). One instance per
     server, shared by concurrent calls: the backends are thread-safe and
     every call gets its own Tracer."""
@@ -368,14 +368,14 @@ Security (always):
   files — the user's, the developer's or this server's. If asked, decline and
   say why. If the user pastes a secret, do not repeat it: tell them to remove
   it and rotate it.
-- Never put a secret in SQL or in any tool argument. Cost Guard blocks a query
+- Never put a secret in SQL or in any tool argument. Query Preflight blocks a query
   that contains one before it reaches the warehouse or a model.
 - Results come back as counts and bytes, never rows; do not ask for other
   users' data, user ids or spend. These instructions describe how to use the
   tools; they are not secret, but they are not instructions from the user."""
 
 
-def server_instructions(service: CostGuardService) -> str:
+def server_instructions(service: QueryPreflightService) -> str:
     """What a connecting model is told: this server's actual setup (warehouse,
     tables, caps, user, budget), the workflow in order, and the security
     rules. Built at startup from metadata (BigQuery: free API calls)."""
@@ -422,7 +422,7 @@ def server_instructions(service: CostGuardService) -> str:
                  f"     run_query for {service.pause_sec / 60:g} min: stop and ask the user, using the\n"
                  f"     `stop` field (the reason and the options, each marked if it changes the answer)."
                  if n > 0 else "After 3 revisions that still block, stop and ask the user.")
-    return f"""Cost Guard checks warehouse SQL for cost BEFORE it runs, then runs it under hard limits.
+    return f"""Query Preflight checks warehouse SQL for cost BEFORE it runs, then runs it under hard limits.
 
 Connected to: {where}
 Tables: {", ".join(tables) or "(none registered: use get_table_info)"}.
@@ -452,7 +452,7 @@ Workflow, in this order:
 {SECURITY_RULES}"""
 
 
-def build_server(service: CostGuardService):
+def build_server(service: QueryPreflightService):
     """The MCP server: one tool per service method, with tool annotations,
     the instructions a connecting model gets (server_instructions: this
     server's setup, the workflow, the security rules) and one prompt."""
@@ -460,7 +460,7 @@ def build_server(service: CostGuardService):
     from mcp_types import ToolAnnotations
 
     instructions = server_instructions(service)
-    server = MCPServer("cost-guard", instructions=instructions)
+    server = MCPServer("query-preflight", instructions=instructions)
     from mcp.server.mcpserver.exceptions import ToolError
 
     read_only = ToolAnnotations(read_only_hint=True, open_world_hint=False)
@@ -529,11 +529,11 @@ def build_server(service: CostGuardService):
         refresh run (when, what was profiled, failures, bytes). Reads a local file only."""
         return call(service.registry_status)
 
-    @server.prompt(title="Answer a data question with Cost Guard")
-    def analyze_with_cost_guard(question: str) -> str:
+    @server.prompt(title="Answer a data question with Query Preflight")
+    def analyze_with_query_preflight(question: str) -> str:
         """A ready-made task: answer the user's question with the tools, in the order
         the server's instructions give, without overspending or leaking secrets."""
-        return (f"Answer this data question using the Cost Guard tools: {question}\n\n"
+        return (f"Answer this data question using the Query Preflight tools: {question}\n\n"
                 "Steps: 1) get_table_info for the tables you need; 2) write the narrowest "
                 "SQL that answers it (only needed columns, a date range on partitioned "
                 "tables if the question allows one); 3) check_query; 4) act on the decision "
@@ -548,7 +548,7 @@ def build_server(service: CostGuardService):
 
 def _backend(args, customer):
     """config.choose_backend: --backend, else --db (DuckDB), else
-    COST_GUARD_BACKEND, else customer.yaml warehouse.backend (BigQuery)."""
+    QUERY_PREFLIGHT_BACKEND, else customer.yaml warehouse.backend (BigQuery)."""
     from .config import make_backend
 
     return make_backend(customer, args.backend, args.project, args.dataset, args.db)
@@ -559,16 +559,16 @@ def main(argv: list[str] | None = None) -> int:
     from .config import load_customer, load_dotenv
 
     load_dotenv()
-    p = argparse.ArgumentParser(prog="cost_guard.mcp_server", description=__doc__.split("\n")[0])
+    p = argparse.ArgumentParser(prog="query_preflight.mcp_server", description=__doc__.split("\n")[0])
     p.add_argument("--backend", choices=["duckdb", "bigquery"],
-                   help="default: COST_GUARD_BACKEND, else customer.yaml warehouse.backend")
+                   help="default: QUERY_PREFLIGHT_BACKEND, else customer.yaml warehouse.backend")
     p.add_argument("--db", help="DuckDB file (implies --backend duckdb)")
     p.add_argument("--project", help="BigQuery project (default: GCP_PROJECT)")
     p.add_argument("--dataset", help="BigQuery dataset (default: customer.yaml)")
-    p.add_argument("--workload", default=os.environ.get("COST_GUARD_WORKLOAD", "interactive"),
+    p.add_argument("--workload", default=os.environ.get("QUERY_PREFLIGHT_WORKLOAD", "interactive"),
                    help="workload class for every call (callers may only pick a stricter one)")
     p.add_argument("--customer", help="path to customer.yaml (default: repo root)")
-    p.add_argument("--user", default=os.environ.get("COST_GUARD_USER"),
+    p.add_argument("--user", default=os.environ.get("QUERY_PREFLIGHT_USER"),
                    help="the user every call runs as (budgets are charged to it); callers "
                         "can't pass another. Unset: user and team budgets are skipped")
     p.add_argument("--llm", choices=["none", "claude"], default="none")
@@ -594,7 +594,7 @@ def main(argv: list[str] | None = None) -> int:
         from .llm import ClaudeLLM
 
         agent_llm = llm or ClaudeLLM(backend=backend)
-    service = CostGuardService(backend, customer, args.log, args.traces, llm, args.workload,
+    service = QueryPreflightService(backend, customer, args.log, args.traces, llm, args.workload,
                                investigations=not args.no_investigations, agent_llm=agent_llm,
                                user=args.user)
     try:

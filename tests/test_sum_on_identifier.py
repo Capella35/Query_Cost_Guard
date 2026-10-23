@@ -4,10 +4,10 @@ by near-unique values in the registry (could be a real amount) warns."""
 import duckdb
 import pytest
 
-from cost_guard.backends.duckdb_backend import DuckDBWarehouse
-from cost_guard.column_registry import RegistryEntry, build_registry
-from cost_guard.guard import decide
-from cost_guard.tracing import Tracer
+from query_preflight.backends.duckdb_backend import DuckDBWarehouse
+from query_preflight.column_registry import RegistryEntry, build_registry
+from query_preflight.guard import decide
+from query_preflight.tracing import Tracer
 
 
 def _ids(v):

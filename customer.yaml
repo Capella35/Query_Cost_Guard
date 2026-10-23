@@ -33,7 +33,7 @@ partitioned_tables:
   events: created_at
   inventory_items: created_at
 
-# Column registry (src/cost_guard/column_registry.py): a data-profiling
+# Column registry (src/query_preflight/column_registry.py): a data-profiling
 # lookup table built by scripts/build_column_registry.py on a schedule, read
 # by the Guard instead of scanning columns per query.
 column_registry:
@@ -124,7 +124,7 @@ cost_model:
                                     # credits/hour); used only when a run has no bytes
   warehouse_size: null          # BigQuery on-demand; set if using slots/edition
 
-# Workload report (python -m cost_guard report; src/cost_guard/ledger.py).
+# Workload report (python -m query_preflight report; src/query_preflight/ledger.py).
 report:
   followup_window_min: 30       # after a warn, the user's next run within this counts as follow-up
   cache_ttl_min: 60             # identical query re-run within this = result-cache opportunity

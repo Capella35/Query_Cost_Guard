@@ -18,7 +18,7 @@ Cold start: no flag below COLD_START_RUNS runs of history.
 
 Option B (customer.yaml anomaly.exclude_flagged) leaves flagged runs out of
 the history, so a legitimate lasting change keeps being flagged until a
-person accepts it: `python -m cost_guard accept-normal <shape_id>` appends to
+person accepts it: `python -m query_preflight accept-normal <shape_id>` appends to
 accepted_normal.jsonl next to the query log. Flagged runs of that shape up
 to the acceptance count as normal again; runs flagged after it are left out
 as before, so a new spike is still caught. Not offered through MCP: like a

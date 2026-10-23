@@ -8,12 +8,12 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from cost_guard.anomaly import COLD_START_RUNS, check_run
-from cost_guard.backends.base import ExecutionResult, PlanEstimate
-from cost_guard.config import load_customer
-from cost_guard.investigator_agent import InvestigatorAgent, diagnose, events_from_log
-from cost_guard.mcp_server import CostGuardService
-from cost_guard.runtime import append_log, LogRecord, read_log, run_query
+from query_preflight.anomaly import COLD_START_RUNS, check_run
+from query_preflight.backends.base import ExecutionResult, PlanEstimate
+from query_preflight.config import load_customer
+from query_preflight.investigator_agent import InvestigatorAgent, diagnose, events_from_log
+from query_preflight.mcp_server import QueryPreflightService
+from query_preflight.runtime import append_log, LogRecord, read_log, run_query
 
 SQL = "SELECT status, COUNT(*) FROM orders WHERE user_id = 4242 GROUP BY status"
 T0 = datetime(2026, 10, 1, 9, 0, tzinfo=timezone.utc)
@@ -47,7 +47,7 @@ def _customer(**inv):
 
 
 def _seed(log, n=25, dur=0.10, rows=1000, fp=None, start=T0):
-    from cost_guard.thresholds import fingerprint_query
+    from query_preflight.thresholds import fingerprint_query
 
     for i in range(n):
         append_log(LogRecord(ts=(start + timedelta(minutes=i)).isoformat(),
@@ -85,7 +85,7 @@ def test_run_query_logs_the_flag_and_hands_over_the_event(tmp_path):
 
 @pytest.fixture
 def service(tmp_path):
-    return CostGuardService(FakeWarehouse(), _customer(), log_path=tmp_path / "log.jsonl",
+    return QueryPreflightService(FakeWarehouse(), _customer(), log_path=tmp_path / "log.jsonl",
                             trace_path=tmp_path / "traces.jsonl")
 
 
@@ -223,8 +223,8 @@ def _b():
 
 
 def test_accept_normal_ends_the_flags_for_a_lasting_change(tmp_path):
-    from cost_guard.anomaly import accept_normal, read_acceptances
-    from cost_guard.thresholds import fingerprint_query, shape_id
+    from query_preflight.anomaly import accept_normal, read_acceptances
+    from query_preflight.thresholds import fingerprint_query, shape_id
 
     log, wh = tmp_path / "log.jsonl", FakeWarehouse()
     _seed(log)
@@ -239,7 +239,7 @@ def test_accept_normal_ends_the_flags_for_a_lasting_change(tmp_path):
 
 
 def test_accept_normal_needs_a_known_unique_shape(tmp_path):
-    from cost_guard.anomaly import accept_normal
+    from query_preflight.anomaly import accept_normal
 
     log = tmp_path / "log.jsonl"
     _seed(log)
@@ -250,8 +250,8 @@ def test_accept_normal_needs_a_known_unique_shape(tmp_path):
 
 
 def test_accept_normal_cli(tmp_path, capsys):
-    from cost_guard.__main__ import main
-    from cost_guard.thresholds import fingerprint_query, shape_id
+    from query_preflight.__main__ import main
+    from query_preflight.thresholds import fingerprint_query, shape_id
 
     log = tmp_path / "log.jsonl"
     _seed(log)
@@ -264,10 +264,10 @@ def test_accept_normal_cli(tmp_path, capsys):
 
 
 def test_lasting_change_note_counts_only_flags_since_acceptance(tmp_path):
-    from cost_guard.anomaly import accept_normal
-    from cost_guard.thresholds import fingerprint_query, shape_id
+    from query_preflight.anomaly import accept_normal
+    from query_preflight.thresholds import fingerprint_query, shape_id
 
-    svc = CostGuardService(FakeWarehouse(), _b(), log_path=tmp_path / "log.jsonl",
+    svc = QueryPreflightService(FakeWarehouse(), _b(), log_path=tmp_path / "log.jsonl",
                            trace_path=None, investigations=False)
     _seed(svc.log_path)
     svc.backend.next_duration = 1.5
@@ -277,7 +277,7 @@ def test_lasting_change_note_counts_only_flags_since_acceptance(tmp_path):
     (*_, last) = events_from_log(read_log(svc.log_path))
     rep = agent.investigate(last)
     assert rep.likely_causes[0].startswith("looks like a lasting change")
-    assert rep.look_next[0].startswith("if this is the new normal: python -m cost_guard accept-normal "
+    assert rep.look_next[0].startswith("if this is the new normal: python -m query_preflight accept-normal "
                                        + rep.shape_id)
     accept_normal(svc.log_path, rep.shape_id)
     later = {**last, "ts": datetime.now(timezone.utc).isoformat()}

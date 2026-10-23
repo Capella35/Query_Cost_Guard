@@ -2,8 +2,8 @@
 the model call (fake client — no API)."""
 from types import SimpleNamespace
 
-from cost_guard.column_kinds import baseline_kind, describe_tables, score
-from cost_guard.llm import ClaudeLLM, ColumnKindOut, ColumnKindsOut
+from query_preflight.column_kinds import baseline_kind, describe_tables, score
+from query_preflight.llm import ClaudeLLM, ColumnKindOut, ColumnKindsOut
 
 TABLES = {"invoices": {"rows": 1000, "columns": [
     {"name": "customer", "type": "INTEGER", "distinct": 80, "null_share": 0.0, "kind": "identifier"},
@@ -61,7 +61,7 @@ def test_classify_columns_with_a_fake_client():
 import duckdb  # noqa: E402
 import pytest  # noqa: E402
 
-from cost_guard.column_kinds import (  # noqa: E402
+from query_preflight.column_kinds import (  # noqa: E402
     CLASSIFY_SYSTEM,
     classify_edge_cases,
     confirm,
@@ -162,14 +162,14 @@ def shop(tmp_path):
     con.execute("CREATE TABLE sales AS SELECT range AS sale_id, range % 900 AS customer, "
                 "range % 7 AS items_no, range % 40 AS store_code, range % 50 AS qty FROM range(3000)")
     con.close()
-    from cost_guard.backends.duckdb_backend import DuckDBWarehouse
+    from query_preflight.backends.duckdb_backend import DuckDBWarehouse
 
     return DuckDBWarehouse(db)
 
 
 def _verdict(wh, col, kinds):
-    from cost_guard.guard import decide
-    from cost_guard.tracing import Tracer
+    from query_preflight.guard import decide
+    from query_preflight.tracing import Tracer
 
     wh._kinds = kinds
     return decide(f"SELECT SUM({col}) FROM sales", backend=wh, tracer=Tracer())
@@ -198,8 +198,8 @@ def test_levels(shop):
 def test_confirmed_category_blocks_sum_and_avg_but_not_grouping(shop):
     """A step/level/code column a person confirmed as a category: its values
     are labels, so SUM/AVG are blocked; grouping, counting and MIN/MAX are not."""
-    from cost_guard.guard import decide
-    from cost_guard.tracing import Tracer
+    from query_preflight.guard import decide
+    from query_preflight.tracing import Tracer
 
     shop._kinds = {"sales.qty": {"kind": "category", "reviewed": True}}
     for agg in ("SUM", "AVG"):

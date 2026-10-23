@@ -1,4 +1,4 @@
-"""CLI: python -m cost_guard {check,run,investigate} ...
+"""CLI: python -m query_preflight {check,run,investigate} ...
 
   check "SQL"      Guard verdict only (nothing executes).
   run "SQL"        Guard, then execute under the watchdog; logs to runs/query_log.jsonl.
@@ -33,7 +33,7 @@ from dataclasses import asdict
 
 def _backend(args, customer):
     """The warehouse per config.choose_backend: --backend, else --db (DuckDB),
-    else COST_GUARD_BACKEND, else customer.yaml (BigQuery)."""
+    else QUERY_PREFLIGHT_BACKEND, else customer.yaml (BigQuery)."""
     from .config import make_backend
 
     return make_backend(customer, args.backend, args.project, args.dataset, args.db)
@@ -98,9 +98,9 @@ def _registry(args, customer) -> int:
 def main(argv: list[str] | None = None) -> int:
     from .config import caps_for, load_customer, load_dotenv
 
-    load_dotenv()  # .env settings (e.g. COST_GUARD_LOG_KEY), shell variables win
+    load_dotenv()  # .env settings (e.g. QUERY_PREFLIGHT_LOG_KEY), shell variables win
 
-    parser = argparse.ArgumentParser(prog="cost_guard", description="Cost Guard + Investigator CLI")
+    parser = argparse.ArgumentParser(prog="query_preflight", description="Query Preflight + Investigator CLI")
     parser.add_argument("--customer", help="path to customer.yaml (default: repo root)")
     parser.add_argument("--db", help="DuckDB file (implies --backend duckdb)")
     # Where queries go: customer.yaml warehouse.backend (BigQuery) unless set here.
@@ -206,11 +206,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "investigate-anomalies":
         from .investigator_agent import events_from_log
-        from .mcp_server import CostGuardService
+        from .mcp_server import QueryPreflightService
         from .runtime import read_log
 
         backend = _backend(args, customer)
-        svc = CostGuardService(backend, customer, args.log, args.traces, investigations=True,
+        svc = QueryPreflightService(backend, customer, args.log, args.traces, investigations=True,
                                agent_llm=_llm(args, backend))
         done = skipped = 0
         for ev in events_from_log(read_log(args.log)):

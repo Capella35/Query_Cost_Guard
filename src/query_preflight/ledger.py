@@ -23,7 +23,7 @@ happened (runs/query_log.jsonl, written by runtime.run_query) and answers:
 5. Block follow-through — after a block, what did that user run next
    (same window)? fixed it (a different shape that ran), retried it unchanged
    (same shape, blocked again), changed it but still blocked, bypassed it,
-   or nothing. Checks (check_query, `cost_guard check`) are not logged, so a
+   or nothing. Checks (check_query, `query_preflight check`) are not logged, so a
    revision checked but never run is invisible here; the next RUN is counted.
 6. Guard health — decision mix and rates, Guard latency (p50/p95 of the
    check, from check_ms), and estimate accuracy where the warehouse reports

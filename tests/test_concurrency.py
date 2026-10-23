@@ -3,9 +3,9 @@ must neither crash nor change verdicts. Before per-thread cursors, 8 threads
 on a shared DuckDBWarehouse gave 76 errors and 47 wrong verdicts in 200."""
 from concurrent.futures import ThreadPoolExecutor
 
-from cost_guard.backends.duckdb_backend import DuckDBWarehouse
-from cost_guard.guard import decide
-from cost_guard.tracing import Tracer
+from query_preflight.backends.duckdb_backend import DuckDBWarehouse
+from query_preflight.guard import decide
+from query_preflight.tracing import Tracer
 
 QUERIES = [
     "SELECT status, COUNT(*) FROM orders WHERE created_at >= '2024-01-01' GROUP BY status",

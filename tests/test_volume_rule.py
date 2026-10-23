@@ -2,11 +2,11 @@
 judged by its total. Warns, never blocks; BigQuery dry-run bytes only."""
 from datetime import datetime, timedelta, timezone
 
-from cost_guard.backends.bigquery_backend import BigQueryWarehouse
-from cost_guard.config import load_customer
-from cost_guard.runtime import LogRecord, append_log, read_log, run_query, shape_volume
-from cost_guard.thresholds import fingerprint_query
-from cost_guard.tracing import Tracer
+from query_preflight.backends.bigquery_backend import BigQueryWarehouse
+from query_preflight.config import load_customer
+from query_preflight.runtime import LogRecord, append_log, read_log, run_query, shape_volume
+from query_preflight.thresholds import fingerprint_query
+from query_preflight.tracing import Tracer
 from test_bigquery_backend import FakeClient
 
 GIB = 1024**3

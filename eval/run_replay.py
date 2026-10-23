@@ -40,11 +40,11 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "demo"))
 
 from warehouse import build_synthetic_warehouse
-from cost_guard.guard import decide
+from query_preflight.guard import decide
 from eval_config import load_eval_customer  # noqa: E402
-from cost_guard.thresholds import BaselineStore, FingerprintStats
+from query_preflight.thresholds import BaselineStore, FingerprintStats
 # The anomaly rule lives in the package (production runs the same code).
-from cost_guard.anomaly import (  # noqa: E402,F401
+from query_preflight.anomaly import (  # noqa: E402,F401
     ANOMALY_MEDIAN_MULT, COLD_START_RUNS, MIN_ABS_DURATION_SEC, anomaly_flag, drift_aware_flag)
 
 EVAL_CUSTOMER = load_eval_customer()  # caps the replay labels were written under
@@ -294,7 +294,7 @@ HARD_HELDOUT_SEEDS = tuple(range(101, 111))
 def score_hard(seed: int, method: str = "flat") -> tuple[dict, list[dict]]:
     """(per-fingerprint counts, rows) for one seed of the hard traffic.
     method: "flat" (median/p95 of history, the current rule) or "drift"."""
-    from cost_guard.thresholds import DriftAwareBaseline
+    from query_preflight.thresholds import DriftAwareBaseline
 
     traffic = gen_hard_traffic(seed)
     history, test = split_chronological(traffic)
@@ -375,7 +375,7 @@ ONLINE_RESULTS = ROOT / "eval" / "RESULTS_replay_online.md"
 def score_online(seed: int, exclude_flagged: bool) -> tuple[dict, list[dict]]:
     """Per-shape counts over the LAST 30% of runs by time (the batch replays'
     test window), every run checked online against all earlier runs."""
-    from cost_guard.anomaly import check_run
+    from query_preflight.anomaly import check_run
 
     traffic = gen_online_traffic(seed)
     cut = split_chronological(traffic)[1][0]["ts"]

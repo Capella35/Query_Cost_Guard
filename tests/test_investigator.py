@@ -1,8 +1,8 @@
 """Tests for episodic memory and the Investigator workplan."""
 
-from cost_guard.investigator import investigate
-from cost_guard.memory import EpisodicMemory, Incident
-from cost_guard.thresholds import BaselineStore, fingerprint_query
+from query_preflight.investigator import investigate
+from query_preflight.memory import EpisodicMemory, Incident
+from query_preflight.thresholds import BaselineStore, fingerprint_query
 
 
 def test_memory_roundtrip(tmp_path):

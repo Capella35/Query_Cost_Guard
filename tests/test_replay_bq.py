@@ -8,7 +8,7 @@ sys.path.insert(0, str(ROOT / "eval"))
 
 from run_replay_bq import evaluate, gen_traffic, separation  # noqa: E402
 
-from cost_guard.thresholds import fingerprint_query  # noqa: E402
+from query_preflight.thresholds import fingerprint_query  # noqa: E402
 
 
 def _filled(wide_factor_a: float, wide_factor_b: float):

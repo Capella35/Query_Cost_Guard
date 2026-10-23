@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "eval"))
 
 from run_replay import anomaly_flag, split_chronological
-from cost_guard.thresholds import BaselineStore
+from query_preflight.thresholds import BaselineStore
 
 
 def make_stats(durations, rows=1000):

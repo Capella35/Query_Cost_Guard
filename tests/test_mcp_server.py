@@ -6,10 +6,10 @@ import json
 
 import pytest
 
-from cost_guard.config import load_customer
-from cost_guard.mcp_server import CostGuardService, shape_id
-from cost_guard.runtime import read_log
-from cost_guard.tracing import read_traces
+from query_preflight.config import load_customer
+from query_preflight.mcp_server import QueryPreflightService, shape_id
+from query_preflight.runtime import read_log
+from query_preflight.tracing import read_traces
 
 SMALL = "SELECT status, COUNT(*) AS n FROM orders GROUP BY status"
 HUGE = "SELECT * FROM users, orders WHERE users.email = 'alice@example.com'"
@@ -17,7 +17,7 @@ HUGE = "SELECT * FROM users, orders WHERE users.email = 'alice@example.com'"
 
 @pytest.fixture
 def service(synthetic_wh, tmp_path):
-    return CostGuardService(synthetic_wh, load_customer(), log_path=tmp_path / "log.jsonl",
+    return QueryPreflightService(synthetic_wh, load_customer(), log_path=tmp_path / "log.jsonl",
                             trace_path=tmp_path / "traces.jsonl")
 
 
@@ -79,7 +79,7 @@ def test_workload_report_has_health_and_llm_usage(service):
 def test_mcp_lists_five_tools_and_calls_them(service):
     from mcp import Client
 
-    from cost_guard.mcp_server import build_server
+    from query_preflight.mcp_server import build_server
 
     async def go():
         async with Client(build_server(service)) as client:
@@ -101,7 +101,7 @@ def test_otel_export_nests_spans_and_shares_the_trace_id(service):
     pytest.importorskip("opentelemetry.sdk")
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-    from cost_guard import observability
+    from query_preflight import observability
 
     exp = InMemorySpanExporter()
     assert observability.setup(exporter=exp, set_global=False)
@@ -132,7 +132,7 @@ def test_caller_cannot_loosen_the_workload_class(service):
 
 
 def test_stricter_class_is_allowed(synthetic_wh, tmp_path):
-    svc = CostGuardService(synthetic_wh, load_customer(), tmp_path / "log.jsonl", None,
+    svc = QueryPreflightService(synthetic_wh, load_customer(), tmp_path / "log.jsonl", None,
                            workload_class="scheduled")
     assert svc.check_query(SMALL, workload_class="interactive")["workload_class"] == "interactive"
     assert svc.check_query(SMALL)["workload_class"] == "scheduled"
@@ -140,13 +140,13 @@ def test_stricter_class_is_allowed(synthetic_wh, tmp_path):
 
 def test_unknown_server_class_fails_at_startup(synthetic_wh):
     with pytest.raises(KeyError):
-        CostGuardService(synthetic_wh, load_customer(), workload_class="nightly")
+        QueryPreflightService(synthetic_wh, load_customer(), workload_class="nightly")
 
 
 def test_mcp_has_no_bypass_and_returns_fix_hints(service):
     from mcp import Client
 
-    from cost_guard.mcp_server import build_server
+    from query_preflight.mcp_server import build_server
 
     async def go():
         async with Client(build_server(service)) as client:
@@ -171,7 +171,7 @@ def test_registry_status_reports_freshness(service):
 
 
 def test_instructions_describe_this_server_and_the_rules(service):
-    from cost_guard.mcp_server import server_instructions
+    from query_preflight.mcp_server import server_instructions
 
     text = server_instructions(service)
     assert "DuckDB" in text and "Workload class 'interactive'" in text
@@ -184,16 +184,16 @@ def test_instructions_describe_this_server_and_the_rules(service):
 def test_server_offers_the_workflow_prompt(service):
     from mcp import Client
 
-    from cost_guard.mcp_server import build_server
+    from query_preflight.mcp_server import build_server
 
     async def go():
         async with Client(build_server(service)) as client:
             prompts = (await client.list_prompts()).prompts
-            got = await client.get_prompt("analyze_with_cost_guard", {"question": "revenue by month?"})
+            got = await client.get_prompt("analyze_with_query_preflight", {"question": "revenue by month?"})
             return prompts, got
 
     prompts, got = asyncio.run(go())
-    assert [p.name for p in prompts] == ["analyze_with_cost_guard"]
+    assert [p.name for p in prompts] == ["analyze_with_query_preflight"]
     text = got.messages[0].content.text
     assert "revenue by month?" in text and "check_query" in text and "Never reveal" in text
 
@@ -228,7 +228,7 @@ def test_a_query_that_is_not_blocked_resets_the_count(service):
 def test_paused_tool_reaches_the_agent_as_an_error(service):
     from mcp import Client
 
-    from cost_guard.mcp_server import build_server, server_instructions
+    from query_preflight.mcp_server import build_server, server_instructions
 
     async def go():
         async with Client(build_server(service)) as client:

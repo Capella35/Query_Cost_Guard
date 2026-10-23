@@ -36,7 +36,7 @@ Build mechanics:
 
 Every build appends one row to `registry_runs` (when, mode, tables profiled /
 failed, bytes), so registry_status() can show the last refresh. The build
-runs as `cost_guard registry refresh`, which a deployment MUST schedule
+runs as `query_preflight registry refresh`, which a deployment MUST schedule
 (DESIGN.md §11); a long-running Guard reloads the file when it changes
 (registry_mtime).
 

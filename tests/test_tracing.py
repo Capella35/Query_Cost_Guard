@@ -3,9 +3,9 @@
 import json
 import threading
 
-from cost_guard.backends.base import PlanEstimate
-from cost_guard.guard import decide
-from cost_guard.tracing import Tracer, annotate
+from query_preflight.backends.base import PlanEstimate
+from query_preflight.guard import decide
+from query_preflight.tracing import Tracer, annotate
 
 
 class FakeBackend:
@@ -82,7 +82,7 @@ def test_annotate_adds_to_current_span():
 def test_llm_records_token_counts_not_prompts():
     from types import SimpleNamespace
 
-    from cost_guard.llm import ClaudeLLM
+    from query_preflight.llm import ClaudeLLM
 
     class FakeMessages:
         def parse(self, **kw):

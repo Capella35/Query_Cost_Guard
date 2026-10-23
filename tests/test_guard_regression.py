@@ -11,8 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "eval"))
 from eval_config import load_eval_customer  # noqa: E402
 from regression_cases import CASES  # noqa: E402
 
-from cost_guard.guard import decide  # noqa: E402
-from cost_guard.tracing import Tracer  # noqa: E402
+from query_preflight.guard import decide  # noqa: E402
+from query_preflight.tracing import Tracer  # noqa: E402
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c["id"] for c in CASES])

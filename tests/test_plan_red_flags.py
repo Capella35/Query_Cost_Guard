@@ -1,11 +1,11 @@
 """Plan red flags (full in-memory sorts, from EXPLAIN) and long IN lists."""
 import pytest
 
-from cost_guard import sql_ast
-from cost_guard.guard import decide
-from cost_guard.plan_estimate import plan_cardinality
-from cost_guard.rules.static_rules import MAX_IN_LIST_ITEMS, no_long_in_list
-from cost_guard.tracing import Tracer
+from query_preflight import sql_ast
+from query_preflight.guard import decide
+from query_preflight.plan_estimate import plan_cardinality
+from query_preflight.rules.static_rules import MAX_IN_LIST_ITEMS, no_long_in_list
+from query_preflight.tracing import Tracer
 
 SORT_MSG = "full in-memory sort"
 

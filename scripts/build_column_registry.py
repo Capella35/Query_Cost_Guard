@@ -28,14 +28,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from cost_guard.column_registry import (  # noqa: E402
+from query_preflight.column_registry import (  # noqa: E402
     bigquery_registry_path,
     build_bigquery_registry,
     build_registry,
     default_registry_path,
     registry_settings,
 )
-from cost_guard.config import load_customer  # noqa: E402
+from query_preflight.config import load_customer  # noqa: E402
 
 
 def main() -> None:
@@ -50,7 +50,7 @@ def main() -> None:
     ap.add_argument("--max-bytes-billed", type=int, default=2 * 1024**3,
                     help="BigQuery: per-scan cap; a table over it is reported, not scanned")
     args = ap.parse_args()
-    from cost_guard.config import choose_backend, load_dotenv, warehouse_settings
+    from query_preflight.config import choose_backend, load_dotenv, warehouse_settings
 
     load_dotenv()
     customer = load_customer()
