@@ -1,0 +1,551 @@
+{
+  "ts": "2026-10-18T06:59:15.831705+00:00",
+  "suite": "bq-owner-test",
+  "metrics": {
+    "n": 12,
+    "exact_accuracy": 1.0,
+    "exact_accuracy_original_labels": 1.0,
+    "labels_changed": 0,
+    "catch_rate": 1.0,
+    "false_positive_rate": 0.0,
+    "false_block_rate": 0.0,
+    "false_warn_rate": 0.0,
+    "under_block_rate": null,
+    "rewrites_expected": 0,
+    "rewrites_offered": 0,
+    "rewrite_equivalence_rate_full_data": null,
+    "avg_checks_per_decision": 22.9,
+    "llm": "claude",
+    "llm_calls": 22
+  },
+  "by_pattern": {
+    "missing_partition_filter": {
+      "n": 11,
+      "exact": 11,
+      "flagged": 11,
+      "ids": [
+        "O01:warn->warn",
+        "O02:warn->warn",
+        "O03:warn->warn",
+        "O04:warn->warn",
+        "O05:warn->warn",
+        "O06:warn->warn",
+        "O07:warn->warn",
+        "O08:warn->warn",
+        "O09:warn->warn",
+        "O11:warn->warn",
+        "O12:warn->warn"
+      ]
+    },
+    "clean": {
+      "n": 1,
+      "exact": 1,
+      "flagged": 0,
+      "ids": [
+        "O10:allow->allow"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "O01",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 13333.4,
+      "checks": 23,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan; no filter on partition column created_at in 'orders' (125,584 rows) \u2014 full scan",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+        "no filter on partition column created_at in 'orders' (125,584 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": "The guard warned because neither order_items nor orders is filtered on its partition column created_at, so both tables would be fully scanned (about 181,553 and 125,584 rows). To fix it, add a WHERE condition on created_at (for example, a specific date range) to each table so the engine can prune partitions before the join and aggregation.",
+      "suggestion": {
+        "sql": "SELECT EXTRACT(MONTH FROM oi.created_at) AS months, ROUND(SUM(oi.sale_price * o.num_of_item), 2) AS revenue, COUNT(DISTINCT oi.order_id) AS order_count, COUNT(DISTINCT oi.user_id) AS customers_purchased FROM order_items oi INNER JOIN orders AS o ON oi.order_id = o.order_id WHERE oi.status NOT IN ('Cancelled', 'Returned') AND oi.created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY) AND o.created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY) GROUP BY months ORDER BY revenue DESC",
+        "changes": [
+          "Adds oi.created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY) on order_items so partition pruning limits the scan to the last 365 days: results cover only that window, not all history; adjust the range to the period the analyst needs.",
+          "Adds o.created_at with the same 365-day bound on orders so the join reads only recent orders: orders older than the window are excluded from revenue and counts; confirm the window matches the intended reporting period.",
+          "Because the window spans up to a year, the MONTH grouping combines the same calendar month from different years into one row: consider grouping by year and month if the analyst needs per-year figures."
+        ],
+        "changes_result": true,
+        "runtime_note": "(the model's reasoning, not measured) Partition pruning on created_at in both tables means BigQuery reads only the recent partitions and fewer bytes of the needed columns, so less data is scanned and joined.",
+        "note": "a suggestion: the Guard never runs it or swaps it in; the decision stands",
+        "bytes_read": {
+          "original": 9679126,
+          "suggested": 4339456
+        },
+        "bytes_billed": {
+          "original": 20971520,
+          "suggested": 20971520
+        },
+        "usd_per_run_modeled": {
+          "original": 0.00011921,
+          "suggested": 0.00011921
+        },
+        "saves_usd_per_run_modeled": 0.0
+      }
+    },
+    {
+      "id": "O02",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 8877.8,
+      "checks": 23,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan; llm rewrite bills no fewer bytes (20,971,520 vs 20,971,520, BigQuery's 10 MiB-per-table minimum included) \u2014 not offered",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+        "llm rewrite bills no fewer bytes (20,971,520 vs 20,971,520, BigQuery's 10 MiB-per-table minimum included) \u2014 not offered"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": "The guard issued a warning because the query scans the entire order_items table (about 181,553 rows) without a filter on its partition column created_at, so it reads everything. A rewrite was considered but not offered, since it would bill the same bytes (about 20 MiB, including BigQuery's 10 MiB per-table minimum). To address this, add a WHERE condition on created_at (for example, a date range) so the query prunes partitions and reads less data.",
+      "suggestion": {
+        "sql": "WITH customers AS ( SELECT user_id, SUM(CASE WHEN u.gender = 'M' THEN 1 ELSE null END) AS male, SUM(CASE WHEN u.gender = 'F' THEN 1 ELSE null END) AS female, u.country AS country FROM order_items AS oi INNER JOIN users AS u ON oi.user_id = u.id WHERE oi.status NOT IN ('Cancelled', 'Returned') GROUP BY user_id, country ) SELECT country, COUNT(DISTINCT user_id) AS customers_count, COUNT(female) AS female, COUNT(male) AS male FROM customers GROUP BY country ORDER BY customers_count DESC",
+        "changes": [
+          "Removed the redundant SELECT DISTINCT: GROUP BY user_id, country already returns one row per user and country, so the result is unchanged. Adding a created_at range to order_items would cut bytes billed further, but it would change the result, so it was not added."
+        ],
+        "changes_result": false,
+        "runtime_note": "(the model's reasoning, not measured) Dropping the redundant DISTINCT removes an extra deduplication pass over the grouped rows, though the full scan of order_items remains until a created_at range is added.",
+        "note": "a suggestion: the Guard never runs it or swaps it in; the decision stands",
+        "equivalence": "the model says the result is unchanged; the Guard's check did not confirm it: llm rewrite bills no fewer bytes (20,971,520 vs 20,971,520, BigQuery's 10 MiB-per-table minimum included) \u2014 not offered",
+        "bytes_read": {
+          "original": 5405444,
+          "suggested": 5405444
+        },
+        "bytes_billed": {
+          "original": 20971520,
+          "suggested": 20971520
+        },
+        "usd_per_run_modeled": {
+          "original": 0.00011921,
+          "suggested": 0.00011921
+        },
+        "saves_usd_per_run_modeled": 0.0
+      }
+    },
+    {
+      "id": "O03",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 12010.4,
+      "checks": 23,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan; no filter on partition column created_at in 'orders' (125,584 rows) \u2014 full scan",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+        "no filter on partition column created_at in 'orders' (125,584 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": "The guard warned because neither order_items nor orders is filtered on its partition column created_at, so both tables would be fully scanned (about 181,553 and 125,584 rows). To fix it, add a WHERE condition on created_at to restrict the date range for both tables, for example by filtering oi.created_at and o.created_at to the period you need. This keeps the join and revenue logic the same while limiting the scan.",
+      "suggestion": {
+        "sql": "SELECT o.gender, ROUND(SUM(oi.sale_price), 2) AS revenue, COUNT(*) AS quantity FROM order_items AS oi INNER JOIN orders AS o ON oi.order_id = o.order_id WHERE oi.status NOT IN ('Cancelled', 'Returned') GROUP BY o.gender ORDER BY revenue DESC",
+        "changes": [
+          "Joins order_items to orders on order_id instead of user_id: the user_id join paired each item with every order of the same user, multiplying rows and inflating revenue and quantity.",
+          "Revenue is now SUM(oi.sale_price) instead of SUM(sale_price * num_of_item), and quantity is COUNT(*) of order items, since each item row is one unit. The analyst should check this matches the intended definition of revenue and quantity.",
+          "Groups by o.gender explicitly and reads only the needed columns from both tables, so the join processes fewer rows and bytes."
+        ],
+        "changes_result": true,
+        "runtime_note": "(the model's reasoning, not measured) Joining on order_id gives one matched row per item instead of a per-user cross-match, so BigQuery shuffles and aggregates far fewer rows and reads fewer columns.",
+        "note": "a suggestion: the Guard never runs it or swaps it in; the decision stands",
+        "bytes_read": {
+          "original": 7151030,
+          "suggested": 6146358
+        },
+        "bytes_billed": {
+          "original": 20971520,
+          "suggested": 20971520
+        },
+        "usd_per_run_modeled": {
+          "original": 0.00011921,
+          "suggested": 0.00011921
+        },
+        "saves_usd_per_run_modeled": 0.0
+      }
+    },
+    {
+      "id": "O04",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 11327.9,
+      "checks": 23,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": "The guard flagged this query as a warning because it reads the order_items table (about 181,553 rows) without any filter on its partition column created_at, which forces a full table scan. To fix it, add a WHERE clause restricting created_at to the date range you need, so the engine can prune partitions instead of scanning everything.",
+      "suggestion": {
+        "sql": "SELECT CASE WHEN u.age < 12 THEN 'Kids' WHEN u.age BETWEEN 12 AND 20 THEN 'Teenagers' WHEN u.age BETWEEN 20 AND 30 THEN 'Young Adults' WHEN u.age BETWEEN 30 AND 50 THEN 'Adults' WHEN u.age > 50 THEN 'Elderly' END AS age_group, COUNT(DISTINCT oi.user_id) AS total_customer FROM (SELECT user_id FROM order_items WHERE created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY)) AS oi INNER JOIN users AS u ON oi.user_id = u.id GROUP BY age_group ORDER BY total_customer DESC",
+        "changes": [
+          "Adds WHERE created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 365 DAY) on order_items so partition pruning limits the scan: results now cover only customers with orders in the last 365 days, not all history. Adjust the window to the period the analyst needs.",
+          "Pre-reduces order_items to the user_id column before the join so only that column and created_at are read from it, and the join handles fewer rows: same output columns and grouping."
+        ],
+        "changes_result": true,
+        "runtime_note": "(the model's reasoning, not measured) Pruning order_items to the last 365 days by created_at and reading only user_id cuts the bytes scanned and the rows joined, so the query runs cheaper and faster.",
+        "note": "a suggestion: the Guard never runs it or swaps it in; the decision stands",
+        "bytes_read": {
+          "original": 3052424,
+          "suggested": 2780832
+        },
+        "bytes_billed": {
+          "original": 20971520,
+          "suggested": 20971520
+        },
+        "usd_per_run_modeled": {
+          "original": 0.00011921,
+          "suggested": 0.00011921
+        },
+        "saves_usd_per_run_modeled": 0.0
+      }
+    },
+    {
+      "id": "O05",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 12483.6,
+      "checks": 28,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan; no filter on partition column created_at in 'orders' (125,584 rows) \u2014 full scan",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+        "no filter on partition column created_at in 'orders' (125,584 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": "The guard warned because neither order_items nor orders is filtered on its partition column created_at, so both tables would be fully scanned (about 181,553 and 125,584 rows). To fix it, add a date range predicate on created_at to the order_items and orders tables, such as WHERE created_at >= a start date and < an end date, so the engine can prune partitions. The status filter on order_items does not satisfy this requirement.",
+      "suggestion": {
+        "sql": "SELECT p.brand AS brand, ROUND(SUM(oi.sale_price), 2) AS revenue, COUNT(*) AS quantity FROM order_items oi INNER JOIN products p ON oi.product_id = p.id WHERE oi.status NOT IN ('Cancelled', 'Returned') GROUP BY brand ORDER BY revenue DESC",
+        "changes": [
+          "Removed the join to orders: it only supplied num_of_item, which is no longer used. Order_items rows whose order_id has no match in orders are now kept, so totals can differ slightly; check for orphan order_items.",
+          "Revenue now sums oi.sale_price instead of sale_price * orders.num_of_item. The old formula multiplied each item by its order's total item count, so orders with several items were counted several times. Revenue will be lower than before; this is the corrected figure.",
+          "Quantity is now COUNT(*), the number of item rows, instead of SUM(orders.num_of_item), which had the same double-counting problem. Quantity will be lower than before.",
+          "Only the columns needed (order_items.product_id, sale_price, status and products.id, brand) are now read, which reduces bytes billed. The query still has no created_at filter; add a bounded created_at range on order_items to cut the full scan further, since that would change the result set."
+        ],
+        "changes_result": true,
+        "runtime_note": "(the model's reasoning, not measured) Dropping the orders join and reading only four columns cuts the rows joined and the bytes scanned, and the aggregation no longer multiplies rows by a per-order count.",
+        "note": "a suggestion: the Guard never runs it or swaps it in; the decision stands",
+        "bytes_read": {
+          "original": 8809441,
+          "suggested": 5347673
+        },
+        "bytes_billed": {
+          "original": 31457280,
+          "suggested": 20971520
+        },
+        "usd_per_run_modeled": {
+          "original": 0.00017881,
+          "suggested": 0.00011921
+        },
+        "saves_usd_per_run_modeled": 5.96e-05
+      }
+    },
+    {
+      "id": "O06",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 12727.9,
+      "checks": 28,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan; no filter on partition column created_at in 'orders' (125,584 rows) \u2014 full scan",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+        "no filter on partition column created_at in 'orders' (125,584 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": "The cost guard flagged this query with a warning because it scans full tables: neither order_items (about 181,553 rows) nor orders (about 125,584 rows) has a filter on its partition column created_at, so every partition is read. To fix it, add a WHERE condition on created_at for both tables, such as a date range on oi.created_at and o.created_at, so only the relevant partitions are scanned.",
+      "suggestion": {
+        "sql": "SELECT p.category AS product_category, ROUND(SUM(oi.sale_price), 2) AS revenue, COUNT(*) AS quantity FROM order_items oi INNER JOIN products p ON oi.product_id = p.id WHERE LOWER(oi.status) NOT IN ('cancelled', 'returned') GROUP BY p.category ORDER BY revenue DESC",
+        "changes": [
+          "Removes the join to orders and uses oi.sale_price instead of sale_price * num_of_item: num_of_item is an order-level count repeated on every item row, so the original summed it once per item and overcounted revenue and quantity. Revenue now is the sum of item sale prices, and quantity is the number of item rows; the analyst should confirm this matches the intended meaning.",
+          "Quantity changes from SUM(num_of_item) to COUNT(*) of order_items rows for the same reason; check that one row per item is the intended unit.",
+          "Status filter now compares LOWER(oi.status) against lowercase 'cancelled' and 'returned' so 'Returned' and other casings are excluded; rows with capitalized status values that were previously kept are now removed, so revenue may drop. Check the distinct status values in order_items.",
+          "No partition filter on created_at is added because any date range would change the result; the analyst can add a created_at range on order_items to cut the full scan further."
+        ],
+        "changes_result": true,
+        "runtime_note": "(the model's reasoning, not measured) Dropping the orders join and reading only the sale_price, product_id and status columns from order_items cuts bytes scanned and removes a large join, so less data is shuffled and aggregated.",
+        "note": "a suggestion: the Guard never runs it or swaps it in; the decision stands",
+        "bytes_read": {
+          "original": 8820863,
+          "suggested": 5359095
+        },
+        "bytes_billed": {
+          "original": 31457280,
+          "suggested": 20971520
+        },
+        "usd_per_run_modeled": {
+          "original": 0.00017881,
+          "suggested": 0.00011921
+        },
+        "saves_usd_per_run_modeled": 5.96e-05
+      }
+    },
+    {
+      "id": "O07",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 10083.0,
+      "checks": 23,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan; llm rewrite bills no fewer bytes (20,971,520 vs 20,971,520, BigQuery's 10 MiB-per-table minimum included) \u2014 not offered",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+        "llm rewrite bills no fewer bytes (20,971,520 vs 20,971,520, BigQuery's 10 MiB-per-table minimum included) \u2014 not offered"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": "The guard issued a warning because the query has no filter on the partition column created_at in order_items, so it scans all 181,553 rows as a full table scan. Adding a date range predicate on created_at would let the engine prune partitions and reduce the bytes billed. The guard found that an automatic rewrite would not reduce the bytes billed, so it did not offer one, meaning the fix is to add the created_at filter yourself.",
+      "suggestion": {
+        "sql": "SELECT p.brand AS brand, SUM(oi.cancelled) AS Cancelled, SUM(oi.returned) AS Returned FROM (SELECT product_id, SUM(CASE WHEN status = 'Cancelled' THEN 1 ELSE null END) AS cancelled, SUM(CASE WHEN status = 'Returned' THEN 1 ELSE null END) AS returned FROM order_items GROUP BY product_id) oi INNER JOIN products p ON oi.product_id = p.id GROUP BY brand ORDER BY Cancelled DESC",
+        "changes": [
+          "Aggregates order_items by product_id before joining to products, so the join and brand grouping work on at most one row per product instead of one row per order item; the result is unchanged, and NULL-when-no-match semantics of the original SUM(CASE...) are kept. The full scan of created_at is still unfiltered: adding a created_at range would cut bytes billed but would change the result, so it is left for the analyst to decide."
+        ],
+        "changes_result": false,
+        "runtime_note": "(the model's reasoning, not measured) The join and final grouping now process one row per product rather than one row per order item, which reduces shuffle and join work, though the full table scan still reads the same columns.",
+        "note": "a suggestion: the Guard never runs it or swaps it in; the decision stands",
+        "equivalence": "the model says the result is unchanged; the Guard's check did not confirm it: llm rewrite bills no fewer bytes (20,971,520 vs 20,971,520, BigQuery's 10 MiB-per-table minimum included) \u2014 not offered",
+        "bytes_read": {
+          "original": 3895249,
+          "suggested": 3895249
+        },
+        "bytes_billed": {
+          "original": 20971520,
+          "suggested": 20971520
+        },
+        "usd_per_run_modeled": {
+          "original": 0.00011921,
+          "suggested": 0.00011921
+        },
+        "saves_usd_per_run_modeled": 0.0
+      }
+    },
+    {
+      "id": "O08",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 9330.9,
+      "checks": 23,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan; llm rewrite bills no fewer bytes (20,971,520 vs 20,971,520, BigQuery's 10 MiB-per-table minimum included) \u2014 not offered",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+        "llm rewrite bills no fewer bytes (20,971,520 vs 20,971,520, BigQuery's 10 MiB-per-table minimum included) \u2014 not offered"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": "The guard issued a warning because the query scans the full order_items table (181,553 rows) with no filter on its partition column created_at, so it reads all the data. Adding a date range predicate on created_at (for example, WHERE oi.created_at >= a start date) would let the engine prune partitions and reduce the bytes scanned. A rewrite was not offered because it would bill the same bytes (20,971,520 both ways, including BigQuery's 10 MiB minimum per table), so the partition filter is the change to make.",
+      "suggestion": {
+        "sql": "SELECT p.category AS Category, SUM(oi.cancelled) AS Cancelled, SUM(oi.returned) AS Returned FROM (SELECT product_id, SUM(CASE WHEN status = 'Cancelled' THEN 1 ELSE NULL END) AS cancelled, SUM(CASE WHEN status = 'Returned' THEN 1 ELSE NULL END) AS returned FROM order_items GROUP BY product_id) AS oi INNER JOIN products AS p ON oi.product_id = p.id GROUP BY Category ORDER BY Cancelled DESC",
+        "changes": [
+          "Aggregates order_items by product_id before joining to products, so the join processes one row per product instead of one row per order item; the output is unchanged, including NULL handling for categories with no matches.",
+          "Keeps the full-scan read of order_items (no created_at filter was added), so bytes billed stay the same; the guard's partition warning still applies and a created_at range would need the analyst's approval."
+        ],
+        "changes_result": false,
+        "runtime_note": "(the model's reasoning, not measured) The join and final grouping now work on a small per-product summary rather than every order item, which cuts the rows shuffled and sorted, though the table scan itself is unchanged.",
+        "note": "a suggestion: the Guard never runs it or swaps it in; the decision stands",
+        "equivalence": "the model says the result is unchanged; the Guard's check did not confirm it: llm rewrite bills no fewer bytes (20,971,520 vs 20,971,520, BigQuery's 10 MiB-per-table minimum included) \u2014 not offered",
+        "bytes_read": {
+          "original": 3906671,
+          "suggested": 3906671
+        },
+        "bytes_billed": {
+          "original": 20971520,
+          "suggested": 20971520
+        },
+        "usd_per_run_modeled": {
+          "original": 0.00011921,
+          "suggested": 0.00011921
+        },
+        "saves_usd_per_run_modeled": 0.0
+      }
+    },
+    {
+      "id": "O09",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 6881.1,
+      "checks": 22,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": "The guard flagged this query as a warning because it scans the order_items table (about 181,553 rows) in full: there is no filter on its partition column, created_at. To address this, add a WHERE condition on created_at, such as a date range for the period you need, so the engine can prune partitions and read only the relevant data.",
+      "suggestion": null
+    },
+    {
+      "id": "O10",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 300.9,
+      "checks": 14,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "clean \u2014 estimated 4,703,414 bytes (dry_run), within caps",
+      "findings": [],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null,
+      "suggestion": null
+    },
+    {
+      "id": "O11",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 11413.4,
+      "checks": 28,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan; no filter on partition column created_at in 'orders' (125,584 rows) \u2014 full scan; GROUP BY on near-unique column 'email' in 'users': ~84,192 distinct values over 100,000 rows \u2014 the aggregation barely reduces the data",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+        "no filter on partition column created_at in 'orders' (125,584 rows) \u2014 full scan",
+        "GROUP BY on near-unique column 'email' in 'users': ~84,192 distinct values over 100,000 rows \u2014 the aggregation barely reduces the data"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": "The guard warned because the query scans all of order_items (181,553 rows) and orders (125,584 rows) without any filter on their partition column created_at, which forces full table scans. It also groups by email, a near-unique column in users (about 84,192 distinct values across 100,000 rows), so the aggregation barely reduces the data. To fix this, add a WHERE clause restricting created_at to the period you need, and consider grouping only by the user id (dropping email from GROUP BY, or selecting it via a join on the aggregated result) to cut the work.",
+      "suggestion": {
+        "sql": "SELECT u.id AS customer_id, u.email AS email, ROUND(SUM(oi.total_sale), 2) AS total_purchase FROM (SELECT order_id, SUM(sale_price) AS total_sale FROM order_items GROUP BY order_id) AS oi INNER JOIN orders AS o ON oi.order_id = o.order_id INNER JOIN users AS u ON o.user_id = u.id GROUP BY customer_id, email ORDER BY total_purchase DESC LIMIT 10",
+        "changes": [
+          "Pre-aggregates order_items to one row per order_id (SUM(sale_price)) before joining, so the join handles about one row per order instead of one row per item and reads only order_id and sale_price from order_items. Result is unchanged by this step.",
+          "Removes the multiplication by o.num_of_item: each order_items row is already one item priced at sale_price, so multiplying by the order's item count counted items twice. This changes the totals (they will be lower for multi-item orders); the analyst should confirm sale_price is per unit and that the old figures were not intended."
+        ],
+        "changes_result": true,
+        "runtime_note": "(the model's reasoning, not measured) Collapsing order_items to one row per order before the joins shrinks the data shuffled through both joins and the final aggregation, and reading only the needed columns cuts bytes billed.",
+        "note": "a suggestion: the Guard never runs it or swaps it in; the decision stands",
+        "bytes_read": {
+          "original": 9329344,
+          "suggested": 8324672
+        },
+        "bytes_billed": {
+          "original": 31457280,
+          "suggested": 31457280
+        },
+        "usd_per_run_modeled": {
+          "original": 0.00017881,
+          "suggested": 0.00017881
+        },
+        "saves_usd_per_run_modeled": 0.0
+      }
+    },
+    {
+      "id": "O12",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 6528.2,
+      "checks": 17,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": "The cost guard flagged this query with a warning because it scans the entire order_items table (about 181,553 rows) without any filter on the partition column created_at, which makes it a full scan. To fix it, add a WHERE condition that restricts created_at to the date range you need, such as a bounded start and end date, so the engine can prune partitions before aggregating.",
+      "suggestion": null
+    }
+  ]
+}

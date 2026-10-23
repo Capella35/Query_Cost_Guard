@@ -1,0 +1,743 @@
+{
+  "ts": "2026-10-14T16:47:34.508248+00:00",
+  "suite": "holdout",
+  "metrics": {
+    "n": 30,
+    "exact_accuracy": 0.967,
+    "exact_accuracy_original_labels": 0.967,
+    "labels_changed": 0,
+    "catch_rate": 1.0,
+    "false_positive_rate": 0.071,
+    "rewrites_expected": 3,
+    "rewrites_offered": 3,
+    "rewrite_equivalence_rate_full_data": 1.0,
+    "avg_checks_per_decision": 12.2,
+    "llm": "none",
+    "llm_calls": 0
+  },
+  "by_pattern": {
+    "clean": {
+      "n": 14,
+      "exact": 13,
+      "flagged": 1,
+      "ids": [
+        "H01:allow->allow",
+        "H02:allow->allow",
+        "H03:allow->allow",
+        "H08:allow->allow",
+        "H10:allow->allow",
+        "H12:allow->allow",
+        "H13:allow->allow",
+        "H15:allow->allow",
+        "H17:allow->allow",
+        "H21:allow->allow",
+        "H23:allow->allow",
+        "H26:allow->allow",
+        "H28:allow->warn",
+        "H30:allow->allow"
+      ]
+    },
+    "unbounded_full_scan": {
+      "n": 3,
+      "exact": 3,
+      "flagged": 3,
+      "ids": [
+        "H04:warn->warn",
+        "H19:warn->warn",
+        "H22:warn->warn"
+      ]
+    },
+    "runaway_join": {
+      "n": 2,
+      "exact": 2,
+      "flagged": 2,
+      "ids": [
+        "H05:block->block",
+        "H24:block->block"
+      ]
+    },
+    "function_on_partition_column": {
+      "n": 2,
+      "exact": 2,
+      "flagged": 2,
+      "ids": [
+        "H06:rewrite->rewrite",
+        "H25:rewrite->rewrite"
+      ]
+    },
+    "select_star_wide_table": {
+      "n": 2,
+      "exact": 2,
+      "flagged": 2,
+      "ids": [
+        "H07:warn->warn",
+        "H29:warn->warn"
+      ]
+    },
+    "implicit_comma_join_no_condition": {
+      "n": 1,
+      "exact": 1,
+      "flagged": 1,
+      "ids": [
+        "H09:block->block"
+      ]
+    },
+    "sum_of_identifier": {
+      "n": 1,
+      "exact": 1,
+      "flagged": 1,
+      "ids": [
+        "H11:warn->warn"
+      ]
+    },
+    "unbounded_sort": {
+      "n": 1,
+      "exact": 1,
+      "flagged": 1,
+      "ids": [
+        "H14:warn->warn"
+      ]
+    },
+    "filter_after_join": {
+      "n": 1,
+      "exact": 1,
+      "flagged": 1,
+      "ids": [
+        "H16:rewrite->rewrite"
+      ]
+    },
+    "not_in_with_nulls": {
+      "n": 1,
+      "exact": 1,
+      "flagged": 1,
+      "ids": [
+        "H18:warn->warn"
+      ]
+    },
+    "non_read_only": {
+      "n": 1,
+      "exact": 1,
+      "flagged": 1,
+      "ids": [
+        "H20:block->block"
+      ]
+    },
+    "redundant_distinct": {
+      "n": 1,
+      "exact": 1,
+      "flagged": 1,
+      "ids": [
+        "H27:warn->warn"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "H01",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 109.0,
+      "checks": 11,
+      "estimate_rows": 36352,
+      "estimate_source": "explain",
+      "findings": [],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H02",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 568.8,
+      "checks": 16,
+      "estimate_rows": 65471,
+      "estimate_source": "explain+corrected",
+      "findings": [],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H03",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1.6,
+      "checks": 11,
+      "estimate_rows": 100000,
+      "estimate_source": "explain",
+      "findings": [],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H04",
+      "pattern": "unbounded_full_scan",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1.8,
+      "checks": 12,
+      "estimate_rows": 2431963,
+      "estimate_source": "explain",
+      "findings": [
+        "no date filter on created_at in 'events' (2,431,963 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H05",
+      "pattern": "runaway_join",
+      "role": "bad",
+      "expected": "block",
+      "expected_original": "block",
+      "got": "block",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1.8,
+      "checks": 10,
+      "estimate_rows": 102867052,
+      "estimate_source": "explain",
+      "findings": [
+        "no date filter on created_at in 'events' (2,431,963 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H06",
+      "pattern": "function_on_partition_column",
+      "role": "bad",
+      "expected": "rewrite",
+      "expected_original": "rewrite",
+      "got": "rewrite",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 82.6,
+      "checks": 12,
+      "estimate_rows": 25045,
+      "estimate_source": "explain",
+      "findings": [
+        "partition column created_at of 'orders' is wrapped in an expression in \"CAST(created_at AS DATE) = CAST('2023-11-24' AS DATE)\" \u2014 prevents pruning; compare the bare column to a range"
+      ],
+      "skipped_rules": [],
+      "explanation": null,
+      "rewrite_source": "deterministic:sargable",
+      "rewritten_sql": "SELECT order_id, status FROM orders WHERE (created_at >= CAST('2023-11-24' AS DATE) AND created_at < CAST('2023-11-24' AS DATE) + INTERVAL '1' DAY)",
+      "verification": "sampled result hashes match \u2014 rewrite accepted; verified on 50,000 of 125,226 input rows (39.9%), 0.02s",
+      "equivalent_full": true,
+      "original_sec": 0.0326,
+      "rewrite_sec": 0.0017,
+      "speedup": 19.11
+    },
+    {
+      "id": "H07",
+      "pattern": "select_star_wide_table",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 2.2,
+      "checks": 11,
+      "estimate_rows": 36351,
+      "estimate_source": "explain",
+      "findings": [
+        "SELECT * on wide table 'order_items' (11 columns) \u2014 list only the columns you need"
+      ],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H08",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 0.9,
+      "checks": 10,
+      "estimate_rows": 1,
+      "estimate_source": "explain",
+      "findings": [],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H09",
+      "pattern": "implicit_comma_join_no_condition",
+      "role": "bad",
+      "expected": "block",
+      "expected_original": "block",
+      "got": "block",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1.1,
+      "checks": 15,
+      "estimate_rows": 121400000,
+      "estimate_source": "explain",
+      "findings": [
+        "cartesian product: join with no predicate linking 'u' and 'p'"
+      ],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H10",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 2.9,
+      "checks": 10,
+      "estimate_rows": 99385,
+      "estimate_source": "explain+corrected",
+      "findings": [],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H11",
+      "pattern": "sum_of_identifier",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 2.0,
+      "checks": 12,
+      "estimate_rows": 25997,
+      "estimate_source": "explain+corrected",
+      "findings": [
+        "SUM(order_id) aggregates identifier column 'orders.order_id' (identifier name) \u2014 the result is a number with no meaning; did you mean COUNT(DISTINCT order_id)?"
+      ],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H12",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 2.9,
+      "checks": 11,
+      "estimate_rows": 25045,
+      "estimate_source": "explain+corrected",
+      "findings": [],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H13",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 2.5,
+      "checks": 11,
+      "estimate_rows": 486392,
+      "estimate_source": "explain",
+      "findings": [],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H14",
+      "pattern": "unbounded_sort",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1.2,
+      "checks": 11,
+      "estimate_rows": 2431963,
+      "estimate_source": "explain",
+      "findings": [
+        "no date filter on created_at in 'events' (2,431,963 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H15",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1.9,
+      "checks": 10,
+      "estimate_rows": 486392,
+      "estimate_source": "explain",
+      "findings": [],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H16",
+      "pattern": "filter_after_join",
+      "role": "bad",
+      "expected": "rewrite",
+      "expected_original": "rewrite",
+      "got": "rewrite",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 221.8,
+      "checks": 17,
+      "estimate_rows": 26474,
+      "estimate_source": "explain",
+      "findings": [
+        "filter \"x.state = 'California'\" applied after the join inside 'x' \u2014 filter before joining",
+        "filter \"x.created_at >= CAST('2023-09-01' AS TIMESTAMP)\" applied after the join inside 'x' \u2014 filter before joining"
+      ],
+      "skipped_rules": [],
+      "explanation": null,
+      "rewrite_source": "deterministic:pushdown",
+      "rewritten_sql": "SELECT x.order_id FROM (SELECT o.order_id, o.created_at, u.state FROM orders AS o JOIN users AS u ON u.id = o.user_id WHERE u.state = 'California' AND o.created_at >= CAST('2023-09-01' AS TIMESTAMP)) AS x",
+      "verification": "sampled result hashes match \u2014 rewrite accepted; verified on 100,000 of 225,226 input rows (44.4%), 0.01s",
+      "equivalent_full": true,
+      "original_sec": 0.0025,
+      "rewrite_sec": 0.0022,
+      "speedup": 1.13
+    },
+    {
+      "id": "H17",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 2.0,
+      "checks": 10,
+      "estimate_rows": 486392,
+      "estimate_source": "explain",
+      "findings": [],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H18",
+      "pattern": "not_in_with_nulls",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1.8,
+      "checks": 16,
+      "estimate_rows": 2531963,
+      "estimate_source": "explain",
+      "findings": [
+        "no date filter on created_at in 'events' (2,431,963 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H19",
+      "pattern": "unbounded_full_scan",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 2.7,
+      "checks": 16,
+      "estimate_rows": 133560,
+      "estimate_source": "explain",
+      "findings": [
+        "no date filter on created_at in 'orders' (125,226 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H20",
+      "pattern": "non_read_only",
+      "role": "bad",
+      "expected": "block",
+      "expected_original": "block",
+      "got": "block",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 0,
+      "checks": 0,
+      "estimate_rows": null,
+      "estimate_source": null,
+      "findings": [
+        "non-read-only statement"
+      ],
+      "skipped_rules": [
+        "no_select_star_on_wide_tables: query is not read-only",
+        "require_partition_filter: query is not read-only",
+        "no_cross_join_without_condition: query is not read-only",
+        "no_function_on_partition_column: query is not read-only",
+        "filter_before_join: query is not read-only",
+        "repeated_subquery_to_cte: query is not read-only",
+        "no_high_cardinality_groupby: query is not read-only",
+        "no_sum_on_identifier: query is not read-only",
+        "no_redundant_distinct: query is not read-only"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "H21",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 4.2,
+      "checks": 15,
+      "estimate_rows": 61396,
+      "estimate_source": "explain",
+      "findings": [],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H22",
+      "pattern": "unbounded_full_scan",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 0.8,
+      "checks": 11,
+      "estimate_rows": 2431963,
+      "estimate_source": "explain",
+      "findings": [
+        "no date filter on created_at in 'events' (2,431,963 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H23",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1.1,
+      "checks": 10,
+      "estimate_rows": 29120,
+      "estimate_source": "explain",
+      "findings": [],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H24",
+      "pattern": "runaway_join",
+      "role": "bad",
+      "expected": "block",
+      "expected_original": "block",
+      "got": "block",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1.5,
+      "checks": 15,
+      "estimate_rows": 48639260000,
+      "estimate_source": "explain",
+      "findings": [
+        "no date filter on created_at in 'events' (2,431,963 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H25",
+      "pattern": "function_on_partition_column",
+      "role": "bad",
+      "expected": "rewrite",
+      "expected_original": "rewrite",
+      "got": "rewrite",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 920.6,
+      "checks": 12,
+      "estimate_rows": 486392,
+      "estimate_source": "explain",
+      "findings": [
+        "partition column created_at of 'events' is wrapped in an expression in \"DATE_TRUNC('MONTH', created_at) = CAST('2023-12-01' AS TIMESTAMP)\" \u2014 prevents pruning; compare the bare column to a range"
+      ],
+      "skipped_rules": [],
+      "explanation": null,
+      "rewrite_source": "deterministic:sargable",
+      "rewritten_sql": "SELECT COUNT(*) AS n FROM events WHERE (created_at >= CAST('2023-12-01' AS TIMESTAMP) AND created_at < CAST('2023-12-01' AS TIMESTAMP) + INTERVAL '1' MONTH AND DATE_TRUNC('MONTH', CAST('2023-12-01' AS TIMESTAMP)) = CAST('2023-12-01' AS TIMESTAMP))",
+      "verification": "sampled result hashes match \u2014 rewrite accepted; verified on 50,000 of 2,431,963 input rows (2.1%), 0.00s",
+      "equivalent_full": true,
+      "original_sec": 0.002,
+      "rewrite_sec": 0.0018,
+      "speedup": 1.11
+    },
+    {
+      "id": "H26",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 3.4,
+      "checks": 10,
+      "estimate_rows": 25045,
+      "estimate_source": "explain",
+      "findings": [],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H27",
+      "pattern": "redundant_distinct",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1.1,
+      "checks": 12,
+      "estimate_rows": 100000,
+      "estimate_source": "explain",
+      "findings": [
+        "SELECT DISTINCT is redundant: GROUP BY state already makes every row unique; drop DISTINCT (the engine may already skip it)"
+      ],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H28",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "warn",
+      "ok": false,
+      "ok_original_labels": false,
+      "label_change": null,
+      "latency_ms": 3.4,
+      "checks": 17,
+      "estimate_rows": 125045,
+      "estimate_source": "explain+corrected",
+      "findings": [
+        "GROUP BY on near-unique column 'user_id' in 'orders': ~79,277 distinct values over 125,226 rows \u2014 the aggregation barely reduces the data"
+      ],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H29",
+      "pattern": "select_star_wide_table",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 2.7,
+      "checks": 16,
+      "estimate_rows": 586392,
+      "estimate_source": "explain",
+      "findings": [
+        "SELECT * on wide table 'events' (13 columns) \u2014 list only the columns you need",
+        "SELECT * on wide table 'users' (15 columns) \u2014 list only the columns you need"
+      ],
+      "skipped_rules": [],
+      "explanation": null
+    },
+    {
+      "id": "H30",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1.6,
+      "checks": 16,
+      "estimate_rows": 29130,
+      "estimate_source": "explain",
+      "findings": [],
+      "skipped_rules": [],
+      "explanation": null
+    }
+  ]
+}

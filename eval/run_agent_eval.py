@@ -178,7 +178,7 @@ async def main_async(args) -> int:
     ok = sum(r["score"]["outcome_ok"] and not r["score"]["violations"] for r in out)
     summary = {"tasks": len(out), "clean": ok, "tasks_with_violations": viol,
                "agent_tokens": {"input": tin, "output": tout}, "agent_usd_modeled": round(usd, 5),
-               "bigquery_bytes_billed": billed, "model": MODEL}
+               "bigquery_bytes_billed": billed, "model": MODEL, "code_version": args.code_version}
     print(json.dumps(summary, indent=1))
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     res = ROOT / "eval" / "results" / f"agent_eval_{ts}.json"
@@ -194,6 +194,8 @@ def main() -> int:
     ap.add_argument("--max-turns", type=int, default=8)
     ap.add_argument("--phoenix", action="store_true", help="server spans to a local Phoenix (numbers only)")
     args = ap.parse_args()
+    from code_version import code_version
+    args.code_version = code_version()  # before the run: what is measured
     if not args.project:
         from query_preflight.config import load_dotenv
 

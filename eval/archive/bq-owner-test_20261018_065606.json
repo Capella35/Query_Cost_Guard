@@ -1,0 +1,343 @@
+{
+  "ts": "2026-10-18T06:56:06.447124+00:00",
+  "suite": "bq-owner-test",
+  "metrics": {
+    "n": 12,
+    "exact_accuracy": 1.0,
+    "exact_accuracy_original_labels": 1.0,
+    "labels_changed": 0,
+    "catch_rate": 1.0,
+    "false_positive_rate": 0.0,
+    "false_block_rate": 0.0,
+    "false_warn_rate": 0.0,
+    "under_block_rate": null,
+    "rewrites_expected": 0,
+    "rewrites_offered": 0,
+    "rewrite_equivalence_rate_full_data": null,
+    "avg_checks_per_decision": 20.3,
+    "llm": "none",
+    "llm_calls": 0
+  },
+  "by_pattern": {
+    "missing_partition_filter": {
+      "n": 11,
+      "exact": 11,
+      "flagged": 11,
+      "ids": [
+        "O01:warn->warn",
+        "O02:warn->warn",
+        "O03:warn->warn",
+        "O04:warn->warn",
+        "O05:warn->warn",
+        "O06:warn->warn",
+        "O07:warn->warn",
+        "O08:warn->warn",
+        "O09:warn->warn",
+        "O11:warn->warn",
+        "O12:warn->warn"
+      ]
+    },
+    "clean": {
+      "n": 1,
+      "exact": 1,
+      "flagged": 0,
+      "ids": [
+        "O10:allow->allow"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "O01",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1336.8,
+      "checks": 20,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan; no filter on partition column created_at in 'orders' (125,584 rows) \u2014 full scan",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+        "no filter on partition column created_at in 'orders' (125,584 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null,
+      "suggestion": null
+    },
+    {
+      "id": "O02",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 610.4,
+      "checks": 20,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null,
+      "suggestion": null
+    },
+    {
+      "id": "O03",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 992.4,
+      "checks": 20,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan; no filter on partition column created_at in 'orders' (125,584 rows) \u2014 full scan",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+        "no filter on partition column created_at in 'orders' (125,584 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null,
+      "suggestion": null
+    },
+    {
+      "id": "O04",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1443.8,
+      "checks": 20,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null,
+      "suggestion": null
+    },
+    {
+      "id": "O05",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 942.7,
+      "checks": 25,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan; no filter on partition column created_at in 'orders' (125,584 rows) \u2014 full scan",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+        "no filter on partition column created_at in 'orders' (125,584 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null,
+      "suggestion": null
+    },
+    {
+      "id": "O06",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1478.8,
+      "checks": 25,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan; no filter on partition column created_at in 'orders' (125,584 rows) \u2014 full scan",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+        "no filter on partition column created_at in 'orders' (125,584 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null,
+      "suggestion": null
+    },
+    {
+      "id": "O07",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1272.7,
+      "checks": 20,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null,
+      "suggestion": null
+    },
+    {
+      "id": "O08",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 982.3,
+      "checks": 20,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null,
+      "suggestion": null
+    },
+    {
+      "id": "O09",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1169.3,
+      "checks": 20,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null,
+      "suggestion": null
+    },
+    {
+      "id": "O10",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 253.0,
+      "checks": 14,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "clean \u2014 estimated 4,703,414 bytes (dry_run), within caps",
+      "findings": [],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null,
+      "suggestion": null
+    },
+    {
+      "id": "O11",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 948.8,
+      "checks": 25,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan; no filter on partition column created_at in 'orders' (125,584 rows) \u2014 full scan; GROUP BY on near-unique column 'email' in 'users': ~84,192 distinct values over 100,000 rows \u2014 the aggregation barely reduces the data",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+        "no filter on partition column created_at in 'orders' (125,584 rows) \u2014 full scan",
+        "GROUP BY on near-unique column 'email' in 'users': ~84,192 distinct values over 100,000 rows \u2014 the aggregation barely reduces the data"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null,
+      "suggestion": null
+    },
+    {
+      "id": "O12",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1137.0,
+      "checks": 15,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "reason": "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null,
+      "suggestion": null
+    }
+  ]
+}

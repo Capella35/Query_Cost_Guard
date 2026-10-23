@@ -1,0 +1,1082 @@
+{
+  "ts": "2026-10-17T22:13:28.108283+00:00",
+  "suite": "bq-test",
+  "metrics": {
+    "n": 40,
+    "exact_accuracy": 0.875,
+    "exact_accuracy_original_labels": 0.875,
+    "labels_changed": 0,
+    "catch_rate": 0.917,
+    "false_positive_rate": 0.125,
+    "false_block_rate": 0.062,
+    "false_warn_rate": 0.062,
+    "under_block_rate": 0.083,
+    "rewrites_expected": 3,
+    "rewrites_offered": 2,
+    "rewrite_equivalence_rate_full_data": null,
+    "avg_checks_per_decision": 13.2,
+    "llm": "none",
+    "llm_calls": 0
+  },
+  "by_pattern": {
+    "bytes_cap": {
+      "n": 3,
+      "exact": 3,
+      "flagged": 3,
+      "ids": [
+        "T01:block->block",
+        "T02:block->block",
+        "T03:block->block"
+      ]
+    },
+    "cartesian": {
+      "n": 2,
+      "exact": 2,
+      "flagged": 2,
+      "ids": [
+        "T04:block->block",
+        "T05:block->block"
+      ]
+    },
+    "join_fanout": {
+      "n": 2,
+      "exact": 2,
+      "flagged": 2,
+      "ids": [
+        "T06:block->block",
+        "T07:block->block"
+      ]
+    },
+    "join_fanout_filtered": {
+      "n": 1,
+      "exact": 0,
+      "flagged": 0,
+      "ids": [
+        "T08:block->allow"
+      ]
+    },
+    "non_read_only": {
+      "n": 2,
+      "exact": 2,
+      "flagged": 2,
+      "ids": [
+        "T09:block->block",
+        "T10:block->block"
+      ]
+    },
+    "meaningless_aggregate": {
+      "n": 2,
+      "exact": 2,
+      "flagged": 2,
+      "ids": [
+        "T11:block->block",
+        "T12:block->block"
+      ]
+    },
+    "unprunable_wrapper": {
+      "n": 3,
+      "exact": 2,
+      "flagged": 3,
+      "ids": [
+        "T13:rewrite->rewrite",
+        "T14:rewrite->rewrite",
+        "T15:rewrite->warn"
+      ]
+    },
+    "select_star_costly": {
+      "n": 1,
+      "exact": 1,
+      "flagged": 1,
+      "ids": [
+        "T16:warn->warn"
+      ]
+    },
+    "missing_partition_filter": {
+      "n": 3,
+      "exact": 3,
+      "flagged": 3,
+      "ids": [
+        "T17:warn->warn",
+        "T18:warn->warn",
+        "T19:warn->warn"
+      ]
+    },
+    "group_by_unique_key": {
+      "n": 1,
+      "exact": 1,
+      "flagged": 1,
+      "ids": [
+        "T20:warn->warn"
+      ]
+    },
+    "redundant_distinct": {
+      "n": 1,
+      "exact": 1,
+      "flagged": 1,
+      "ids": [
+        "T21:warn->warn"
+      ]
+    },
+    "long_in_list": {
+      "n": 1,
+      "exact": 1,
+      "flagged": 1,
+      "ids": [
+        "T22:warn->warn"
+      ]
+    },
+    "not_in_with_nulls": {
+      "n": 1,
+      "exact": 1,
+      "flagged": 1,
+      "ids": [
+        "T23:warn->warn"
+      ]
+    },
+    "sort_no_limit": {
+      "n": 1,
+      "exact": 0,
+      "flagged": 0,
+      "ids": [
+        "T24:warn->allow"
+      ]
+    },
+    "select_star_cheap": {
+      "n": 2,
+      "exact": 2,
+      "flagged": 0,
+      "ids": [
+        "T25:allow->allow",
+        "T26:allow->allow"
+      ]
+    },
+    "tiny_cross_join": {
+      "n": 1,
+      "exact": 0,
+      "flagged": 1,
+      "ids": [
+        "T27:allow->block"
+      ]
+    },
+    "prunable_wrapper": {
+      "n": 3,
+      "exact": 3,
+      "flagged": 0,
+      "ids": [
+        "T28:allow->allow",
+        "T29:allow->allow",
+        "T30:allow->allow"
+      ]
+    },
+    "clean": {
+      "n": 7,
+      "exact": 7,
+      "flagged": 0,
+      "ids": [
+        "T31:allow->allow",
+        "T34:allow->allow",
+        "T35:allow->allow",
+        "T36:allow->allow",
+        "T37:allow->allow",
+        "T39:allow->allow",
+        "T40:allow->allow"
+      ]
+    },
+    "cte_twice": {
+      "n": 1,
+      "exact": 0,
+      "flagged": 1,
+      "ids": [
+        "T32:allow->warn"
+      ]
+    },
+    "filter_after_join": {
+      "n": 1,
+      "exact": 1,
+      "flagged": 0,
+      "ids": [
+        "T33:allow->allow"
+      ]
+    },
+    "having_on_group_column": {
+      "n": 1,
+      "exact": 1,
+      "flagged": 0,
+      "ids": [
+        "T38:allow->allow"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "T01",
+      "pattern": "bytes_cap",
+      "role": "bad",
+      "expected": "block",
+      "expected_original": "block",
+      "got": "block",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 483.1,
+      "checks": 12,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "no filter on partition column created_at in 'events' (2,425,610 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T02",
+      "pattern": "bytes_cap",
+      "role": "bad",
+      "expected": "block",
+      "expected_original": "block",
+      "got": "block",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 900.3,
+      "checks": 12,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "no filter on partition column created_at in 'events' (2,425,610 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T03",
+      "pattern": "bytes_cap",
+      "role": "bad",
+      "expected": "block",
+      "expected_original": "block",
+      "got": "block",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 882.8,
+      "checks": 13,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "SELECT * on events reads ~385,028,908 bytes, 367% of the interactive cap of 104,857,600 \u2014 list only the columns you need"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T04",
+      "pattern": "cartesian",
+      "role": "bad",
+      "expected": "block",
+      "expected_original": "block",
+      "got": "block",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1445.8,
+      "checks": 17,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "cartesian product: CROSS JOIN or comma join with no predicate linking 'i' and 'p'"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T05",
+      "pattern": "cartesian",
+      "role": "bad",
+      "expected": "block",
+      "expected_original": "block",
+      "got": "block",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1362.0,
+      "checks": 17,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "cartesian product: CROSS JOIN or comma join with no predicate linking 'u' and 'o'"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T06",
+      "pattern": "join_fanout",
+      "role": "bad",
+      "expected": "block",
+      "expected_original": "block",
+      "got": "block",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1432.5,
+      "checks": 18,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "no filter on partition column created_at in 'events' (2,425,610 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T07",
+      "pattern": "join_fanout",
+      "role": "bad",
+      "expected": "block",
+      "expected_original": "block",
+      "got": "block",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 278.9,
+      "checks": 14,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T08",
+      "pattern": "join_fanout_filtered",
+      "role": "bad",
+      "expected": "block",
+      "expected_original": "block",
+      "got": "allow",
+      "ok": false,
+      "ok_original_labels": false,
+      "label_change": null,
+      "latency_ms": 313.4,
+      "checks": 12,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T09",
+      "pattern": "non_read_only",
+      "role": "bad",
+      "expected": "block",
+      "expected_original": "block",
+      "got": "block",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 0.0,
+      "checks": 1,
+      "estimate_rows": null,
+      "estimate_source": null,
+      "findings": [
+        "non-read-only statement"
+      ],
+      "skipped_rules": [
+        "require_partition_filter: query is not read-only",
+        "no_cross_join_without_condition: query is not read-only",
+        "no_function_on_partition_column: query is not read-only",
+        "filter_before_join: query is not read-only",
+        "repeated_subquery_to_cte: query is not read-only",
+        "no_high_cardinality_groupby: query is not read-only",
+        "no_sum_on_identifier: query is not read-only",
+        "no_redundant_distinct: query is not read-only",
+        "no_long_in_list: query is not read-only"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T10",
+      "pattern": "non_read_only",
+      "role": "bad",
+      "expected": "block",
+      "expected_original": "block",
+      "got": "block",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 0.0,
+      "checks": 1,
+      "estimate_rows": null,
+      "estimate_source": null,
+      "findings": [
+        "non-read-only statement"
+      ],
+      "skipped_rules": [
+        "require_partition_filter: query is not read-only",
+        "no_cross_join_without_condition: query is not read-only",
+        "no_function_on_partition_column: query is not read-only",
+        "filter_before_join: query is not read-only",
+        "repeated_subquery_to_cte: query is not read-only",
+        "no_high_cardinality_groupby: query is not read-only",
+        "no_sum_on_identifier: query is not read-only",
+        "no_redundant_distinct: query is not read-only",
+        "no_long_in_list: query is not read-only"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T11",
+      "pattern": "meaningless_aggregate",
+      "role": "bad",
+      "expected": "block",
+      "expected_original": "block",
+      "got": "block",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 196.4,
+      "checks": 14,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "label aggregate: AVG(id) aggregates identifier column 'users.id' (identifier name) \u2014 an id labels a row, it is not a quantity; count it: COUNT(DISTINCT id) (how many different ones) or COUNT(id) (rows that have one). Suggested query: SELECT traffic_source, COUNT(DISTINCT id) AS avg_id FROM users GROUP BY traffic_source"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T12",
+      "pattern": "meaningless_aggregate",
+      "role": "bad",
+      "expected": "block",
+      "expected_original": "block",
+      "got": "block",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 193.3,
+      "checks": 14,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "label aggregate: SUM(product_id) aggregates identifier column 'order_items.product_id' (identifier name) \u2014 an id labels a row, it is not a quantity; count it: COUNT(DISTINCT product_id) (how many different ones) or COUNT(product_id) (rows that have one). Suggested query: SELECT COUNT(DISTINCT product_id) AS total FROM order_items WHERE created_at >= CAST('2026-09-01' AS TIMESTAMP) AND created_at < CAST('2026-10-01' AS TIMESTAMP)"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T13",
+      "pattern": "unprunable_wrapper",
+      "role": "bad",
+      "expected": "rewrite",
+      "expected_original": "rewrite",
+      "got": "rewrite",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 7335.9,
+      "checks": 14,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "partition column created_at of 'events' is wrapped in an expression in \"STRFTIME(CAST(created_at AS TIMESTAMP), '%Y-%m') = '2025-03'\" \u2014 prevents pruning; compare the bare column to a range"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null,
+      "rewrite_source": "deterministic:sargable",
+      "rewritten_sql": "SELECT COUNT(*) AS purchases FROM events WHERE (created_at >= CAST('2025-03-01 00:00:00' AS TIMESTAMP) AND created_at < CAST('2025-04-01 00:00:00' AS TIMESTAMP)) AND event_type = 'purchase'",
+      "verification": "sampled result hashes match \u2014 rewrite accepted; verified on 46,444 of 2,425,610 input rows (1.9%), 1.64s"
+    },
+    {
+      "id": "T14",
+      "pattern": "unprunable_wrapper",
+      "role": "bad",
+      "expected": "rewrite",
+      "expected_original": "rewrite",
+      "got": "rewrite",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 8164.8,
+      "checks": 14,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "partition column created_at of 'inventory_items' is wrapped in an expression in \"created_at + INTERVAL '1' DAY >= CAST('2026-10-01' AS TIMESTAMPTZ)\" \u2014 prevents pruning; compare the bare column to a range"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null,
+      "rewrite_source": "deterministic:sargable",
+      "rewritten_sql": "SELECT id, product_id FROM inventory_items WHERE (created_at >= CAST('2026-09-30 00:00:00' AS TIMESTAMP))",
+      "verification": "sampled result hashes match \u2014 rewrite accepted; verified on 50,961 of 490,650 input rows (10.4%), 1.99s"
+    },
+    {
+      "id": "T15",
+      "pattern": "unprunable_wrapper",
+      "role": "bad",
+      "expected": "rewrite",
+      "expected_original": "rewrite",
+      "got": "warn",
+      "ok": false,
+      "ok_original_labels": false,
+      "label_change": null,
+      "latency_ms": 1003.9,
+      "checks": 13,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "partition column created_at of 'orders' is wrapped in an expression in 'EXTRACT(MONTH FROM created_at) = 6' \u2014 prevents pruning; compare the bare column to a range",
+        "deterministic:sargable rewrite bills no fewer bytes (755,557) \u2014 not offered"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T16",
+      "pattern": "select_star_costly",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 796.1,
+      "checks": 14,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "SELECT * on inventory_items reads ~81,382,679 bytes, 78% of the interactive cap of 104,857,600 \u2014 list only the columns you need"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T17",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1014.0,
+      "checks": 14,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "no filter on partition column created_at in 'inventory_items' (490,650 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T18",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1939.5,
+      "checks": 14,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "no filter on partition column created_at in 'order_items' (181,553 rows) \u2014 full scan"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T19",
+      "pattern": "missing_partition_filter",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 876.4,
+      "checks": 14,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "partition column created_at of 'events' is wrapped in an expression in 'EXTRACT(DAYOFWEEK FROM created_at) IN (1, 7)' \u2014 prevents pruning; compare the bare column to a range"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T20",
+      "pattern": "group_by_unique_key",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 348.0,
+      "checks": 14,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "GROUP BY on near-unique column 'order_id' in 'orders': ~125,133 distinct values over 125,584 rows \u2014 the aggregation barely reduces the data"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T21",
+      "pattern": "redundant_distinct",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 278.2,
+      "checks": 14,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "GROUP BY on near-unique column 'user_id' in 'orders': ~79,570 distinct values over 125,584 rows \u2014 the aggregation barely reduces the data"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T22",
+      "pattern": "long_in_list",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 272.9,
+      "checks": 13,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "IN list on product_id has 120 explicit values (> 100) \u2014 put the values in a table or CTE and join against it"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T23",
+      "pattern": "not_in_with_nulls",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "warn",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 447.3,
+      "checks": 17,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "partition column created_at of 'orders' is wrapped in an expression in \"user_id IN (SELECT user_id FROM events WHERE event_type = 'cancel' AND created_at >= CAST('2026-01-01' AS TIMESTAMPTZ))\" \u2014 prevents pruning; compare the bare column to a range",
+        "partition column created_at of 'events' is wrapped in an expression in \"user_id IN (SELECT user_id FROM events WHERE event_type = 'cancel' AND created_at >= CAST('2026-01-01' AS TIMESTAMPTZ))\" \u2014 prevents pruning; compare the bare column to a range"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T24",
+      "pattern": "sort_no_limit",
+      "role": "bad",
+      "expected": "warn",
+      "expected_original": "warn",
+      "got": "allow",
+      "ok": false,
+      "ok_original_labels": false,
+      "label_change": null,
+      "latency_ms": 625.1,
+      "checks": 12,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T25",
+      "pattern": "select_star_cheap",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 206.3,
+      "checks": 12,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T26",
+      "pattern": "select_star_cheap",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 247.7,
+      "checks": 12,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T27",
+      "pattern": "tiny_cross_join",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "block",
+      "ok": false,
+      "ok_original_labels": false,
+      "label_change": null,
+      "latency_ms": 61.3,
+      "checks": 17,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "cartesian product: CROSS JOIN or comma join with no predicate linking 'p' and 'dc'"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T28",
+      "pattern": "prunable_wrapper",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 951.3,
+      "checks": 12,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T29",
+      "pattern": "prunable_wrapper",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 1102.6,
+      "checks": 13,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T30",
+      "pattern": "prunable_wrapper",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 265.9,
+      "checks": 13,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T31",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 251.1,
+      "checks": 12,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T32",
+      "pattern": "cte_twice",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "warn",
+      "ok": false,
+      "ok_original_labels": false,
+      "label_change": null,
+      "latency_ms": 482.0,
+      "checks": 14,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [
+        "GROUP BY on near-unique column 'user_id' in 'orders': ~79,570 distinct values over 125,584 rows \u2014 the aggregation barely reduces the data"
+      ],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T33",
+      "pattern": "filter_after_join",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 402.5,
+      "checks": 16,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T34",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 255.9,
+      "checks": 16,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T35",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 318.6,
+      "checks": 13,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T36",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 198.0,
+      "checks": 13,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T37",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 317.9,
+      "checks": 13,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T38",
+      "pattern": "having_on_group_column",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 338.8,
+      "checks": 13,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T39",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 192.3,
+      "checks": 13,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    },
+    {
+      "id": "T40",
+      "pattern": "clean",
+      "role": "good",
+      "expected": "allow",
+      "expected_original": "allow",
+      "got": "allow",
+      "ok": true,
+      "ok_original_labels": true,
+      "label_change": null,
+      "latency_ms": 219.7,
+      "checks": 13,
+      "estimate_rows": 0,
+      "estimate_source": "dry_run",
+      "findings": [],
+      "skipped_rules": [
+        "plan_unbounded_sort: plan shape not visible (dry_run)"
+      ],
+      "explanation": null
+    }
+  ]
+}
