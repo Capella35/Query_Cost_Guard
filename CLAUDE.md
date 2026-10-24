@@ -51,7 +51,8 @@ Three points in time (`DESIGN.md` §3):
    by `plan_estimate.py`); fetches table metadata and the **column registry**
    (`column_registry.py`: pre-built distinct counts, row counts and per-value
    counts, refreshed with `query_preflight registry refresh`, never scanned per
-   query; backends reload it when the file changes); runs `rules/static_rules.py` plus the join fan-out
+   query; backends reload it when the file changes); runs `rules/static_rules.py` and the semantic-hints rules
+   (`semantic_hints.py`, warn-only: undeclared join keys, fan-out sums) plus the join fan-out
    estimate (`join_estimate.py`, rows from the registry since a dry run has no
    row counts); compares against the workload class caps; then tries rewrites
    (`rewrites.py` deterministic catalog only: `decide()` takes no model). A

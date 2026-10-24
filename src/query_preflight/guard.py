@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
@@ -586,6 +587,31 @@ def _select_star_finding(tree, estimate, caps, workload_class,
     return None
 
 
+_hints_cache: dict = {}
+
+
+def _semantic_findings(tree, customer, has_column) -> tuple[list[str], Optional[str]]:
+    """The semantic-hints rules' findings, and why they were skipped. No
+    `semantic_hints` in customer.yaml = off, silently. The file is read once
+    and again only when it changes, like the registry."""
+    from .config import DEFAULT_PATH
+    from .semantic_hints import check_fanout_sums, check_join_keys, load_hints
+
+    name = (customer or {}).get("semantic_hints")
+    if not name:
+        return [], None
+    path = Path(name) if Path(name).is_absolute() else DEFAULT_PATH.parent / name
+    try:
+        mtime = path.stat().st_mtime
+        cached = _hints_cache.get(path)
+        if cached is None or cached[0] != mtime:
+            cached = _hints_cache[path] = (mtime, load_hints(path))
+    except (OSError, ValueError) as e:
+        return [], f"could not load {name} ({str(e).splitlines()[0][:120]})"
+    hints = cached[1]
+    return check_join_keys(tree, hints, has_column) + check_fanout_sums(tree, hints, has_column), None
+
+
 def _volume_finding(estimate, tables, volume, customer, backend):
     """Volume rule (owner's priority 4: spend = cost per run x runs). Warns,
     never blocks, when a shape ran at least `min_runs` times in the window
@@ -847,6 +873,15 @@ def _decide(sql, workload_class, customer, backend, tracer, tid,
                 findings.append(volume)
         elif why:
             skipped.append(f"volume_cost: {why}")
+    # Semantic hints (customer.yaml semantic_hints): joins on undeclared keys
+    # and fan-out sums. Wrong answers, so warn; never block (a query can be
+    # right for a reason the hints don't know).
+    hinted, why = _semantic_findings(tree, customer, _has_column)
+    if hinted:
+        with tracer.span(tid, "semantic_hints", findings=len(hinted)):
+            findings.extend(hinted)
+    elif why:
+        skipped.append(f"semantic_hints: {why}")
     findings = list(dict.fromkeys(findings))  # same finding can fire per table
     skipped.extend(no_profile)
     if skipped:

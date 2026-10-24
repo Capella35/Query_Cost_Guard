@@ -79,6 +79,12 @@ investigator:
   max_per_day: 20         # investigations per day, all shapes
   llm_max_per_day: 0      # optional Claude summary per report; 0 = never (deterministic only)
 
+# Semantic hints (src/query_preflight/semantic_hints.py): grain, keys and valid
+# joins per table. Two warn-only rules read it: a join on an undeclared key, and
+# SUM/AVG over a one-side column with its many side joined (fan-out). Remove the
+# line to turn both off. Measured: eval/RESULTS_hints_test.md (22/26).
+semantic_hints: semantic_hints.yaml
+
 # Volume rule (guard.py _volume_finding; owner's priority 4, spend at volume):
 # a query shape that ran at least min_runs times in window_hours and whose
 # modeled total (this run included) reaches warn_usd_per_window gets a WARN

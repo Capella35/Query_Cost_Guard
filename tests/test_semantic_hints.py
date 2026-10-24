@@ -101,3 +101,36 @@ def test_the_eval_scores_catches_misses_and_false_alarms():
     rows, m = score(queries, HINTS, None)
     assert m["join_key_caught"] == "1/1" and m["false_alarms_on_correct"] == "1/1"
     assert rows[1]["got"] == ["fanout"] and m["exact"] == "1/2"
+
+
+# ---- in the Guard (customer.yaml semantic_hints) -----------------------------
+
+FANOUT = ("SELECT SUM(o.amount_cents) FROM orders o JOIN order_items oi ON oi.order_id = o.order_id "
+          "WHERE o.created_at >= DATE '2024-06-01'")
+
+
+def _customer(**extra):
+    from query_preflight.config import load_customer
+    c = {k: v for k, v in load_customer().items() if k != "semantic_hints"}
+    return {**c, **extra}
+
+
+def test_decide_warns_on_a_fan_out_sum(synthetic_wh):
+    from query_preflight.guard import decide
+    from query_preflight.tracing import Tracer
+
+    v = decide(FANOUT, customer=_customer(semantic_hints="semantic_hints.yaml"),
+               backend=synthetic_wh, tracer=Tracer())
+    assert v.decision == "warn" and any(f.startswith("fan-out SUM") for f in v.findings)
+    off = decide(FANOUT, customer=_customer(), backend=synthetic_wh, tracer=Tracer())
+    assert not any(f.startswith("fan-out") for f in off.findings)  # no setting: off, silently
+    assert not any("semantic_hints" in s for s in off.skipped_rules)
+
+
+def test_a_missing_hints_file_is_a_visible_skip(synthetic_wh):
+    from query_preflight.guard import decide
+    from query_preflight.tracing import Tracer
+
+    v = decide(FANOUT, customer=_customer(semantic_hints="nope.yaml"), backend=synthetic_wh,
+               tracer=Tracer())
+    assert any(s.startswith("semantic_hints: could not load nope.yaml") for s in v.skipped_rules)
