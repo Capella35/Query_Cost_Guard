@@ -142,6 +142,14 @@ than it. Each proposal has already passed deterministic gates (below the hard \
 cap, tightens by at most 25%, enough runs, not below the baseline p95). You see \
 aggregate statistics only.
 
+How a proposal arises: one is made only after a slowdown. The shape's latest \
+runs (recent_median_sec) were at least 1.5x its usual median, and the \
+threshold is meant to stop slowdowns like that one. So recent runs sitting \
+above the new threshold is the intended effect, not a reason to reject. Every \
+other statistic (baseline_*, would_block_rate_on_history, \
+baseline_trend_ratio, history_span_days) describes the normal runs BEFORE the \
+slowdown: judge the threshold against those.
+
 Approve only if the threshold would sit comfortably above normal runs of this \
 shape given ALL the evidence. Reject if it would likely kill legitimate runs \
 (heavy or bimodal tail near the threshold, upward drift in the baseline, \

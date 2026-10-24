@@ -17,7 +17,10 @@ the number that matters most is bad proposals the judge APPROVED.
 
 Run:  .venv/bin/python eval/run_judge_eval.py            # gates only
       .venv/bin/python eval/run_judge_eval.py --llm claude  # gates + Claude judge
-Writes eval/RESULTS_judge.md.
+Writes eval/RESULTS_judge.md. Once that file records a live judge run (the
+first, 2026-10-23), it is never overwritten: a later --llm claude run needs
+--rerun and writes eval/RESULTS_judge_rerun.md (the 20 proposals are then a
+tuning set); a gates-only run prints and writes nothing.
 """
 from __future__ import annotations
 
@@ -129,7 +132,15 @@ RIGHT_VERDICT = {"S1": {"reject"}, "S2": {"reject"}, "S3": {"reject", "hold"},
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--llm", choices=["none", "claude"], default="none")
+    ap.add_argument("--rerun", action="store_true",
+                    help="a live judge run after the first one: a tuning run, written to "
+                         "RESULTS_judge_rerun.md")
     args = ap.parse_args()
+    first = ROOT / "eval" / "RESULTS_judge.md"
+    live_recorded = first.exists() and "judge: `claude`" in first.read_text()
+    if live_recorded and args.llm == "claude" and not args.rerun:
+        raise SystemExit("the first live judge run is recorded (eval/RESULTS_judge.md); a later "
+                         "run is a tuning run: pass --rerun (writes eval/RESULTS_judge_rerun.md)")
     version = code_version()  # before the run: what is measured
     judge = None
     if args.llm == "claude":
@@ -218,8 +229,17 @@ def main() -> None:
         md += ["", "A right verdict for the wrong reason is a measurement problem: read each "
                "subtle row's reason against the signal it should cite. Only outcome `judged` is a "
                "judgment; a refusal or an error holds, which scores as correct on a bad row."]
-    (ROOT / "eval" / "RESULTS_judge.md").write_text("\n".join(md) + "\n")
-    print("summary -> eval/RESULTS_judge.md")
+    if live_recorded and args.llm == "none":
+        print("gates only; not written (eval/RESULTS_judge.md holds the first live run)")
+    else:
+        rerun = live_recorded and args.llm == "claude"
+        if rerun:
+            md[1:1] = ["", "**RERUN** — a tuning run: the first live run "
+                       "([`RESULTS_judge.md`](RESULTS_judge.md)) stays the first measurement; "
+                       "the 20 proposals have been a tuning set since it."]
+        name = "RESULTS_judge_rerun.md" if rerun else "RESULTS_judge.md"
+        (ROOT / "eval" / name).write_text("\n".join(md) + "\n")
+        print(f"summary -> eval/{name}")
     if gate_bad_passed:
         raise SystemExit("FAIL: a gate-bad proposal passed the deterministic gates")
 
