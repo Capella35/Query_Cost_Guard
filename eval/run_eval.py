@@ -326,6 +326,8 @@ def main() -> None:
             "explanation": v.explanation,
             "suggestion": v.suggestion,
             "assist_notes": v.assist_notes,
+            # BigQuery: one run's bytes and MODELED cost (the cost scorecard reads these)
+            **{k.split(".", 1)[1]: x for k, x in _case_cost(case["sql"], v).items()},
         }
         if v.decision == "rewrite":
             r["rewrite_source"] = v.rewrite_source
