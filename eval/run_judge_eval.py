@@ -17,6 +17,13 @@ the number that matters most is bad proposals the judge APPROVED.
 
 Run:  .venv/bin/python eval/run_judge_eval.py            # gates only
       .venv/bin/python eval/run_judge_eval.py --llm claude  # gates + Claude judge
+      .venv/bin/python eval/run_judge_eval.py --set test --llm claude  # the TEST set, once
+
+--set test: eval/judge_test.yaml, 14 proposals pre-registered 2026-10-24
+(different kinds; labels fixed before any judge saw them). Run ONCE: writes
+eval/RESULTS_judge_test.md; a later run needs --rerun and writes
+eval/RESULTS_judge_test_rerun.md. Gates-only on it prints and writes nothing.
+
 Writes eval/RESULTS_judge.md. Once that file records a live judge run (the
 first, 2026-10-23), it is never overwritten: a later --llm claude run needs
 --rerun and writes eval/RESULTS_judge_rerun.md (the 20 proposals are then a
@@ -25,6 +32,7 @@ tuning set); a gates-only run prints and writes nothing.
 from __future__ import annotations
 
 import argparse
+import math
 import random
 import sys
 from dataclasses import dataclass
@@ -50,7 +58,7 @@ class Case:
     proposal: ThresholdProposal
 
 
-def build(id_, label, kind, durations, old, new=None, span_days=21.0):
+def build(id_, label, kind, durations, old, new=None, span_days=21.0, recent_mult=None):
     stats = FingerprintStats(f"shape_{id_}", [(0, d) for d in durations])
     if new is None:  # the Investigator's rule: p95 x 1.5, bounded to 25%
         new = round(max(stats.p95_secs * 1.5, old * 0.75), 4)
@@ -65,7 +73,7 @@ def build(id_, label, kind, durations, old, new=None, span_days=21.0):
         baseline_p95=round(stats.p95_secs, 4),
         baseline_p99=round(stats.p99_secs, 4),
         baseline_max=round(stats.max_secs, 4),
-        recent_median=round(stats.median_secs * rng.uniform(1.6, 3.0), 4),
+        recent_median=round(stats.median_secs * (recent_mult or rng.uniform(1.6, 3.0)), 4),
         history_span_days=span_days,
         baseline_trend_ratio=_trend(stats),
         would_block_rate_on_history=round(sum(d > new for d in durations) / len(durations), 4),
@@ -129,18 +137,79 @@ RIGHT_VERDICT = {"S1": {"reject"}, "S2": {"reject"}, "S3": {"reject", "hold"},
                  "S4": {"reject"}, "S5": {"reject"}, "S6": {"reject"}}
 
 
+def _generate(gen: dict, r: random.Random) -> list[float]:
+    """Durations for one test case (generators listed in judge_test.yaml)."""
+    (kind, a), = gen.items()
+    n, out = a["n"], []
+    for i in range(n):
+        if kind == "steady":
+            d = r.gauss(a["mu"], a["sd"])
+        elif kind == "lognormal":
+            d = r.lognormvariate(a["mu_log"], a["sigma"])
+        elif kind == "trend":
+            d = a["start"] + (a["end"] - a["start"]) * i / (n - 1) + r.uniform(-a["noise"], a["noise"])
+        elif kind == "step":
+            d = (a["before"] if i < n * a["at"] else a["after"]) + r.uniform(-a["noise"], a["noise"])
+        elif kind == "spikes":
+            d = a["base"] * (a["mult"] if (i + 1) % a["every"] == 0 else 1) \
+                + r.uniform(-a["noise"], a["noise"])
+        elif kind == "bimodal":
+            d = (a["high"] if r.random() < a["p_high"] else a["low"]) + r.uniform(-a["noise"], a["noise"])
+        else:
+            raise ValueError(f"unknown generator {kind!r}")
+        out.append(max(0.001, d))
+    return out
+
+
+def _threshold(spec, stats: FingerprintStats):
+    """A number, or {p95|p99|max: factor} of the baseline."""
+    if spec is None or isinstance(spec, (int, float)):
+        return spec
+    (stat, factor), = spec.items()
+    base = {"p95": stats.p95_secs, "p99": stats.p99_secs, "max": stats.max_secs}[stat]
+    return round(base * factor, 4)
+
+
+def test_cases(path: Path = ROOT / "eval" / "judge_test.yaml"):
+    """The pre-registered test set: (cases, right verdicts, signals)."""
+    import yaml
+
+    spec = yaml.safe_load(path.read_text())
+    r = random.Random(spec["seed"])
+    out, right, signal = [], {}, {}
+    for c in spec["cases"]:
+        durations = _generate(c["gen"], r)
+        stats = FingerprintStats("s", [(0, d) for d in durations])
+        old = _threshold(c["old"], stats)
+        new = _threshold(c.get("new"), stats)
+        if new is None:  # the Investigator's rule, rounded UP: a 25% move stays 25%
+            new = math.ceil(max(stats.p95_secs * 1.5, old * 0.75) * 1e4) / 1e4
+        out.append(build(c["id"], c["label"], c["kind"], durations, old, new,
+                         c["span_days"], c["recent_mult"]))
+        if c["label"] != "good":
+            right[c["id"]], signal[c["id"]] = set(c["right_verdict"]), c["signal"]
+    return out, right, signal
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--llm", choices=["none", "claude"], default="none")
     ap.add_argument("--rerun", action="store_true",
                     help="a live judge run after the first one: a tuning run, written to "
-                         "RESULTS_judge_rerun.md")
+                         "RESULTS_judge[_test]_rerun.md")
+    ap.add_argument("--set", choices=["tuning", "test"], default="tuning",
+                    help="tuning: the 20 built-in proposals; test: eval/judge_test.yaml, run once")
     args = ap.parse_args()
-    first = ROOT / "eval" / "RESULTS_judge.md"
+    stem = "RESULTS_judge_test" if args.set == "test" else "RESULTS_judge"
+    first = ROOT / "eval" / f"{stem}.md"
     live_recorded = first.exists() and "judge: `claude`" in first.read_text()
     if live_recorded and args.llm == "claude" and not args.rerun:
-        raise SystemExit("the first live judge run is recorded (eval/RESULTS_judge.md); a later "
-                         "run is a tuning run: pass --rerun (writes eval/RESULTS_judge_rerun.md)")
+        raise SystemExit(f"the first live judge run is recorded (eval/{stem}.md); a later "
+                         f"run is a tuning run: pass --rerun (writes eval/{stem}_rerun.md)")
+    if args.set == "test":
+        case_list, right_verdict, signal = test_cases()
+    else:
+        case_list, right_verdict, signal = cases(), RIGHT_VERDICT, SIGNAL
     version = code_version()  # before the run: what is measured
     judge = None
     if args.llm == "claude":
@@ -149,7 +218,7 @@ def main() -> None:
         judge = ClaudeLLM()
 
     rows = []
-    for c in cases():
+    for c in case_list:
         v = gate_violations(c.proposal, HARD_CAP)
         decision = None
         if not v and judge is not None:
@@ -167,9 +236,9 @@ def main() -> None:
     def correct(r):
         return r[2] == "approve" if r[0].label == "good" else r[2] in ("reject", "hold")
 
-    print(f"{'id':<4}{'label':<12}{'gates':<8}{'judge':<9}kind")
+    print(f"{'id':<6}{'label':<12}{'gates':<8}{'judge':<9}kind")
     for c, v, d in rows:
-        print(f"{c.id:<4}{c.label:<12}{'pass' if not v else 'REJECT':<8}{d or '-':<9}{c.kind}"
+        print(f"{c.id:<6}{c.label:<12}{'pass' if not v else 'REJECT':<8}{d or '-':<9}{c.kind}"
               + (f"  [{v[0]}]" if v else ""))
     summary = {
         "gate_bad_passing_gates": f"{len(gate_bad_passed)}/{len(gate_bad)}",
@@ -186,9 +255,9 @@ def main() -> None:
                                       f"/{sum(r[0].label != 'good' for r in judged)} (must be 0)",
             "2_subtle_bad_rejected_or_held": f"{sum(correct(r) for r in judged if r[0].label == 'subtle_bad')}"
                                              f"/{sum(r[0].label == 'subtle_bad' for r in judged)}",
-            "2b_subtle_bad_right_verdict": f"{sum(r[2] in RIGHT_VERDICT[r[0].id] and r[0].proposal.judge_outcome == 'judged' for r in judged if r[0].label == 'subtle_bad')}"
+            "2b_subtle_bad_right_verdict": f"{sum(r[2] in right_verdict[r[0].id] and r[0].proposal.judge_outcome == 'judged' for r in judged if r[0].label == 'subtle_bad')}"
                                            f"/{sum(r[0].label == 'subtle_bad' for r in judged)} "
-                                           "(reject; S3 reject or hold)",
+                                           "(per row: see right verdict)",
             "3_good_rejected_or_held": f"{sum(r[0].label == 'good' and r[2] != 'approve' for r in judged)}"
                                        f"/{sum(r[0].label == 'good' for r in judged)} (false alarms)",
             "judge_agreement": f"{sum(correct(r) for r in judged)}/{len(judged)}",
@@ -205,11 +274,15 @@ def main() -> None:
 
     ts = datetime.now(timezone.utc)
     md = [
-        "# Threshold-proposal judge eval (F3.2)",
+        "# Threshold-proposal judge eval (F3.2)" + (": TEST set (pre-registered)"
+                                                       if args.set == "test" else ""),
         "",
         f"Generated by `eval/run_judge_eval.py` on {ts:%Y-%m-%d %H:%M} UTC, judge: `{args.llm}`, "
         f"{describe(version)}. "
-        "20 labeled proposals from generated histories (fixed seed). Gates run first; the judge "
+        + (f"{len(rows)} proposals pre-registered in `eval/judge_test.yaml` (labels fixed "
+           "before any judge saw them). " if args.set == "test" else
+           "20 labeled proposals from generated histories (fixed seed). ")
+        + "Gates run first; the judge "
         "sees only proposals that pass them, and only aggregates (no SQL, no fingerprint).",
         "",
         "| metric | value |", "|---|---|",
@@ -221,23 +294,23 @@ def main() -> None:
     for c, v, d in rows:
         reason = (c.proposal.judge_reason or "").replace("|", "/").replace("\n", " ")
         md.append(f"| {c.id} | {c.label} | {c.kind} | {'pass' if not v else 'reject: ' + v[0]} | "
-                  f"{d or '—'} | {' or '.join(sorted(RIGHT_VERDICT.get(c.id, ())))
+                  f"{d or '—'} | {' or '.join(sorted(right_verdict.get(c.id, ())))
                                   or ('approve' if c.label == 'good' else '—')} | "
-                  f"{c.proposal.judge_outcome or '—'} | {SIGNAL.get(c.id, '—')} | "
+                  f"{c.proposal.judge_outcome or '—'} | {signal.get(c.id, '—')} | "
                   f"{reason or '—'} |")
     if judge is not None:
         md += ["", "A right verdict for the wrong reason is a measurement problem: read each "
                "subtle row's reason against the signal it should cite. Only outcome `judged` is a "
                "judgment; a refusal or an error holds, which scores as correct on a bad row."]
-    if live_recorded and args.llm == "none":
-        print("gates only; not written (eval/RESULTS_judge.md holds the first live run)")
+    if args.llm == "none" and (live_recorded or args.set == "test"):
+        print(f"gates only; not written (eval/{stem}.md is for the live run)")
     else:
         rerun = live_recorded and args.llm == "claude"
         if rerun:
-            md[1:1] = ["", "**RERUN** — a tuning run: the first live run "
-                       "([`RESULTS_judge.md`](RESULTS_judge.md)) stays the first measurement; "
-                       "the 20 proposals have been a tuning set since it."]
-        name = "RESULTS_judge_rerun.md" if rerun else "RESULTS_judge.md"
+            md[1:1] = ["", f"**RERUN** — a tuning run: the first live run "
+                       f"([`{stem}.md`]({stem}.md)) stays the first measurement; "
+                       "these proposals have been a tuning set since it."]
+        name = f"{stem}_rerun.md" if rerun else f"{stem}.md"
         (ROOT / "eval" / name).write_text("\n".join(md) + "\n")
         print(f"summary -> eval/{name}")
     if gate_bad_passed:

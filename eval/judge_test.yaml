@@ -1,0 +1,143 @@
+# Threshold-judge TEST set (pre-registered; run ONCE with
+#   .venv/bin/python eval/run_judge_eval.py --set test --llm claude).
+#
+# Written 2026-10-24, AFTER the tuning set's rerun (RESULTS_judge_rerun.md) and
+# BEFORE any judge saw these proposals. Labels, right verdicts and the signals
+# a reason should cite are fixed here and committed before the run. Any change
+# after the run is recorded openly and scored both ways; a fix made after
+# seeing this set's misses makes it a tuning set.
+#
+# Kinds differ from the tuning set on purpose: good cases that LOOK alarming
+# but are safe (bimodal with the threshold far above both modes, a downward
+# step, slow periodic bumps, millisecond and minute-long shapes), so a judge
+# that rejects anything unusual is caught; bad cases built from different
+# shapes (isolated outliers, a step up, a 6-hour history, a minority mode).
+# Same author as the judge prompt: a known limit, stated in the results.
+#
+# Generators (eval/run_judge_eval.py, seed below): durations in seconds.
+#   steady    n, mu, sd                 gaussian
+#   lognormal n, mu_log, sigma          lognormal
+#   trend     n, start, end, noise      linear drift
+#   step      n, before, after, at, noise   level change at fraction `at`
+#   spikes    n, base, noise, every, mult   every `every`-th run at base x mult
+#   bimodal   n, low, high, p_high, noise   two modes
+# old / new: a number (seconds) or {stat: factor} with stat in p95, p99, max.
+# new omitted = the Investigator's rule: max(p95 x 1.5, old x 0.75).
+# recent_mult: the slowdown that triggered the proposal (recent median =
+# baseline median x this; the Investigator requires >= 1.5).
+# Every proposal must pass the deterministic gates (checked before commit).
+seed: 20261024
+cases:
+  - id: F-G1
+    label: good
+    kind: long steady history (150 runs, 90 days)
+    gen: {steady: {n: 150, mu: 1.2, sd: 0.1}}
+    old: {p99: 2.2}
+    span_days: 90
+    recent_mult: 1.8
+  - id: F-G2
+    label: good
+    kind: moderately skewed, threshold far above the max
+    gen: {lognormal: {n: 80, mu_log: -0.5, sigma: 0.25}}
+    old: {max: 2.0}
+    new: {max: 1.6}
+    span_days: 30
+    recent_mult: 2.2
+  - id: F-G3
+    label: good
+    kind: slow downward trend (getting faster)
+    gen: {trend: {n: 60, start: 0.9, end: 0.7, noise: 0.02}}
+    old: 2.0
+    span_days: 21
+    recent_mult: 1.7
+  - id: F-G4
+    label: good
+    kind: small weekly bumps (1.25x), threshold well above them
+    gen: {spikes: {n: 84, base: 0.5, noise: 0.02, every: 7, mult: 1.25}}
+    old: {p99: 2.5}
+    span_days: 84
+    recent_mult: 2.0
+  - id: F-G5
+    label: good
+    kind: bimodal cache hit / miss, threshold far above both modes
+    gen: {bimodal: {n: 100, low: 0.05, high: 0.6, p_high: 0.4, noise: 0.01}}
+    old: {max: 2.2}
+    span_days: 30
+    recent_mult: 1.9
+  - id: F-G6
+    label: good
+    kind: millisecond queries, steady
+    gen: {steady: {n: 60, mu: 0.008, sd: 0.0008}}
+    old: 0.05
+    span_days: 21
+    recent_mult: 2.5
+  - id: F-G7
+    label: good
+    kind: minute-long query, steady
+    gen: {steady: {n: 40, mu: 45.0, sd: 3.0}}
+    old: 200.0
+    span_days: 40
+    recent_mult: 1.6
+  - id: F-G8
+    label: good
+    kind: step DOWN mid-history (an optimization made it 2x faster)
+    gen: {step: {n: 60, before: 1.0, after: 0.5, at: 0.5, noise: 0.03}}
+    old: 3.0
+    span_days: 30
+    recent_mult: 2.0
+  - id: F-B1
+    label: subtle_bad
+    kind: isolated heavy outliers (~3.5% of runs at 8x)
+    gen: {spikes: {n: 86, base: 0.4, noise: 0.02, every: 29, mult: 8.0}}
+    old: 0.8
+    span_days: 45
+    recent_mult: 1.8
+    right_verdict: [reject]
+    signal: tail rate (would_block_rate, p99/max above the threshold)
+  - id: F-B2
+    label: subtle_bad
+    kind: step UP mid-history (data doubled three weeks ago)
+    gen: {step: {n: 60, before: 0.5, after: 0.8, at: 0.5, noise: 0.02}}
+    old: 1.5
+    span_days: 42
+    recent_mult: 1.7
+    right_verdict: [reject]
+    signal: trend ratio (level shift up within the baseline)
+  - id: F-B3
+    label: subtle_bad
+    kind: whole history from one 6-hour window
+    gen: {steady: {n: 50, mu: 0.3, sd: 0.02}}
+    old: 1.0
+    span_days: 0.25
+    recent_mult: 2.0
+    right_verdict: [reject, hold]
+    signal: history span (six hours)
+  - id: F-B4
+    label: subtle_bad
+    kind: heavy lognormal tail, threshold just above p95
+    gen: {lognormal: {n: 120, mu_log: -1.2, sigma: 0.8}}
+    old: {p95: 1.29}
+    new: {p95: 1.03}
+    span_days: 30
+    recent_mult: 1.9
+    right_verdict: [reject]
+    signal: new threshold close to p95 (tail above it)
+  - id: F-B5
+    label: subtle_bad
+    kind: rare slow mode (10% of runs), threshold just above p95
+    gen: {bimodal: {n: 100, low: 0.1, high: 1.0, p_high: 0.1, noise: 0.08}}
+    old: {p95: 1.28}
+    new: {p95: 1.02}
+    span_days: 30
+    recent_mult: 2.0
+    right_verdict: [reject]
+    signal: bimodal tail near the threshold (would_block_rate)
+  - id: F-B6
+    label: subtle_bad
+    kind: gradual upward drift (1.5x over the history)
+    gen: {trend: {n: 90, start: 0.3, end: 0.6, noise: 0.015}}
+    old: 1.2
+    span_days: 60
+    recent_mult: 1.6
+    right_verdict: [reject]
+    signal: trend ratio (gradual growth)

@@ -82,7 +82,7 @@ def test_eval_tells_a_lazy_judge_from_a_safe_one(tmp_path, monkeypatch):
     md = (tmp_path / "eval" / "RESULTS_judge.md").read_text()
     assert "| 1_bad_wrongly_approved | 0/6 (must be 0) |" in md
     assert "| 2_subtle_bad_rejected_or_held | 6/6 |" in md
-    assert "| 2b_subtle_bad_right_verdict | 1/6 (reject; S3 reject or hold) |" in md
+    assert "| 2b_subtle_bad_right_verdict | 1/6 (per row: see right verdict) |" in md
 
 
 def test_prompt_states_the_slowdown_that_triggers_every_proposal():
@@ -123,3 +123,21 @@ def test_the_first_live_run_is_never_overwritten(tmp_path, monkeypatch):
     _judge_eval(tmp_path, monkeypatch, ["--llm", "claude", "--rerun"], first)
     assert (tmp_path / "eval" / "RESULTS_judge.md").read_text() == first
     assert "**RERUN**" in (tmp_path / "eval" / "RESULTS_judge_rerun.md").read_text()
+
+
+def test_the_pre_registered_test_set_reaches_the_judge():
+    """Every test proposal passes the deterministic gates (the judge's job),
+    each bad one names its right verdict and signal, and the set is
+    reproducible from its seed."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "eval"))
+    import run_judge_eval
+    from query_preflight.thresholds import gate_violations
+
+    cases, right, signal = run_judge_eval.test_cases()
+    assert len(cases) == 14 and sum(c.label == "good" for c in cases) == 8
+    assert all(gate_violations(c.proposal, run_judge_eval.HARD_CAP) == [] for c in cases)
+    assert set(right) == set(signal) == {c.id for c in cases if c.label != "good"}
+    again, _, _ = run_judge_eval.test_cases()
+    assert [c.proposal.new_threshold for c in again] == [c.proposal.new_threshold for c in cases]
