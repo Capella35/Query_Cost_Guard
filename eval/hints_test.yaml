@@ -1,0 +1,241 @@
+# Semantic-hints TEST set (pre-registered; run ONCE with
+#   .venv/bin/python eval/run_hints_eval.py).
+#
+# Written 2026-10-24, after the two rules were drafted
+# (src/query_preflight/semantic_hints.py) and BEFORE they were run on any of
+# these queries. Labels are fixed here and committed before the run; any
+# change after it is recorded openly and scored both ways, and a fix made
+# after seeing this set's misses makes it a tuning set.
+#
+# The same author wrote the rules and these queries, so the queries were
+# written the way an analyst would write them, including forms the author
+# expected the rules to miss (USING joins, the mistake inside a CTE or a
+# subquery) and correct queries that look like the mistakes.
+#
+# expect: join_key  — joins two tables on a column pair that is not a valid key
+#         fanout    — SUM/AVG of a per-order / per-customer value over item rows
+#         none      — correct; no finding expected
+# Scored on the rules' findings only (no warehouse, no model): the BigQuery
+# dialect, unqualified columns resolved with the registry's schema.
+queries:
+  # ---- wrong join keys ------------------------------------------------------
+  - id: H-J1
+    expect: join_key
+    question: revenue by customer gender
+    sql: |
+      SELECT u.gender, SUM(oi.sale_price) AS revenue
+      FROM cost_guard_thelook.order_items oi
+      JOIN cost_guard_thelook.users u ON oi.id = u.id
+      GROUP BY u.gender
+  - id: H-J2
+    expect: join_key
+    question: order status of each sold item
+    sql: |
+      SELECT o.status, COUNT(*) AS items
+      FROM cost_guard_thelook.orders o
+      JOIN cost_guard_thelook.order_items oi ON o.created_at = oi.created_at
+      GROUP BY o.status
+  - id: H-J3
+    expect: join_key
+    question: stock items per product category
+    sql: |
+      SELECT p.category, COUNT(*) AS stock_items
+      FROM cost_guard_thelook.inventory_items ii
+      JOIN cost_guard_thelook.products p ON p.name = ii.product_name
+      GROUP BY p.category
+  - id: H-J4
+    expect: join_key
+    question: items per order status (USING on the wrong column)
+    sql: |
+      SELECT status, COUNT(*) AS items
+      FROM cost_guard_thelook.orders
+      JOIN cost_guard_thelook.order_items USING (user_id)
+      GROUP BY status
+  - id: H-J5
+    expect: join_key
+    question: revenue by brand
+    sql: |
+      SELECT p.brand, SUM(oi.sale_price) AS revenue
+      FROM cost_guard_thelook.order_items oi
+      JOIN cost_guard_thelook.products p ON oi.inventory_item_id = p.id
+      GROUP BY p.brand
+  - id: H-J6
+    expect: join_key
+    question: orders by customer country (comma join)
+    sql: |
+      SELECT u.country, COUNT(*) AS orders
+      FROM cost_guard_thelook.orders o, cost_guard_thelook.users u
+      WHERE o.order_id = u.id
+      GROUP BY u.country
+  - id: H-J7
+    expect: join_key
+    question: revenue by order status, join inside a CTE
+    sql: |
+      WITH x AS (
+        SELECT oi.sale_price, o.status
+        FROM cost_guard_thelook.order_items oi
+        JOIN cost_guard_thelook.orders o ON oi.user_id = o.user_id
+      )
+      SELECT status, SUM(sale_price) AS revenue FROM x GROUP BY status
+  - id: H-J8
+    expect: join_key
+    question: products per distribution center
+    sql: |
+      SELECT d.name, COUNT(*) AS products
+      FROM cost_guard_thelook.products p
+      JOIN cost_guard_thelook.distribution_centers d ON p.id = d.id
+      GROUP BY d.name
+
+  # ---- fan-out sums -----------------------------------------------------------
+  - id: H-F1
+    expect: fanout
+    question: items in completed orders
+    sql: |
+      SELECT SUM(o.num_of_item) AS items
+      FROM cost_guard_thelook.orders o
+      JOIN cost_guard_thelook.order_items oi ON oi.order_id = o.order_id
+      WHERE oi.status = 'Complete'
+  - id: H-F2
+    expect: fanout
+    question: revenue, unqualified columns and USING
+    sql: |
+      SELECT SUM(sale_price * num_of_item) AS revenue
+      FROM cost_guard_thelook.order_items
+      JOIN cost_guard_thelook.orders USING (order_id)
+  - id: H-F3
+    expect: fanout
+    question: items bought per customer gender
+    sql: |
+      SELECT u.gender, SUM(o.num_of_item) AS items
+      FROM cost_guard_thelook.users u
+      JOIN cost_guard_thelook.orders o ON o.user_id = u.id
+      JOIN cost_guard_thelook.order_items oi ON oi.order_id = o.order_id
+      GROUP BY u.gender
+  - id: H-F4
+    expect: fanout
+    question: average age of customers who bought jeans (each customer counted once per item)
+    sql: |
+      SELECT AVG(u.age) AS avg_age
+      FROM cost_guard_thelook.users u
+      JOIN cost_guard_thelook.order_items oi ON oi.user_id = u.id
+      JOIN cost_guard_thelook.products p ON p.id = oi.product_id
+      WHERE p.category = 'Jeans'
+  - id: H-F5
+    expect: fanout
+    question: total items, join in a CTE and the sum outside it
+    sql: |
+      WITH j AS (
+        SELECT o.order_id, o.num_of_item, oi.sale_price
+        FROM cost_guard_thelook.orders o
+        JOIN cost_guard_thelook.order_items oi ON oi.order_id = o.order_id
+      )
+      SELECT SUM(num_of_item) AS items FROM j
+  - id: H-F6
+    expect: fanout
+    question: average basket size of orders with a returned item
+    sql: |
+      SELECT AVG(o.num_of_item) AS avg_basket
+      FROM cost_guard_thelook.orders o
+      JOIN cost_guard_thelook.order_items oi ON oi.order_id = o.order_id
+      WHERE oi.status = 'Returned'
+  - id: H-F7
+    expect: fanout
+    question: items per month, tables named without aliases
+    sql: |
+      SELECT DATE_TRUNC(DATE(orders.created_at), MONTH) AS month, SUM(orders.num_of_item) AS items
+      FROM cost_guard_thelook.orders
+      JOIN cost_guard_thelook.order_items ON orders.order_id = order_items.order_id
+      GROUP BY month
+  - id: H-F8
+    expect: fanout
+    question: items in orders with an expensive item, join in a subquery
+    sql: |
+      SELECT SUM(n) AS items
+      FROM (
+        SELECT o.num_of_item AS n
+        FROM cost_guard_thelook.orders o
+        JOIN cost_guard_thelook.order_items oi ON oi.order_id = o.order_id
+        WHERE oi.sale_price > 100
+      )
+
+  # ---- correct, some look like the mistakes ---------------------------------
+  - id: H-C1
+    expect: none
+    question: revenue of completed orders
+    sql: |
+      SELECT SUM(oi.sale_price) AS revenue
+      FROM cost_guard_thelook.order_items oi
+      JOIN cost_guard_thelook.orders o ON oi.order_id = o.order_id
+      WHERE o.status = 'Complete'
+  - id: H-C2
+    expect: none
+    question: items in shipped orders
+    sql: |
+      SELECT SUM(num_of_item) AS items FROM cost_guard_thelook.orders WHERE status = 'Shipped'
+  - id: H-C3
+    expect: none
+    question: items per customer country (orders summed, users the one side)
+    sql: |
+      SELECT u.country, SUM(o.num_of_item) AS items
+      FROM cost_guard_thelook.orders o
+      JOIN cost_guard_thelook.users u ON u.id = o.user_id
+      GROUP BY u.country
+  - id: H-C4
+    expect: none
+    question: orders and items, counted
+    sql: |
+      SELECT COUNT(DISTINCT order_id) AS orders, COUNT(*) AS items
+      FROM cost_guard_thelook.orders
+      JOIN cost_guard_thelook.order_items USING (order_id)
+  - id: H-C5
+    expect: none
+    question: cost of goods sold (a product's cost once per item sold is the intent)
+    sql: |
+      SELECT SUM(p.cost) AS cogs
+      FROM cost_guard_thelook.order_items oi
+      JOIN cost_guard_thelook.products p ON p.id = oi.product_id
+      WHERE oi.status = 'Complete'
+  - id: H-C6
+    expect: none
+    question: revenue per order status, items pre-aggregated per order
+    sql: |
+      SELECT o.status, SUM(x.revenue) AS revenue
+      FROM cost_guard_thelook.orders o
+      JOIN (SELECT order_id, SUM(sale_price) AS revenue
+            FROM cost_guard_thelook.order_items GROUP BY order_id) x
+        ON x.order_id = o.order_id
+      GROUP BY o.status
+  - id: H-C7
+    expect: none
+    question: items joined on both keys
+    sql: |
+      SELECT o.status, COUNT(*) AS items
+      FROM cost_guard_thelook.order_items oi
+      JOIN cost_guard_thelook.orders o ON oi.order_id = o.order_id AND oi.user_id = o.user_id
+      GROUP BY o.status
+  - id: H-C8
+    expect: none
+    question: events per customer country
+    sql: |
+      SELECT u.country, COUNT(*) AS events
+      FROM cost_guard_thelook.events e
+      JOIN cost_guard_thelook.users u ON e.user_id = u.id
+      GROUP BY u.country
+  - id: H-C9
+    expect: none
+    question: average age of customers who bought jeans (each once)
+    sql: |
+      SELECT AVG(age) AS avg_age
+      FROM cost_guard_thelook.users
+      WHERE id IN (SELECT oi.user_id
+                   FROM cost_guard_thelook.order_items oi
+                   JOIN cost_guard_thelook.products p ON p.id = oi.product_id
+                   WHERE p.category = 'Jeans')
+  - id: H-C10
+    expect: none
+    question: stock cost per category (the many side's own column)
+    sql: |
+      SELECT p.category, SUM(ii.cost) AS stock_cost
+      FROM cost_guard_thelook.inventory_items ii
+      JOIN cost_guard_thelook.products p ON p.id = ii.product_id
+      GROUP BY p.category

@@ -1,0 +1,43 @@
+# Semantic hints for the TheLook dataset: what the data MEANS (the column
+# registry says how big it is). Read once, like the registry; never scanned
+# per query. Owner: the customer's data team (here: the project owner).
+# Draft 2026-10-24 — NOT yet read by the Guard (src/query_preflight/semantic_hints.py,
+# rules pending the owner's approval).
+#
+# Every fact below was checked on the local copy (data/thelook.duckdb,
+# 2026-10-24): each key is unique and non-null; each join has 0 orphan rows
+# (events.user_id is NULL for anonymous visits, 46% of events);
+# orders.num_of_item equals the order's item rows in 125,226 of 125,226 orders.
+#
+# tables:  grain (one row per ...) and the key that is unique per row.
+# joins:   the valid join keys, written many-side = one-side (the right side
+#          is the key of its table). A join between two listed tables on any
+#          other column pair warns; on these, the one side's columns repeat
+#          once per many-side row, so SUM/AVG over them double counts.
+# columns: facts a rule can't infer from counts.
+tables:
+  orders:               {grain: order, key: order_id}
+  order_items:          {grain: item in an order, key: id}
+  users:                {grain: customer, key: id}
+  products:             {grain: product, key: id}
+  inventory_items:      {grain: stock item, key: id}
+  distribution_centers: {grain: distribution center, key: id}
+  events:               {grain: website event, key: id}
+
+joins:
+  - order_items.order_id = orders.order_id
+  - order_items.user_id = users.id
+  - orders.user_id = users.id
+  - order_items.product_id = products.id
+  - order_items.inventory_item_id = inventory_items.id
+  - inventory_items.product_id = products.id
+  - products.distribution_center_id = distribution_centers.id
+  - inventory_items.product_distribution_center_id = distribution_centers.id
+  - events.user_id = users.id
+
+columns:
+  orders.num_of_item:
+    note: >-
+      the order's item count (= its rows in order_items); order_items already
+      has one row per item, so never multiply item values by it — COUNT(*)
+      over order_items gives the quantity
