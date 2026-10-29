@@ -2,8 +2,12 @@
 BigQuery database is checked before Superset sends it (SQL_QUERY_MUTATOR).
 
 A BLOCK stops the query: Superset shows Query Preflight's reason and fix hints as
-the query's error. allow / warn / rewrite pass the query through unchanged,
-the same as `query_preflight run` (a rewrite is offered, never swapped in).
+the query's error. A filter value that matches a stored value only when case
+is ignored (`status = 'cancelled'`, stored 'Cancelled') also stops the query,
+with "did you mean" and the corrected query: as written it returns no rows for
+that value, and a silent empty chart reads as "there are none" (owner decision
+2026-10-29). Nothing is swapped in. allow / warn / other rewrites pass the
+query through unchanged, the same as `query_preflight run`.
 
 Superset and Query Preflight pin different library versions (sqlglot among them),
 so the check runs in Query Preflight's own venv as a subprocess: `query_preflight check`
@@ -27,6 +31,10 @@ class QueryPreflightBlocked(Exception):
     """Raised for a blocked query; Superset shows the message as the error."""
 
 
+class QueryPreflightValueCase(QueryPreflightBlocked):
+    """Raised for a filter value that matches a stored value only in another case."""
+
+
 def check(sql: str) -> dict:
     """Query Preflight's verdict for `sql` (the CLI's JSON)."""
     env = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
@@ -47,8 +55,17 @@ def block_message(v: dict) -> str:
     return "\n".join(lines)
 
 
+def value_case_message(v: dict) -> str:
+    lines = ["Query Preflight stopped this query: a filter value matches no stored value "
+             "except in another case, so it returns no rows for that value. Did you mean:"]
+    lines += [f"- {n}" for n in v["value_case_fixes"]]
+    lines += ["", "Corrected query (check it, then run it):", v["rewritten_sql"]]
+    return "\n".join(lines)
+
+
 def mutator(sql: str, **kwargs) -> str:
-    """SQL_QUERY_MUTATOR: check, stop a block, otherwise return `sql` unchanged."""
+    """SQL_QUERY_MUTATOR: check, stop a block or a value-case miss, otherwise
+    return `sql` unchanged."""
     database = kwargs.get("database")
     if database is not None and getattr(database, "backend", None) != "bigquery":
         return sql
@@ -60,4 +77,6 @@ def mutator(sql: str, **kwargs) -> str:
     log.info("Query Preflight: %s", v["decision"])  # no reason: it can quote the query's literals
     if v["decision"] == "block":
         raise QueryPreflightBlocked(block_message(v))
+    if v.get("value_case_fixes") and v.get("rewritten_sql"):
+        raise QueryPreflightValueCase(value_case_message(v))
     return sql

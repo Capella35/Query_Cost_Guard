@@ -1,5 +1,6 @@
 """The Superset hook (superset/query_preflight_hook.py): a block stops the query
-with the reason and hints; anything else, or a failed check, passes the SQL
+with the reason and hints; a value-case miss stops it with "did you mean" and
+the corrected query; anything else, or a failed check, passes the SQL
 through unchanged. Superset itself is not needed (it runs in its own venv)."""
 import sys
 from pathlib import Path
@@ -30,6 +31,23 @@ def test_block_stops_the_query_with_reason_and_hints(monkeypatch):
 @pytest.mark.parametrize("decision", ["allow", "warn", "rewrite"])
 def test_other_verdicts_pass_the_sql_unchanged(monkeypatch, decision):
     monkeypatch.setattr(hook, "check", lambda sql: _verdict(decision))
+    assert hook.mutator("SELECT 1", database=BQ) == "SELECT 1"
+
+
+def test_value_case_miss_stops_the_query_with_the_corrected_one(monkeypatch):
+    note = "orders.status = 'cancelled' matches no stored value; 'Cancelled' does (1,000 rows)"
+    fixed = "SELECT COUNT(*) FROM t WHERE status = 'Cancelled'"
+    monkeypatch.setattr(hook, "check", lambda sql: {
+        **_verdict("rewrite"), "value_case_fixes": [note], "rewritten_sql": fixed})
+    with pytest.raises(hook.QueryPreflightBlocked) as e:
+        hook.mutator("SELECT COUNT(*) FROM t WHERE status = 'cancelled'", database=BQ)
+    assert "Did you mean:" in str(e.value) and f"- {note}" in str(e.value)
+    assert str(e.value).endswith(fixed)
+
+
+def test_a_cost_rewrite_alone_still_passes(monkeypatch):
+    monkeypatch.setattr(hook, "check", lambda sql: {
+        **_verdict("rewrite"), "value_case_fixes": [], "rewritten_sql": "SELECT 2"})
     assert hook.mutator("SELECT 1", database=BQ) == "SELECT 1"
 
 

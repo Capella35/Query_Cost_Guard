@@ -139,6 +139,10 @@ class GuardVerdict:
     # Notes from assist() (the model's step, after the verdict): why a model
     # rewrite was not offered. Never part of the decision or the reason.
     assist_notes: list[str] = field(default_factory=list)
+    # Filter values corrected to the stored spelling (value_case.py), one
+    # note each; set on a rewrite only. Superset stops on these (the query
+    # as written returns no rows for that value).
+    value_case_fixes: list[str] = field(default_factory=list)
 
 
 def _vet_rewrite(source, cand, base_sql, estimate_source, orig_bytes, orig_rows, n_tables,
@@ -1022,6 +1026,7 @@ def _decide(sql, workload_class, customer, backend, tracer, tid,
                     rewritten_sql=cand,
                     findings=case_notes + findings,
                     rewrite_source=source + ("+value_case" if case_sql else ""),
+                    value_case_fixes=case_notes,
                     verification=res.detail + (" (remembered from an earlier check)"
                                                if how == "remembered" else ""),
                     **base,
@@ -1034,6 +1039,7 @@ def _decide(sql, workload_class, customer, backend, tracer, tid,
             rewritten_sql=case_sql,
             findings=case_notes + findings,
             rewrite_source="value_case",
+            value_case_fixes=case_notes,
             verification="stored values from the column registry's complete value counts; "
                          "the original matches no row with that value",
             **base,

@@ -72,6 +72,8 @@ def test_guard_offers_the_corrected_query(synthetic_wh):
                backend=synthetic_wh, tracer=Tracer())
     assert v.decision == "rewrite" and v.rewrite_source == "value_case"
     assert "status = 'cancelled'" in v.rewritten_sql
+    assert len(v.value_case_fixes) == 1 and "'cancelled' does" in v.value_case_fixes[0]
     v = decide("SELECT COUNT(*) FROM orders WHERE status = 'cancelled'",
                backend=synthetic_wh, tracer=Tracer())
     assert v.rewrite_source != "value_case" and not any("stored value" in f for f in v.findings)
+    assert v.value_case_fixes == []
