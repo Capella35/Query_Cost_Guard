@@ -284,7 +284,9 @@ A refusal or error means no output: no rewrite, no explanation, judge holds.
   ≥ 20 runs, not below baseline p95 → optional judge → shadow trial →
   enforce → probation. More than 5% of real runs blocked → rollback.
 - **Adaptive anomaly rule** (warn when far above the shape's own history)
-  exists in the replay harness only. Its runtime check uses a **drift-aware
+  runs in the package since 2026-10-17 (`anomaly.py`, called by
+  `runtime.run_query` after each completed run; c49f968): it flags and logs,
+  kills nothing, and is not part of `decide()`. Its runtime check uses a **drift-aware
   baseline** (`thresholds.DriftAwareBaseline`): a robust Theil–Sen trend on
   log runtime, so steady growth is expected; a run is flagged only when it
   beats the trend-expected runtime by more than the shape's own 0.99
@@ -550,8 +552,11 @@ changes.
   honest, but it shifts every estimate and possibly verdicts.
 - Are rewrites worth offering on DuckDB, where most measure ~1× (pushdown
   measured ×0.92 on Q08)?
-- Should a NOT IN-over-NULLs rule exist? It's in the labeling guide, but no
-  rule detects it.
+- Resolved: a NOT IN-over-NULLs rule exists (`no_not_in_over_nulls`, built
+  2026-10-18 after the pool's test half, 6b57e48): warn on
+  `x NOT IN (SELECT col FROM t …)` when the registry shows NULLs in `t.col`,
+  unless the subquery filters `col IS NOT NULL`; no fresh entry = a visible
+  skip (decision log, 2026-10-18).
 - Clustering-aware rules, and a layout advisor that mines the query log for
   partition/cluster suggestions.
 - When do the evals move to the new caps? That needs a recorded relabel of
