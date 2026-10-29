@@ -419,6 +419,15 @@ def run_online(heldout: bool, rerun: bool = False) -> dict:
     return res
 
 
+def _save_raw(name: str, payload: dict) -> None:
+    """The raw numbers behind a Markdown summary, in eval/results/ (gitignored)."""
+    ts = datetime.now(timezone.utc)
+    dest = ROOT / "eval" / "results" / f"{name}_{ts:%Y%m%d_%H%M%S}.json"
+    dest.parent.mkdir(exist_ok=True)
+    dest.write_text(json.dumps({"ts": ts.isoformat(), "code_version": VERSION, **payload}, indent=2))
+    print(f"results -> {dest.relative_to(ROOT)}")
+
+
 def write_online_summary(res: dict, seeds: tuple, rerun: bool) -> None:
     lines = [
         "# Online anomaly replay: option A vs option B",
@@ -453,6 +462,7 @@ def write_online_summary(res: dict, seeds: tuple, rerun: bool) -> None:
               "gains a legitimate 10x month-end run every 10 runs from run 30 (all good)."]
     ONLINE_RESULTS.write_text("\n".join(lines) + "\n")
     print(f"summary -> {ONLINE_RESULTS.relative_to(ROOT)}")
+    _save_raw("replay_online_heldout", {"seeds": list(seeds), "rerun": rerun, "options": res})
 
 
 def run_hard_heldout(method: str = "flat") -> dict:
@@ -503,6 +513,8 @@ def write_hard_summary(results: dict) -> None:
               "the last third, bad once past 1.5x the original median."]
     (ROOT / "eval" / "RESULTS_replay_hard.md").write_text("\n".join(lines) + "\n")
     print("summary -> eval/RESULTS_replay_hard.md")
+    _save_raw("replay_hard_heldout", {"seeds": list(HARD_HELDOUT_SEEDS), "dev_seed": HARD_DEV_SEED,
+                                      "heldout": results, "dev": dev})
 
 
 def run_hard() -> dict:

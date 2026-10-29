@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -23,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 TOOLS = {"check_query", "run_query", "get_table_info", "get_query_history",
-         "workload_report", "registry_status"}
+         "workload_report", "registry_status", "get_assistance"}
 # (name, sql, expected decision) — from the pool's validation half, every one
 # dry-run only (no rewrite case, so no verification sample). The server runs
 # under customer.yaml's caps (interactive: 200 GB), NOT the evals' frozen
@@ -63,7 +64,7 @@ async def smoke(project: str, dataset: str, tmp: Path) -> list[tuple[str, bool, 
         async with ClientSession(read, write) as s:
             await s.initialize()
             tools = {t.name: t for t in (await s.list_tools()).tools}
-            check("lists the six tools", set(tools) == TOOLS, ", ".join(sorted(tools)))
+            check("lists the seven tools", set(tools) == TOOLS, ", ".join(sorted(tools)))
             ro = {n for n, t in tools.items() if t.annotations and t.annotations.read_only_hint}
             check("only run_query is not read-only", ro == TOOLS - {"run_query"}, ", ".join(sorted(ro)))
             fp = None
@@ -103,6 +104,10 @@ def main() -> int:
     args = ap.parse_args()
     if not args.project:
         raise SystemExit("needs --project or GCP_PROJECT")
+    sys.path.insert(0, str(ROOT / "eval"))
+    from code_version import code_version
+
+    version = code_version()  # before the run: what is measured
     started = datetime.now(timezone.utc)
     with tempfile.TemporaryDirectory() as tmp:
         results = asyncio.run(smoke(args.project, args.dataset, Path(tmp)))
@@ -114,6 +119,15 @@ def main() -> int:
         print(f"{'PASS' if ok else 'FAIL'}  {name:<40} {detail}")
     failed = sum(not ok for _, ok, _ in results)
     print(f"\n{len(results) - failed}/{len(results)} passed")
+    # Stored, so a quoted score has a file behind it (details are verdict reasons and
+    # counts, no SQL text: the probe queries are the script's own).
+    dest = ROOT / "eval" / "results" / f"mcp_smoke_bigquery_{started:%Y%m%d_%H%M%S}.json"
+    dest.parent.mkdir(exist_ok=True)
+    dest.write_text(json.dumps({
+        "ts": started.isoformat(), "code_version": version, "dataset": args.dataset,
+        "passed": f"{len(results) - failed}/{len(results)}",
+        "checks": [{"name": n, "ok": ok, "detail": d} for n, ok, d in results]}, indent=2))
+    print(f"results -> {dest.relative_to(ROOT)}")
     return 1 if failed else 0
 
 

@@ -201,7 +201,7 @@ def _case_cost(sql: str, v) -> dict:
     if est is None or v.estimate_source != "dry_run":
         return {}
     price = (load_customer().get("cost_model") or {}).get("price_per_tb_usd") or 0
-    billed = bigquery_billed(est, len(sql_ast.referenced_tables(sql_ast.parse_one(sql))))
+    billed = bigquery_billed(est, len(sql_ast.referenced_tables(sql_ast.parse_one(sql, "bigquery"))))
     return {"eval.bytes_estimate": est, "eval.bytes_billed_if_run": billed,
             "eval.usd_if_run_modeled": round(billed / 1024**4 * price, 6)}
 
