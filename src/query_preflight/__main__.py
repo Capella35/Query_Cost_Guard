@@ -67,12 +67,18 @@ def _registry(args, customer) -> int:
         if backend == "bigquery":
             rep = cr.build_bigquery_registry(project, dataset, None, settings, args.mode,
                                              registry_path=path,
-                                             maximum_bytes_billed=args.max_bytes_billed)
+                                             maximum_bytes_billed=args.max_bytes_billed,
+                                             dry_run=args.dry_run)
         else:
-            rep = cr.build_registry(db, None, settings, args.mode, registry_path=path)
-        print(f"registry refresh ({args.mode}): profiled {', '.join(rep.profiled) or 'nothing'}"
-              f"; value counts {', '.join(rep.value_counted) or 'none'}"
-              f"; {rep.bytes_processed / 2**20:.1f} MiB processed")
+            rep = cr.build_registry(db, None, settings, args.mode, registry_path=path,
+                                    dry_run=args.dry_run)
+        if rep.dry_run:
+            print(f"registry refresh ({args.mode}) DRY RUN, nothing scanned or written: would "
+                  f"profile {', '.join(rep.planned) or 'nothing'}")
+        else:
+            print(f"registry refresh ({args.mode}): profiled {', '.join(rep.profiled) or 'nothing'}"
+                  f"; value counts {', '.join(rep.value_counted) or 'none'}"
+                  f"; {rep.bytes_processed / 2**20:.1f} MiB processed")
         for label, items in (("up to date", rep.up_to_date), ("over the size gate", rep.oversized),
                              ("FAILED", rep.failed)):
             if items:
@@ -143,6 +149,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dataset", default=argparse.SUPPRESS)
     p.add_argument("--mode", choices=["missing", "stale", "all"], default="stale",
                    help="refresh: stale (default) re-profiles only tables older than max_age_days")
+    p.add_argument("--dry-run", action="store_true",
+                   help="refresh: say which tables would be profiled; scan and write nothing")
     p.add_argument("--max-bytes-billed", type=int, default=2 * 1024**3,
                    help="refresh, BigQuery: per-scan cap; a table over it is reported, not scanned")
     args = parser.parse_args(argv)

@@ -28,9 +28,10 @@ PYTHONPATH=src .venv/bin/python -m query_preflight report                   # wo
 PHOENIX_HOST=127.0.0.1 .venv-phoenix/bin/phoenix serve   # local Phoenix UI on :6006 (own venv)
 .venv/bin/python eval/run_eval.py --suite bq-validation --project $GCP_PROJECT --phoenix [--phoenix-content]
 
-# Column registry (REQUIRED to be refreshed on a schedule in a deployment; not scheduled here — run on demand)
+# Column registry (REQUIRED to be refreshed on a schedule in a deployment). Here: monthly launchd job,
+# scripts/schedule/ (install_launchd.sh), DRY_RUN = True in refresh_registry.py until the user sets False
 PYTHONPATH=src .venv/bin/python -m query_preflight registry status --backend bigquery    # local file, free
-PYTHONPATH=src .venv/bin/python -m query_preflight registry refresh --backend bigquery   # --mode stale (default) | missing | all
+PYTHONPATH=src .venv/bin/python -m query_preflight registry refresh --backend bigquery   # --mode stale (default) | missing | all; --dry-run plans only
 ```
 
 There is no linter or build step. Tests import `src/` and `demo/` via

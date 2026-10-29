@@ -34,6 +34,11 @@ Build mechanics:
   100,000 users, 1/15 by distinct count). A registry built before this gets
   its value counts on the next run of any mode, without re-profiling.
 
+A dry run (dry_run=True, CLI `registry refresh --dry-run`) only plans: it
+reads the catalog (metadata, not billed) and the local registry, and says
+which tables the mode would profile and why; it scans nothing, writes
+nothing and records no run.
+
 Every build appends one row to `registry_runs` (when, mode, tables profiled /
 failed, bytes), so registry_status() can show the last refresh. The build
 runs as `query_preflight registry refresh`, which a deployment MUST schedule
@@ -160,6 +165,8 @@ class BuildReport:
     removed_rows: int = 0  # rows for dropped tables/columns
     bytes_processed: int = 0  # billed warehouses: bytes the profiling scans processed
     value_counted: list[str] = field(default_factory=list)  # tables whose value counts were written
+    planned: list[str] = field(default_factory=list)  # dry run: "table (why)" it would profile
+    dry_run: bool = False
 
 
 def _profile_table(con, schema: str, table: str, approximate: bool, now: str,
@@ -282,6 +289,7 @@ def build_registry(
     mode: str = "stale",
     schema: str = "main",
     registry_path: Optional[str] = None,
+    dry_run: bool = False,
 ) -> BuildReport:
     """Create/refresh the local registry for a DuckDB warehouse. The
     warehouse is opened READ-ONLY; only the registry file is written.
@@ -289,12 +297,14 @@ def build_registry(
     mode: "missing" | "stale" | "all" (see module docstring).
     tables: restrict to these tables (default: every base table in `schema`).
     registry_path: default default_registry_path(db_path).
+    dry_run: plan only (see module docstring).
     """
     return _build(_DuckDBSource(db_path), registry_path or default_registry_path(db_path),
-                  tables, settings, mode, schema)
+                  tables, settings, mode, schema, dry_run)
 
 
-def _build(source, registry_path: str, tables, settings, mode: str, schema: str) -> BuildReport:
+def _build(source, registry_path: str, tables, settings, mode: str, schema: str,
+           dry_run: bool = False) -> BuildReport:
     """The store side, shared by every warehouse: catalog diff, refresh
     mode, size gate, atomic per-table replace. `source` lists tables and
     profiles one table per scan."""
@@ -304,14 +314,20 @@ def _build(source, registry_path: str, tables, settings, mode: str, schema: str)
     if mode not in ("missing", "stale", "all"):
         source.close()
         raise ValueError(f"mode must be missing|stale|all, got {mode!r}")
-    report = BuildReport()
-    Path(registry_path).parent.mkdir(parents=True, exist_ok=True)
-    reg = duckdb.connect(registry_path)
+    report = BuildReport(dry_run=dry_run)
+    if dry_run:
+        # Read-only on an existing registry; no registry yet = an empty one in memory.
+        built = Path(registry_path).exists()
+        reg = duckdb.connect(registry_path, read_only=True) if built else duckdb.connect()
+    else:
+        built = False
+        Path(registry_path).parent.mkdir(parents=True, exist_ok=True)
+        reg = duckdb.connect(registry_path)
     try:
         sql_type = {"bool": "BOOLEAN", "int": "BIGINT"}
         cols_sql = ", ".join(f"{f.name} {sql_type.get(f.type, 'VARCHAR')}"
                              for f in fields(RegistryEntry))
-        existing = [r[0] for r in reg.execute(
+        existing = [] if built else [r[0] for r in reg.execute(
             "SELECT column_name FROM information_schema.columns "
             "WHERE table_schema = 'main' AND table_name = ? ORDER BY ordinal_position",
             [REGISTRY_TABLE]).fetchall()]
@@ -319,19 +335,21 @@ def _build(source, registry_path: str, tables, settings, mode: str, schema: str)
             # Different shape (older version): rebuild rather than ALTER —
             # old rows can't be keyed safely.
             reg.execute(f"DROP TABLE {REGISTRY_TABLE}")
-        reg.execute(f"CREATE TABLE IF NOT EXISTS {REGISTRY_TABLE} ({cols_sql})")
-        reg.execute(f"CREATE TABLE IF NOT EXISTS {VALUE_COUNTS_TABLE} (schema_name VARCHAR, "
-                    "table_name VARCHAR, column_name VARCHAR, value VARCHAR, "
-                    "value_count BIGINT, profiled_at VARCHAR)")
+        if not built:
+            reg.execute(f"CREATE TABLE IF NOT EXISTS {REGISTRY_TABLE} ({cols_sql})")
+            reg.execute(f"CREATE TABLE IF NOT EXISTS {VALUE_COUNTS_TABLE} (schema_name VARCHAR, "
+                        "table_name VARCHAR, column_name VARCHAR, value VARCHAR, "
+                        "value_count BIGINT, profiled_at VARCHAR)")
 
-        reg.execute(f"CREATE TABLE IF NOT EXISTS {RUNS_TABLE} (schema_name VARCHAR, "
-                    "finished_at VARCHAR, mode VARCHAR, profiled VARCHAR, value_counted VARCHAR, "
-                    "failed VARCHAR, oversized VARCHAR, bytes_processed BIGINT)")
+            reg.execute(f"CREATE TABLE IF NOT EXISTS {RUNS_TABLE} (schema_name VARCHAR, "
+                        "finished_at VARCHAR, mode VARCHAR, profiled VARCHAR, value_counted VARCHAR, "
+                        "failed VARCHAR, oversized VARCHAR, bytes_processed BIGINT)")
         try:
             live = source.catalog(schema)
         except Exception as e:  # noqa: BLE001 — recorded, then raised
             report.failed.append(f"catalog: {str(e).splitlines()[0][:100]}")
-            _record_run(reg, schema, mode, report)
+            if not dry_run:
+                _record_run(reg, schema, mode, report)
             raise
 
         # Remove rows for tables/columns that no longer exist.
@@ -340,7 +358,7 @@ def _build(source, registry_path: str, tables, settings, mode: str, schema: str)
             [schema],
         ).fetchall()
         gone = [(t, c) for t, c, _ in registered if c not in live.get(t, set())]
-        for t, c in gone:
+        for t, c in [] if dry_run else gone:
             for tbl in (REGISTRY_TABLE, VALUE_COUNTS_TABLE):
                 reg.execute(f"DELETE FROM {tbl} WHERE schema_name = ? AND table_name = ? "
                             "AND column_name = ?", [schema, t, c])
@@ -361,7 +379,14 @@ def _build(source, registry_path: str, tables, settings, mode: str, schema: str)
             stale = t in oldest and oldest[t] < cutoff
             if not (mode == "all" or missing or (mode == "stale" and stale)):
                 report.up_to_date.append(t)
-                _fill_value_counts(reg, source, schema, t, cfg, report)
+                if not dry_run:
+                    _fill_value_counts(reg, source, schema, t, cfg, report)
+                continue
+            if dry_run:
+                why = ("not registered" if not have.get(t) else f"{len(missing)} new columns"
+                       if missing else f"older than {cfg['max_age_days']} days" if stale
+                       else "mode all")
+                report.planned.append(f"{t} ({why})")
                 continue
             now = datetime.now(timezone.utc).isoformat()
             try:
@@ -395,7 +420,8 @@ def _build(source, registry_path: str, tables, settings, mode: str, schema: str)
             report.columns += len(entries)
             if counts:
                 report.value_counted.append(t)
-        _record_run(reg, schema, mode, report)
+        if not dry_run:
+            _record_run(reg, schema, mode, report)
         return report
     finally:
         source.close()
@@ -566,13 +592,14 @@ def build_bigquery_registry(
     registry_path: Optional[str] = None,
     maximum_bytes_billed: int = 2 * 1024**3,
     client=None,
+    dry_run: bool = False,
 ) -> BuildReport:
     """Create/refresh the LOCAL registry for a BigQuery dataset. Only reads
     the warehouse; each profiling scan is one billed query per table, capped
     by maximum_bytes_billed. Entries are keyed by schema = the dataset."""
     return _build(_BigQuerySource(project, dataset, maximum_bytes_billed, client),
                   registry_path or bigquery_registry_path(project, dataset),
-                  tables, settings, mode, dataset)
+                  tables, settings, mode, dataset, dry_run)
 
 
 def registry_mtime(registry_path: str) -> Optional[float]:

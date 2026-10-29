@@ -410,10 +410,15 @@ slowly loses those checks. Views on outside data drift faster: TheLook's
 `users`, `products`, `distribution_centers` are views on Google's public
 dataset, regenerated daily (Colombia 21 → 10 users in two days).
 
-Not scheduled in this project yet (owner's call, 2026-10-18): the refresh is
-run on demand, and the scheduler is chosen when needed — launchd/cron on one
-machine, or Cloud Scheduler → a Cloud Run job with the registry file in a
-bucket where the Guard runs. A plain scheduler, not an agent: the refresh is
+Scheduled here monthly (owner's call, 2026-10-29), as a DRY RUN by default:
+launchd runs `scripts/schedule/refresh_registry.py` on the 1st at 09:00
+(`scripts/schedule/install_launchd.sh`; `uninstall` removes it). With
+`DRY_RUN = True` it only logs which tables a refresh would profile (BigQuery
+metadata, not billed); set `DRY_RUN = False` in that file for real refreshes
+(`--mode all`: ~610 MiB a run). Until then the registry ages and its rules go
+unverified after 35 days; refresh on demand. A deployment would use Cloud
+Scheduler → a Cloud Run job with the registry file in a bucket where the
+Guard runs. A plain scheduler, not an agent: the refresh is
 deterministic. Cost, dry-run measured: a full re-profile bills ~668 MiB
 ($0.004 MODELED); a stale-mode run on a fresh registry processes 0 bytes.
 `query_preflight registry status` (or the MCP tool `registry_status`) shows each
@@ -505,6 +510,7 @@ changes.
 | 2026-10-24 | Threshold-judge test set, first and only run (Haiku 5.5, 14 calls, $0.0044 MODELED, commit `d4b36d3`): 14/14 — 0/6 bad approved, 6/6 right verdict (F-B3 hold), 0/8 false alarms, 0 refusals ([`eval/RESULTS_judge_test.md`](eval/RESULTS_judge_test.md)) | The first measurement on proposals the judge was not tuned on; every reason cites the right evidence, including the look-alikes (F-G5 two modes, F-G8 a step down). Limits stated with it: synthetic, 14 proposals, the prompt's author wrote them; real proposals need a real query log. The judge stays optional, after the run, behind the gates and the shadow trial |
 | 2026-10-24 | Cost scorecard (`eval/cost_scorecard.py`, `eval/SCORECARD_cost.md`): each BigQuery set's stored headline run (run-once sets from `eval/archive/`, tuning sets their latest run) restated per single run in billed bytes and MODELED dollars, next to its exact score: bad stopped (upper bound) / flagged / rewritten / missed, share of bad bytes caught, verified-rewrite savings, false blocks and warns on good queries (counts; analyst time only with two ASSUMPTION flags), the Guard's verification cost (~30 MiB each, measured). Bytes from dry runs made at scorecard time (free). `run_eval.py` now stores each case's `bytes_estimate`, `bytes_billed_if_run`, `usd_if_run_modeled` | Planned before the rename ("dollars next to the verdict scores, never replacing them"). First result: the held-out sets catch 96–100% of bad queries' bytes (bigquery 99%, bq-test 96%, bq-pool-test 98%, owner test 100%); missed bad bytes 10–45 MiB per set. Verified rewrites save 30–157 MiB per run while their verification bills ~30 MiB each, so a rewrite pays back after one or two runs (priority 5, the Guard's own cost). Dollars are tiny on TheLook; the shares carry the meaning |
 | 2026-10-29 | Superset stops a value-case miss: a verdict with `value_case_fixes` (a filter value that matches a stored value only when case is ignored, `value_case.py`) raises in the `SQL_QUERY_MUTATOR` hook with "did you mean", the registry note and the corrected query; nothing is swapped in. Ambiguous case twins (a warn) and cost-only rewrites still pass unchanged. The verdict itself is unchanged (still `rewrite`); only Superset's handling of it changed | Owner's choice of the recommended option (alternatives: swap in silently; leave as is). As written, the query returns no rows for that value, and an empty SQL Lab result or chart reads as "there are none"; swapping it in silently would change a query the analyst didn't see. Checked on BigQuery with a free dry run: `status = 'cancelled'` stopped ('Cancelled', 18,786 rows); `'Cancelled'` passed |
+| 2026-10-29 | Registry refresh scheduled MONTHLY (launchd, the 1st at 09:00, `scripts/schedule/`), shipped with `DRY_RUN = True`: the job runs `registry refresh --mode all --dry-run` (new flag: which tables the mode would profile and why; reads the catalog metadata and the local registry; scans, writes and bills nothing) and appends to `runs/registry_refresh.log`. `DRY_RUN = False` makes it a real refresh | Owner's call (monthly, dry run until they switch it). Recommended was weekly; monthly is safe only with `--mode all` (a monthly `stale` run leaves entries past `max_age_days` 35 for up to ~25 days), so the job uses `all`: ~610 MiB billed a run when real (measured 2026-10-23, ~$0.004 MODELED). Dry run checked on BigQuery: would profile all 7 tables, 0 bytes |
 
 ## 13. Open questions
 

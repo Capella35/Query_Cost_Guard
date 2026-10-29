@@ -225,3 +225,23 @@ def test_cli_registry_refresh_and_status(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "profiled events, tiny" in out and "last refresh:" in out
     assert main(["--db", db, "registry", "status"]) == 0
+
+
+def test_dry_run_plans_without_scanning_or_writing(tmp_path, capsys):
+    import os
+
+    from query_preflight.__main__ import main
+
+    db = _db(tmp_path)
+    path = default_registry_path(db)
+    rep = build_registry(db, dry_run=True)  # no registry yet
+    assert rep.planned == ["events (not registered)", "tiny (not registered)"]
+    assert rep.profiled == [] and not os.path.exists(path)
+    build_registry(db)
+    before, mtime = _rows(db), os.stat(path).st_mtime
+    assert build_registry(db, dry_run=True).up_to_date == ["events", "tiny"]  # fresh: stale mode skips
+    rep = build_registry(db, mode="all", dry_run=True)
+    assert rep.planned == ["events (mode all)", "tiny (mode all)"] and rep.bytes_processed == 0
+    assert _rows(db) == before and os.stat(path).st_mtime == mtime  # nothing written
+    assert main(["--db", db, "registry", "refresh", "--mode", "all", "--dry-run"]) == 0
+    assert "DRY RUN, nothing scanned or written: would profile events (mode all)" in capsys.readouterr().out
