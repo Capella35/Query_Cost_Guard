@@ -5,6 +5,8 @@ Pre-registered in `eval/PREREG_hll_margin.md` (commit 67642d6), run
 The options were switched in a scratch harness; no production code was
 changed for these runs.
 
+**Raw output not retained** (noted 2026-10-29): the runs used a scratch harness and kept no result file; nothing in `eval/results/` backs the numbers below.
+
 ## M1 / M2: is the GROUP BY bound a bound?
 
 Bound = ceil(approximate distinct x margin) (+1 when the column has NULLs),
