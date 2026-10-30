@@ -68,10 +68,59 @@ What exists in code today. "How it works" below only describes rows marked **bui
 
 ## How it works
 
+```mermaid
+flowchart LR
+    subgraph callers["Callers"]
+        CLI["CLI<br/>check / run"]
+        MCP["MCP server<br/>AI agents"]
+        SUP["Superset hook<br/>SQL Lab, charts"]
+    end
+
+    subgraph before["1 · Before the run: guard.decide() (deterministic, no model)"]
+        RO["Read-only check<br/>(sqlglot AST)"]
+        EST["Estimate<br/>BigQuery dry run (free)<br/>DuckDB EXPLAIN"]
+        RULES["Rules<br/>static rules · semantic hints<br/>join fan-out · value case"]
+        CAPS["Workload-class caps<br/>+ spend budgets"]
+        RW["Rewrite catalog<br/>offered only if same rows<br/>and fewer billed bytes"]
+        V{{"Verdict<br/>allow · warn · rewrite · block"}}
+        RO --> EST --> RULES --> CAPS --> RW --> V
+    end
+
+    ASSIST["guard.assist() (optional model)<br/>explanation, suggestion<br/>warn/block only, never changes the verdict"]
+
+    subgraph during["2 · During the run: runtime.run_query()"]
+        RUN["BigQuery job<br/>job_timeout_ms + maximum_bytes_billed"]
+    end
+
+    LOG[("Query log<br/>fingerprints + numbers<br/>no SQL text, no literals")]
+
+    subgraph after["3 · After the run (report-only, not yet in decide())"]
+        AN["Anomaly rule<br/>vs. the shape's history"]
+        INV["Investigator<br/>report-only investigations"]
+        TH["Learned thresholds<br/>gates → judge → shadow → enforce / rollback<br/>tighten only, below hard caps"]
+    end
+
+    REG[("Column registry<br/>distinct + value counts<br/>refreshed on a schedule")]
+    TR[("Traces<br/>JSONL, optional Phoenix")]
+
+    CLI --> RO
+    MCP --> RO
+    SUP --> RO
+    REG -.->|"lookup, never a per-query scan"| RULES
+    LOG -.->|"history, budgets"| CAPS
+    V -->|"block: returned to the caller, never runs"| callers
+    V -->|"warn / block"| ASSIST
+    V -->|"allow / warn / rewrite"| RUN
+    RUN --> LOG
+    LOG --> AN --> INV --> TH
+    TH -.->|"learned lower limit"| RUN
+    before -.-> TR
 ```
-Guard (before execution) → watchdog execution → query log → Investigator (after execution)
-        → threshold updater (gates → shadow → enforce / rollback) → rule store → watchdog
-```
+
+Each stage catches what the others structurally cannot: the Guard sees the
+query and the dry run but not the runtime; the runtime limits see the job but
+only once it has started; the after-run checks see the history of a query
+shape. Details: [DESIGN.md §3–4](DESIGN.md).
 
 **Guard decisions:** allow / warn / rewrite / block, in this order:
 
